@@ -94,12 +94,14 @@ class HeadsetRemoteCommandManager: ObservableObject {
                     #endif
                 } else if !isSpeaking {
                     // TTS ended but state wasn't .speaking — e.g. session-history replay TTS
-                    // or other out-of-band speech. VoiceOutputManager may have set the session
-                    // to .playback; re-assert .playAndRecord so the next recording starts with
-                    // the correct category and the silence player stays on AirPods output.
+                    // or other out-of-band speech. Re-assert only if TTS actually changed our
+                    // category (avoids 187 redundant rebuilds when session history is replayed).
                     #if os(iOS)
-                    hLog("Headset: isSpeaking→false (state=\(self.state)) — re-asserting audio session")
-                    self.activateAudioSession()
+                    let s = AVAudioSession.sharedInstance()
+                    if s.category != .playAndRecord || !s.categoryOptions.contains(.allowBluetoothA2DP) {
+                        hLog("Headset: isSpeaking→false — session changed (was \(s.category.rawValue)/opts=\(s.categoryOptions.rawValue)), re-asserting")
+                        self.activateAudioSession()
+                    }
                     #endif
                 }
             }
@@ -563,8 +565,9 @@ extension HeadsetRemoteCommandManager {
         // against the active category (either .playback or .playAndRecord).
         // AVAudioPlayer binds its audio routing at prepareToPlay() time, so reusing
         // a player built under a different category can silently produce no output.
-        // Called from activateAudioSession() (which sets .playback first) and from
+        // Called from activateAudioSession() (which sets .playAndRecord first) and from
         // the startRecording() onSessionReady callback (after .playAndRecord is set).
+        keepAlivePlayer?.stop()  // stop old player before rebuilding to avoid duplicates
         setupKeepAlive()
         let played = keepAlivePlayer?.play() ?? false
         hLog("Headset: keep-alive started — looping=\(played), category=\(AVAudioSession.sharedInstance().category.rawValue)")
