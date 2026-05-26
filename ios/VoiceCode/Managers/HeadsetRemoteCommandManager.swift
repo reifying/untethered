@@ -41,6 +41,7 @@ class HeadsetRemoteCommandManager: ObservableObject {
     #if os(iOS)
     private var keepAlivePlayer: AVAudioPlayer?
     private var interruptionObserver: NSObjectProtocol?
+    private(set) var blueParrottManager: BlueParrottButtonManager?
     #endif
 
     enum HeadsetState: CustomStringConvertible, Equatable {
@@ -150,6 +151,18 @@ class HeadsetRemoteCommandManager: ObservableObject {
 
         #if os(iOS)
         setupKeepAlive()
+
+        settings.$blueParrottEnabled
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] enabled in
+                guard let self = self else { return }
+                if enabled {
+                    self.startBlueParrott()
+                } else {
+                    self.stopBlueParrott()
+                }
+            }
+            .store(in: &cancellables)
         #endif
     }
 
@@ -598,6 +611,67 @@ extension HeadsetRemoteCommandManager {
         } catch {
             logger.error("Headset: failed to create silence player: \(error.localizedDescription)")
         }
+    }
+
+    // MARK: - BlueParrott SDK
+
+    func startBlueParrott() {
+        guard blueParrottManager == nil else { return }
+        let bp = BlueParrottButtonManager()
+        bp.delegate = self
+        bp.start()
+        blueParrottManager = bp
+        hLog("Headset: BlueParrott SDK started")
+    }
+
+    func stopBlueParrott() {
+        blueParrottManager?.stop()
+        blueParrottManager = nil
+        hLog("Headset: BlueParrott SDK stopped")
+    }
+}
+
+// MARK: - BlueParrottButtonDelegate
+
+extension HeadsetRemoteCommandManager: BlueParrottButtonDelegate {
+    func blueParrottButtonDown() {
+        hLog("Headset: BlueParrott button DOWN — state=\(self.state)")
+        if state == .ready {
+            startRecording()
+        }
+    }
+
+    func blueParrottButtonUp() {
+        hLog("Headset: BlueParrott button UP — state=\(self.state)")
+        if state == .recording {
+            stopRecordingAndSend()
+        }
+    }
+
+    func blueParrottTap() {
+        hLog("Headset: BlueParrott tap — state=\(self.state)")
+        switch state {
+        case .ready:
+            startRecording()
+        case .recording:
+            stopRecordingAndSend()
+        case .speaking:
+            performInterrupt()
+        case .sending:
+            hLog("Headset: BlueParrott tap while sending — resetting to ready")
+            state = .ready
+            updateNowPlayingState()
+        }
+    }
+
+    func blueParrottDoubleTap() {
+        hLog("Headset: BlueParrott double-tap — state=\(self.state)")
+        performInterrupt()
+    }
+
+    func blueParrottLongPress() {
+        hLog("Headset: BlueParrott long-press — state=\(self.state)")
+        performInterrupt()
     }
 }
 #endif

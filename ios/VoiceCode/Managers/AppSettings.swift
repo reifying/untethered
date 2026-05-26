@@ -143,6 +143,15 @@ class AppSettings: ObservableObject {
         }
     }
 
+    /// When true, connects to a BlueParrott headset via the BPHeadset SDK and routes the
+    /// programmable button to start/stop recording. Independent of headsetModeEnabled —
+    /// button events arrive over BLE, not AVRCP.
+    @Published var blueParrottEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(blueParrottEnabled, forKey: "blueParrottEnabled")
+        }
+    }
+
     var fullServerURL: String {
         let cleanURL = serverURL.trimmingCharacters(in: .whitespaces)
         let cleanPort = serverPort.trimmingCharacters(in: .whitespaces)
@@ -338,6 +347,7 @@ class AppSettings: ObservableObject {
         self.headsetModeEnabled = UserDefaults.standard.bool(forKey: "headsetModeEnabled")
         self.headsetPTTEnabled = UserDefaults.standard.bool(forKey: "headsetPTTEnabled")
         self.headsetAutoSend = UserDefaults.standard.object(forKey: "headsetAutoSend") as? Bool ?? true
+        self.blueParrottEnabled = UserDefaults.standard.bool(forKey: "blueParrottEnabled")
 
         // Set up debounced publishers for text fields (serverURL and serverPort)
         // dropFirst() skips the initial value to avoid writing on init

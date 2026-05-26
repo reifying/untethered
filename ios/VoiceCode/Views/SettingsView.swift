@@ -116,7 +116,12 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundColor(.secondary)
 
-                if settings.headsetModeEnabled {
+                Toggle("BlueParrott button", isOn: $settings.blueParrottEnabled)
+                Text("Use the programmable BlueParrott button via BLE SDK. Hold to talk, release to send. Works independently of headset control above.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+
+                if settings.headsetModeEnabled || settings.blueParrottEnabled {
                     Toggle("Auto-send on recording stop", isOn: $settings.headsetAutoSend)
                     Text("Transcription is sent to the active session automatically when you press stop.")
                         .font(.caption)
