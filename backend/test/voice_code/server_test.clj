@@ -1953,8 +1953,8 @@
       ;; We start at implement step but code-review already has 3 visits
       (reset! server/session-orchestration-state {})
       (server/start-recipe-for-session session-id :implement-and-review false)
-      ;; Set code-review visits to 3 (max-step-visits is 3)
-      (swap! server/session-orchestration-state assoc-in [session-id :step-visit-counts :code-review] 3)
+      ;; Set code-review visits to 10 (max-step-visits is 10)
+      (swap! server/session-orchestration-state assoc-in [session-id :step-visit-counts :code-review] 10)
 
       (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))]
         (let [orch-state (server/get-session-recipe-state session-id)
