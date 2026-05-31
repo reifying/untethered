@@ -47,6 +47,12 @@ class VoiceInputManager: NSObject, ObservableObject {
     // MARK: - Recording
 
     func startRecording() {
+        // Gate up FIRST — blocks any new speech (e.g. WebSocket-delivered
+        // assistant messages auto-spoken by SessionSyncManager) from being
+        // enqueued during the async window between here and audio session
+        // configuration. Cleared in stopRecording() or on any error exit below.
+        voiceOutputManager?.isRecordingActive = true
+
         // Stop TTS first so the mic doesn't pick up speech output AND so the
         // synthesizer fully releases the audio session before we flip it to
         // .record. Without waiting, the first tap of the mic during TTS would
@@ -64,6 +70,17 @@ class VoiceInputManager: NSObject, ObservableObject {
     }
 
     private func startRecordingAfterTTSStopped() {
+        // Clear the recording-active gate on any early/error return below; only
+        // the successful path keeps it raised. A single defer covers every
+        // current and future error path automatically — no per-exit cleanup to
+        // forget (a stuck-true flag would suppress all TTS until app relaunch).
+        var recordingStarted = false
+        defer {
+            if !recordingStarted {
+                voiceOutputManager?.isRecordingActive = false
+            }
+        }
+
         // Check authorization
         guard authorizationStatus == .authorized else {
             print("Speech recognition not authorized")
@@ -137,8 +154,13 @@ class VoiceInputManager: NSObject, ObservableObject {
             }
         }
 
+        recordingStarted = true
         DispatchQueue.main.async {
             self.isRecording = true
+            // Keep the gate consistent with isRecording: if stopRecording() ran
+            // during the async stop-completion window and cleared the flag,
+            // re-raise it so TTS stays suppressed while the mic is actually open.
+            self.voiceOutputManager?.isRecordingActive = true
             self.transcribedText = ""
         }
     }
@@ -150,6 +172,8 @@ class VoiceInputManager: NSObject, ObservableObject {
 
         DispatchQueue.main.async {
             self.isRecording = false
+            // Gate down — allow TTS to resume now that the mic is closed.
+            self.voiceOutputManager?.isRecordingActive = false
             // Note: onTranscriptionComplete callback is never set - handled by view layer instead
         }
 
