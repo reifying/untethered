@@ -499,6 +499,36 @@
                              :provider provider
                              :resume? (boolean resume?)}))))))))
 
+(def ghost-tmux-session
+  "Dedicated tmux session for ephemeral ghost forks, isolated from per-workdir
+   user sessions so fork windows never count toward window-cap or evict a real
+   session."
+  "vc-ghost")
+
+(defn start-ephemeral-window!
+  "Launch `cmd` in a throwaway tmux window named `window` under ghost-tmux-session,
+   in `workdir`. Waits for provider TUI readiness, then nudges `prompt`. Registers
+   NO live-windows entry and sets NO VC_ env, so the window is invisible to iOS and
+   to eviction (list-agent-windows, evict-if-needed!, and scan-existing-windows! all
+   key off VC_SESSION_UUID_*). The caller is responsible for tearing the window down.
+   Returns {:tmux-session :tmux-window} on success. Throws ex-info
+   {:kind :wait-for-ready-timeout ...} (after killing the window) if the TUI never
+   readies."
+  [{:keys [window provider workdir cmd prompt]}]
+  (ensure-session! ghost-tmux-session workdir)
+  (sh "tmux" "new-window" "-d" "-t" (str "=" ghost-tmux-session ":")
+      "-n" window "-c" workdir cmd)
+  (let [ready (wait-for-ready ghost-tmux-session window provider)]
+    (when (not= :ready ready)
+      (kill-window! ghost-tmux-session window)
+      (throw (ex-info "Ghost fork TUI did not become ready before timeout"
+                      {:kind :wait-for-ready-timeout
+                       :tmux-session ghost-tmux-session
+                       :window window
+                       :provider provider})))
+    (when prompt (nudge! ghost-tmux-session window prompt))
+    {:tmux-session ghost-tmux-session :tmux-window window}))
+
 (defn- respawn-and-deliver!
   "Respawn an evicted session with --resume and deliver the prompt.
    Looks up session metadata to recover provider, workdir, and name."

@@ -923,6 +923,141 @@
           (is (empty? @nudge-send-keys)
               "initial-prompt must not be nudged when TUI readiness times out"))))))
 
+;; ============================================================================
+;; start-ephemeral-window! (ghost forks)
+;; ============================================================================
+
+(deftest ghost-tmux-session-test
+  (testing "the ghost fork session constant is vc-ghost"
+    (is (= "vc-ghost" tmux/ghost-tmux-session))))
+
+(deftest start-ephemeral-window!-test
+  (testing "creates new-window in the vc-ghost session, nudges prompt, returns descriptor"
+    (let [calls (atom [])
+          invoker (fn [& args]
+                    (swap! calls conj (vec args))
+                    (cond
+                      (some #{"has-session"} args) {:exit 0 :out "" :err ""}
+                      ;; capture-pane: readiness string present immediately
+                      (some #{"capture-pane"} args) {:exit 0 :out "bypass permissions" :err ""}
+                      :else {:exit 0 :out "" :err ""}))]
+      (binding [tmux/*tmux-invoker* invoker]
+        (reset! tmux/live-windows {})
+        (let [result (tmux/start-ephemeral-window!
+                      {:window "ghost-gp-abc123abc123"
+                       :provider :claude
+                       :workdir "/tmp/proj"
+                       :cmd "claude --resume S-1 --fork-session"
+                       :prompt "META PROMPT"})
+              recorded @calls
+              new-window-call (first (filter #(some #{"new-window"} %) recorded))]
+          (is (= {:tmux-session "vc-ghost" :tmux-window "ghost-gp-abc123abc123"} result))
+          (is (some? new-window-call) "expected a new-window call")
+          (is (some #{"=vc-ghost:"} new-window-call)
+              "new-window must target the vc-ghost session")
+          (is (some #{"ghost-gp-abc123abc123"} new-window-call)
+              "new-window must use the supplied window name")
+          (is (some #{"/tmp/proj"} new-window-call)
+              "new-window must set the workdir with -c")
+          (is (some #{"claude --resume S-1 --fork-session"} new-window-call)
+              "new-window must launch the supplied cmd")
+          (is (some #(and (some #{"send-keys"} %) (some #{"META PROMPT"} %)) recorded)
+              "prompt must be nudged when the TUI becomes ready")))))
+
+  (testing "registers NO live-windows entry"
+    (let [invoker (fn [& args]
+                    (cond
+                      (some #{"has-session"} args) {:exit 0 :out "" :err ""}
+                      (some #{"capture-pane"} args) {:exit 0 :out "bypass permissions" :err ""}
+                      :else {:exit 0 :out "" :err ""}))]
+      (binding [tmux/*tmux-invoker* invoker]
+        (reset! tmux/live-windows {})
+        (tmux/start-ephemeral-window!
+         {:window "ghost-gp-deadbeef0001"
+          :provider :claude
+          :workdir "/tmp/proj"
+          :cmd "claude --resume S-2 --fork-session"
+          :prompt "META PROMPT"})
+        (is (empty? @tmux/live-windows)
+            "ephemeral fork window must not be registered in live-windows"))))
+
+  (testing "sets NO VC_ env (no set-environment) so the fork is invisible to eviction"
+    (let [calls (atom [])
+          invoker (fn [& args]
+                    (swap! calls conj (vec args))
+                    (cond
+                      (some #{"has-session"} args) {:exit 0 :out "" :err ""}
+                      (some #{"capture-pane"} args) {:exit 0 :out "bypass permissions" :err ""}
+                      :else {:exit 0 :out "" :err ""}))]
+      (binding [tmux/*tmux-invoker* invoker]
+        (reset! tmux/live-windows {})
+        (tmux/start-ephemeral-window!
+         {:window "ghost-gp-cafef00d0002"
+          :provider :claude
+          :workdir "/tmp/proj"
+          :cmd "claude --resume S-3 --fork-session"
+          :prompt "META PROMPT"})
+        (is (not (some #(some #{"set-environment"} %) @calls))
+            "no VC_ env may be written for an ephemeral fork window"))))
+
+  (testing "does not nudge when no prompt supplied"
+    (let [nudge-send-keys (atom [])
+          invoker (fn [& args]
+                    (when (and (some #{"send-keys"} args) (some #{"-l"} args))
+                      (swap! nudge-send-keys conj (vec args)))
+                    (cond
+                      (some #{"has-session"} args) {:exit 0 :out "" :err ""}
+                      (some #{"capture-pane"} args) {:exit 0 :out "bypass permissions" :err ""}
+                      :else {:exit 0 :out "" :err ""}))]
+      (binding [tmux/*tmux-invoker* invoker]
+        (reset! tmux/live-windows {})
+        (tmux/start-ephemeral-window!
+         {:window "ghost-gp-0badf00d0003"
+          :provider :claude
+          :workdir "/tmp/proj"
+          :cmd "claude --resume S-4 --fork-session"
+          :prompt nil})
+        (is (empty? @nudge-send-keys)
+            "no nudge when prompt is nil"))))
+
+  (testing "on readiness timeout: kills the window and throws :wait-for-ready-timeout, without nudging"
+    (let [kill-calls (atom [])
+          nudge-send-keys (atom [])
+          invoker (fn [& args]
+                    (when (some #{"kill-window"} args)
+                      (swap! kill-calls conj (vec args)))
+                    (when (and (some #{"send-keys"} args) (some #{"-l"} args))
+                      (swap! nudge-send-keys conj (vec args)))
+                    (cond
+                      (some #{"has-session"} args) {:exit 0 :out "" :err ""}
+                      :else {:exit 0 :out "" :err ""}))]
+      (binding [tmux/*tmux-invoker* invoker]
+        (reset! tmux/live-windows {})
+        ;; Short-circuit the 20s production default so the timeout path runs fast.
+        (with-redefs [tmux/wait-for-ready (fn [& _] :timeout)]
+          (let [thrown (try
+                         (tmux/start-ephemeral-window!
+                          {:window "ghost-gp-feedface0004"
+                           :provider :claude
+                           :workdir "/tmp/proj"
+                           :cmd "claude --resume S-5 --fork-session"
+                           :prompt "META PROMPT"})
+                         nil
+                         (catch clojure.lang.ExceptionInfo e e))]
+            (is (some? thrown) "expected throw on readiness timeout")
+            (is (= :wait-for-ready-timeout (:kind (ex-data thrown))))
+            (is (= "ghost-gp-feedface0004" (:window (ex-data thrown))))
+            (is (= "vc-ghost" (:tmux-session (ex-data thrown))))
+            (is (= :claude (:provider (ex-data thrown))))
+            (let [kill-call (first @kill-calls)]
+              (is (some? kill-call) "the window must be killed on timeout")
+              (is (some #{"=vc-ghost:=ghost-gp-feedface0004"} kill-call)
+                  "kill-window must target the ghost fork window"))
+            (is (empty? @nudge-send-keys)
+                "prompt must not be nudged when readiness times out")
+            (is (empty? @tmux/live-windows)
+                "no live-windows entry even on the timeout path")))))))
+
 (deftest wait-for-ready-default-timeout-test
   (testing "default :timeout-ms is the 20s production constant, not 3s"
     ;; Regression guard for tmux-untethered-8vb: a 3s default silently dropped
