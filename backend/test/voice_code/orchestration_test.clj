@@ -135,7 +135,7 @@
       (is (not (str/includes? block "otherDescription")))))
 
   (testing "appends format requirements to prompt"
-    (let [original "Run bd ready and implement the task."
+    (let [original "Run br ready and implement the task."
           result (orch/append-outcome-requirements original :implement #{:complete :other})]
       (is (str/starts-with? result original))
       (is (> (count result) (count original)))

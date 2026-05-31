@@ -74,12 +74,14 @@ After fixing:
 
 ## Pre-Commit Steps
 If working on a beads task, update its status first:
-- Run `bd close <task-id>` to mark the task as complete
-- If partially complete, use `bd update <task-id> --status in-progress` with notes
+- Run `br close <task-id>` to mark the task as complete
+- If partially complete, use `br update <task-id> --status in_progress` with notes
 
 ## Commit and Push
 - Write a clear commit message describing what was implemented
 - If working on a beads task, include the task ID in the commit message
+- Run `br sync --flush-only` to ensure issue state is exported
+- Stage issue state: `git add .beads/issues.jsonl`
 - Push to the remote repository after committing"
     :outcomes #{:committed :nothing-to-commit :other}
     :on-outcome
@@ -257,7 +259,7 @@ Report any gaps or issues found. Do not make changes yet."
     {:prompt "Analyze the design document to understand the implementation scope.
 
 ## Prerequisites
-1. Run `bd quickstart` to understand beads workflow if unfamiliar
+1. Run `br robot-docs guide` to understand beads workflow if unfamiliar
 2. Locate the design document for this feature
 3. Read the design document thoroughly
 
@@ -283,7 +285,7 @@ Report your analysis including:
     {:prompt "Create the parent epic for this implementation work.
 
 ## Epic Creation
-Run `bd create` to create an epic with:
+Run `br create` to create an epic with:
 - **Title**: Clear, concise name for the feature/change
 - **Description**: Reference the design document using @path/to/design.md
 - **Type**: epic
@@ -309,7 +311,7 @@ The epic description should include:
 
 ## Task Creation Guidelines
 
-For each task, run `bd create` with:
+For each task, run `br create` with:
 - **Parent**: The epic you just created
 - **Title**: Action-oriented (e.g., 'Add validation to user input handler')
 - **Type**: task
@@ -368,27 +370,27 @@ Can be worked alongside: [list task titles]
 
 ### Setting Up Dependency Links
 
-After creating all tasks, establish dependency links using `bd dep add`.
-This ensures `bd ready` only shows tasks that are actually ready to work on.
+After creating all tasks, establish dependency links using `br dep add`.
+This ensures `br ready` only shows tasks that are actually ready to work on.
 
-**Syntax:** `bd dep add <blocked-task> <blocking-task>`
+**Syntax:** `br dep add <blocked-task> <blocking-task>`
 (The blocked-task depends on blocking-task completing first)
 
 **Required dependencies:**
 1. Epic depends on ALL child tasks (epic can't close until children complete):
    ```bash
-   bd dep add <epic-id> <child-task-1>
-   bd dep add <epic-id> <child-task-2>
+   br dep add <epic-id> <child-task-1>
+   br dep add <epic-id> <child-task-2>
    # ... repeat for each child
    ```
 
 2. Tasks depend on their prerequisites (tests depend on implementation, etc.):
    ```bash
    # Example: \"Write tests\" depends on \"Implement handler\"
-   bd dep add <test-task-id> <impl-task-id>
+   br dep add <test-task-id> <impl-task-id>
    ```
 
-**Verify with:** `bd blocked` to see dependency relationships"
+**Verify with:** `br blocked` to see dependency relationships"
      :outcomes #{:complete :other}
      :on-outcome
      {:complete {:next-step :review-tasks}
@@ -420,15 +422,15 @@ This ensures `bd ready` only shows tasks that are actually ready to work on.
 ### Dependency Links (Critical)
 Run these commands to verify dependency links are properly set up:
 
-1. **Check blocked tasks:** `bd blocked`
+1. **Check blocked tasks:** `br blocked`
    - Tasks with prerequisites should appear here
    - If nothing is blocked but tasks have dependencies, links are missing
 
-2. **Check epic dependencies:** `bd show <epic-id>`
+2. **Check epic dependencies:** `br show <epic-id>`
    - Epic should show \"Depends on\" section listing ALL child tasks
    - If missing, epic will show as \"ready\" before children complete
 
-3. **Check ready tasks:** `bd ready`
+3. **Check ready tasks:** `br ready`
    - Only foundation tasks (no prerequisites) should appear
    - If all tasks appear, dependency links are missing
 
@@ -437,7 +439,7 @@ Run these commands to verify dependency links are properly set up:
 - [ ] Each task references the relevant design section
 - [ ] Acceptance criteria map back to design
 
-Run `bd list` to see the created structure.
+Run `br list` to see the created structure.
 
 Report any issues found."
      :outcomes #{:no-issues :issues-found :other}
@@ -449,11 +451,11 @@ Report any issues found."
     :fix-tasks
     {:prompt "Address the issues found in the task review.
 
-Use `bd edit <task-id>` to update task descriptions.
-Use `bd create` to create missing tasks.
-Use `bd delete <task-id>` to remove duplicate or unnecessary tasks.
-Use `bd dep add <blocked> <blocking>` to add missing dependency links.
-Use `bd dep rm <blocked> <blocking>` to remove incorrect dependencies."
+Use `br update <task-id> --description/--notes/--design` to update task descriptions.
+Use `br create` to create missing tasks.
+Use `br delete <task-id>` to remove duplicate or unnecessary tasks.
+Use `br dep add <blocked> <blocking>` to add missing dependency links.
+Use `br dep remove <blocked> <blocking>` to remove incorrect dependencies."
      :outcomes #{:complete :other}
      :on-outcome
      {:complete {:next-step :review-tasks}
@@ -463,7 +465,7 @@ Use `bd dep rm <blocked> <blocking>` to remove incorrect dependencies."
     {:prompt "Commit and push the beads changes.
 
 ## Commit Requirements
-- Include all files in `beads/` directory
+- Run `br sync --flush-only` then stage issue state with `git add .beads/issues.jsonl`
 - Use the epic ID in the commit message
 - Write a clear commit message
 
@@ -484,13 +486,13 @@ Example: 'Add implementation tasks for user authentication (epic-abc123)'"
   {:prompt "Implement the current task from beads.
 
 ## Prerequisites
-1. Run `bd ready --limit 1 --exclude-type epic` and `bd show <task-id>` to see the task details
+1. Run `br ready --limit 1 --type task --type bug --type feature --type chore --type docs --type question` and `br show <task-id>` to see the task details
 2. Read the design document referenced in the task
 3. Review relevant code standards (@STANDARDS.md, @CLAUDE.md)
 4. Familiarize yourself with the codebase context
 
 ## No Tasks Available
-If `bd ready --limit 1 --exclude-type epic` indicates there are no tasks ready for implementation, select the `no-tasks` outcome. This is a normal situation—the recipe will exit gracefully.
+If `br ready --limit 1 --type task --type bug --type feature --type chore --type docs --type question` indicates there are no tasks ready for implementation, select the `no-tasks` outcome. This is a normal situation—the recipe will exit gracefully.
 
 ## Implementation Requirements
 - Follow the technical approach specified in the task
@@ -521,12 +523,14 @@ Before marking complete:
 
 ## Pre-Commit Steps
 If working on a beads task, update its status first:
-- Run `bd close <task-id>` to mark the task as complete
-- If partially complete, use `bd update <task-id> --status in-progress` with notes
+- Run `br close <task-id>` to mark the task as complete
+- If partially complete, use `br update <task-id> --status in_progress` with notes
 
 ## Commit and Push
 - Write a clear commit message describing what was implemented
 - If working on a beads task, include the task ID in the commit message
+- Run `br sync --flush-only` to ensure issue state is exported
+- Stage issue state: `git add .beads/issues.jsonl`
 - Push to the remote repository after committing"
    :outcomes #{:committed :nothing-to-commit :other}
    :on-outcome
@@ -1076,7 +1080,7 @@ Example: 'Refine user authentication design: add error handling, simplify token 
   {:prompt "Commit and push the beads changes.
 
 ## Commit Requirements
-- Include all files in `beads/` directory
+- Run `br sync --flush-only` then stage issue state with `git add .beads/issues.jsonl`
 - Use the epic ID in the commit message
 - Write a clear commit message
 
@@ -1234,7 +1238,7 @@ Report any gaps or issues found. Do not make changes yet."
     {:prompt "Analyze the design document to understand the implementation scope.
 
 ## Prerequisites
-1. Run `bd quickstart` to understand beads workflow if unfamiliar
+1. Run `br robot-docs guide` to understand beads workflow if unfamiliar
 2. Locate the design document for this feature (you just created it in the previous phase)
 3. Read the design document thoroughly
 
@@ -1260,7 +1264,7 @@ Report your analysis including:
     {:prompt "Create the parent epic for this implementation work.
 
 ## Epic Creation
-Run `bd create` to create an epic with:
+Run `br create` to create an epic with:
 - **Title**: Clear, concise name for the feature/change
 - **Description**: Reference the design document using @path/to/design.md
 - **Type**: epic
@@ -1286,7 +1290,7 @@ The epic description should include:
 
 ## Task Creation Guidelines
 
-For each task, run `bd create` with:
+For each task, run `br create` with:
 - **Parent**: The epic you just created
 - **Title**: Action-oriented (e.g., 'Add validation to user input handler')
 - **Type**: task
@@ -1345,27 +1349,27 @@ Can be worked alongside: [list task titles]
 
 ### Setting Up Dependency Links
 
-After creating all tasks, establish dependency links using `bd dep add`.
-This ensures `bd ready` only shows tasks that are actually ready to work on.
+After creating all tasks, establish dependency links using `br dep add`.
+This ensures `br ready` only shows tasks that are actually ready to work on.
 
-**Syntax:** `bd dep add <blocked-task> <blocking-task>`
+**Syntax:** `br dep add <blocked-task> <blocking-task>`
 (The blocked-task depends on blocking-task completing first)
 
 **Required dependencies:**
 1. Epic depends on ALL child tasks (epic can't close until children complete):
    ```bash
-   bd dep add <epic-id> <child-task-1>
-   bd dep add <epic-id> <child-task-2>
+   br dep add <epic-id> <child-task-1>
+   br dep add <epic-id> <child-task-2>
    # ... repeat for each child
    ```
 
 2. Tasks depend on their prerequisites (tests depend on implementation, etc.):
    ```bash
    # Example: \"Write tests\" depends on \"Implement handler\"
-   bd dep add <test-task-id> <impl-task-id>
+   br dep add <test-task-id> <impl-task-id>
    ```
 
-**Verify with:** `bd blocked` to see dependency relationships"
+**Verify with:** `br blocked` to see dependency relationships"
      :outcomes #{:complete :other}
      :on-outcome
      {:complete {:next-step :tasks-review}
@@ -1397,15 +1401,15 @@ This ensures `bd ready` only shows tasks that are actually ready to work on.
 ### Dependency Links (Critical)
 Run these commands to verify dependency links are properly set up:
 
-1. **Check blocked tasks:** `bd blocked`
+1. **Check blocked tasks:** `br blocked`
    - Tasks with prerequisites should appear here
    - If nothing is blocked but tasks have dependencies, links are missing
 
-2. **Check epic dependencies:** `bd show <epic-id>`
+2. **Check epic dependencies:** `br show <epic-id>`
    - Epic should show \"Depends on\" section listing ALL child tasks
    - If missing, epic will show as \"ready\" before children complete
 
-3. **Check ready tasks:** `bd ready`
+3. **Check ready tasks:** `br ready`
    - Only foundation tasks (no prerequisites) should appear
    - If all tasks appear, dependency links are missing
 
@@ -1414,7 +1418,7 @@ Run these commands to verify dependency links are properly set up:
 - [ ] Each task references the relevant design section
 - [ ] Acceptance criteria map back to design
 
-Run `bd list` to see the created structure.
+Run `br list` to see the created structure.
 
 Report any issues found."
      :outcomes #{:no-issues :issues-found :other}
@@ -1426,11 +1430,11 @@ Report any issues found."
     :tasks-fix
     {:prompt "Address the issues found in the task review.
 
-Use `bd edit <task-id>` to update task descriptions.
-Use `bd create` to create missing tasks.
-Use `bd delete <task-id>` to remove duplicate or unnecessary tasks.
-Use `bd dep add <blocked> <blocking>` to add missing dependency links.
-Use `bd dep rm <blocked> <blocking>` to remove incorrect dependencies."
+Use `br update <task-id> --description/--notes/--design` to update task descriptions.
+Use `br create` to create missing tasks.
+Use `br delete <task-id>` to remove duplicate or unnecessary tasks.
+Use `br dep add <blocked> <blocking>` to add missing dependency links.
+Use `br dep remove <blocked> <blocking>` to remove incorrect dependencies."
      :outcomes #{:complete :other}
      :on-outcome
      {:complete {:next-step :tasks-review}
