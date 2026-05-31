@@ -130,4 +130,42 @@ final class MessageSnapshotTests: XCTestCase {
         XCTAssertEqual(snapshot.role, originalRole)
         XCTAssertEqual(snapshot.sessionId, originalSessionId)
     }
+
+    // MARK: - Survives CoreData deletion (integration)
+
+    // The whole point of the snapshot: once captured it is fully decoupled from
+    // CoreData. Tearing down the object graph it was taken from — the source
+    // CDMessage (pruning / file_replaced purge) and its session (the
+    // workingDirectory source) — must leave every snapshot field intact and
+    // accessible so the open "View Full" sheet keeps rendering its content.
+    func testSnapshotSurvivesCoreDataDeletion() throws {
+        let session = makeSession(workingDirectory: "/Users/test/survives")
+        let message = makeMessage(text: "read me after deletion", session: session)
+        try context.save()
+
+        let snapshot = MessageSnapshot(from: message)
+        let expectedId = snapshot.id
+        let expectedMessageId = snapshot.messageId
+        let expectedTimestamp = snapshot.timestamp
+        let expectedSessionId = snapshot.sessionId
+
+        // Delete the message (pruning / purge) and its session (working-dir source).
+        context.delete(message)
+        context.delete(session)
+        try context.save()
+
+        // The source CDMessage is gone from CoreData...
+        let live = try context.fetch(CDMessage.fetchMessage(id: expectedMessageId)).first
+        XCTAssertNil(live, "source CDMessage must be deleted")
+
+        // ...but every snapshot field — including workingDirectory, derived from
+        // the now-deleted session relationship — is a value copy and survives.
+        XCTAssertEqual(snapshot.id, expectedId)
+        XCTAssertEqual(snapshot.messageId, expectedMessageId)
+        XCTAssertEqual(snapshot.role, "assistant")
+        XCTAssertEqual(snapshot.text, "read me after deletion")
+        XCTAssertEqual(snapshot.timestamp, expectedTimestamp)
+        XCTAssertEqual(snapshot.sessionId, expectedSessionId)
+        XCTAssertEqual(snapshot.workingDirectory, "/Users/test/survives")
+    }
 }
