@@ -151,6 +151,38 @@ class SessionSyncManager {
         return q
     }
 
+    /// Server-assigned message UUIDs already fanned out for TTS / notification
+    /// this launch, keyed by lowercased session id. The normal dedup is
+    /// `upsertMessage` returning `isNew == false` for an existing
+    /// `(sessionId, offset)` row, but `file_replaced` recovery purges every
+    /// cached row and re-subscribes from offset 0, so re-delivered messages
+    /// look brand-new and would be spoken again — and rapid `file_signature`
+    /// churn re-speaks the same recent messages 2-3x (tmux-untethered-icf).
+    /// This set survives the purge and is keyed on the message UUID (stable
+    /// across compaction / offset renumbering, unlike `offset`), so history
+    /// replay never re-enqueues speech for a message already announced.
+    /// Accessed from the per-session upsert queues (which run concurrently
+    /// across sessions), so all access goes through `spokenMessageLock`.
+    private var spokenMessageUUIDs: [String: Set<String>] = [:]
+    private let spokenMessageLock = NSLock()
+
+    /// Returns `true` and records `uuid` if this session has not yet announced
+    /// it; returns `false` if it was already announced (caller must suppress
+    /// the TTS / notification fan-out). Thread-safe. Both the session id and
+    /// the message uuid are lowercased so a case difference between two
+    /// deliveries of the same message can't slip a duplicate past the set.
+    private func claimUnspokenMessage(sessionId: String, uuid: String) -> Bool {
+        spokenMessageLock.lock()
+        defer { spokenMessageLock.unlock() }
+        let key = sessionId.lowercased()
+        let messageKey = uuid.lowercased()
+        if spokenMessageUUIDs[key]?.contains(messageKey) == true {
+            return false
+        }
+        spokenMessageUUIDs[key, default: []].insert(messageKey)
+        return true
+    }
+
     init(persistenceController: PersistenceController = .shared, voiceOutputManager: VoiceOutputManager? = nil) {
         self.persistenceController = persistenceController
         self.context = persistenceController.container.viewContext
@@ -499,9 +531,14 @@ class SessionSyncManager {
                 let inserted = self.upsertMessage(wireMessage, session: session, in: backgroundContext)
                 if inserted {
                     newRows += 1
+                    // `claimUnspokenMessage` dedups re-delivery that survives
+                    // the (sessionId, seq) idempotency — e.g. a duplicate
+                    // turn_complete fan-out re-inserting after a cache prune
+                    // (tmux-untethered-icf).
                     if wireMessage.role == "assistant"
                         && liveFromSeq > 0
-                        && wireMessage.seq >= liveFromSeq {
+                        && wireMessage.seq >= liveFromSeq
+                        && self.claimUnspokenMessage(sessionId: wireMessage.sessionId, uuid: wireMessage.uuid) {
                         newAssistantTexts.append(wireMessage.text)
                     }
                 }
@@ -808,9 +845,15 @@ class SessionSyncManager {
                     let inserted = self.upsertMessage(wireMessage, session: session, in: ctx)
                     if inserted {
                         newRows += 1
+                        // The `claimUnspokenMessage` check is the cross-purge
+                        // dedup: after a `file_replaced` recovery the row was
+                        // purged so `inserted` is true again, but the UUID set
+                        // still remembers we already spoke it — preventing the
+                        // 2-3x re-speak on signature churn (tmux-untethered-icf).
                         if wireMessage.role == "assistant"
                             && liveFromOffset > 0
-                            && wireMessage.offset >= liveFromOffset {
+                            && wireMessage.offset >= liveFromOffset
+                            && self.claimUnspokenMessage(sessionId: wireMessage.sessionId, uuid: wireMessage.uuid) {
                             newAssistantTexts.append(wireMessage.text)
                         }
                     }
