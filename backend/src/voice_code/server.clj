@@ -3232,6 +3232,18 @@
            (fn [req ch] (agent-api/dispatch req ch))) request channel)
         (http/close channel))
 
+      ;; Recipe API routes. recipe-api requires THIS namespace for the
+      ;; orchestration engine (start-recipe-for-session, execute-recipe-step,
+      ;; completed-recipes, ...), so a static :require here would be a cyclic
+      ;; load. Resolve its dispatch fn lazily instead — by request time both
+      ;; namespaces are fully loaded. See tmux-untethered-ujq.
+      (str/starts-with? (or uri "") "/api/recipes")
+      (http/with-channel request channel
+        ((agent-api/with-bearer-auth api-key
+           (fn [req ch] ((requiring-resolve 'voice-code.recipe-api/dispatch) req ch)))
+         request channel)
+        (http/close channel))
+
       ;; WebSocket and everything else
       :else
       (http/with-channel request channel
@@ -3551,6 +3563,15 @@
       (log/info "Filesystem watcher started successfully")
       (catch Exception e
         (log/error e "Failed to start filesystem watcher")))
+
+    ;; Eagerly load the recipe API namespace before the HTTP server goes live.
+    ;; websocket-handler routes /api/recipes via (requiring-resolve
+    ;; 'voice-code.recipe-api/dispatch) rather than a static :require (recipe-api
+    ;; requires THIS namespace, so a static back-edge would be a cyclic load).
+    ;; Requiring it here — after server's ns is fully loaded, so no cycle —
+    ;; surfaces any compile/wiring error at boot instead of on the first request.
+    ;; See tmux-untethered-ujq.
+    (require 'voice-code.recipe-api)
 
     (log/info "Starting voice-code server"
               {:port port
