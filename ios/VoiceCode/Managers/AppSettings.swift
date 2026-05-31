@@ -118,6 +118,40 @@ class AppSettings: ObservableObject {
     }
     #endif
 
+    /// When true, registers with MPRemoteCommandCenter so headset buttons control recording.
+    /// Defaults to false to avoid claiming the now-playing slot unexpectedly.
+    @Published var headsetModeEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(headsetModeEnabled, forKey: "headsetModeEnabled")
+        }
+    }
+
+    /// When true (and headsetModeEnabled), monitors CoreAudio Bluetooth input device mute
+    /// property to detect BlueParrott PTT button presses.
+    @Published var headsetPTTEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(headsetPTTEnabled, forKey: "headsetPTTEnabled")
+        }
+    }
+
+    /// When true, recording stop automatically sends transcription without user confirmation.
+    /// Only applies to headset-initiated recordings. Defaults to true — headset mode without
+    /// auto-send is unusable.
+    @Published var headsetAutoSend: Bool {
+        didSet {
+            UserDefaults.standard.set(headsetAutoSend, forKey: "headsetAutoSend")
+        }
+    }
+
+    /// When true, connects to a BlueParrott headset via the BPHeadset SDK and routes the
+    /// programmable button to start/stop recording. Independent of headsetModeEnabled —
+    /// button events arrive over BLE, not AVRCP.
+    @Published var blueParrottEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(blueParrottEnabled, forKey: "blueParrottEnabled")
+        }
+    }
+
     var fullServerURL: String {
         let cleanURL = serverURL.trimmingCharacters(in: .whitespaces)
         let cleanPort = serverPort.trimmingCharacters(in: .whitespaces)
@@ -141,7 +175,7 @@ class AppSettings: ObservableObject {
             // Trigger voice loading and caching
             _ = Self.availableVoices
             _ = Self.premiumVoices
-            print("🎙️ Voices pre-loaded and cached")
+            LogManager.shared.log("🎙️ Voices pre-loaded and cached", category: "AppSettings")
         }
     }
 
@@ -155,9 +189,9 @@ class AppSettings: ObservableObject {
         let allVoices = AVSpeechSynthesisVoice.speechVoices()
 
         // Debug: Print all available voices
-        print("🎙️ Total voices available: \(allVoices.count)")
+        LogManager.shared.log("🎙️ Total voices available: \(allVoices.count)", category: "AppSettings")
         for voice in allVoices.prefix(5) {
-            print("  - \(voice.name) (\(voice.quality.displayName)) [\(voice.language)] - \(voice.identifier)")
+            LogManager.shared.log("  - \(voice.name) (\(voice.quality.displayName)) [\(voice.language)] - \(voice.identifier)", category: "AppSettings")
         }
 
         let voices = allVoices
@@ -192,9 +226,9 @@ class AppSettings: ObservableObject {
                 return (voice.identifier, displayName, qualityName, voice.language)
             }
 
-        print("🎙️ Filtered English voices: \(voices.count)")
+        LogManager.shared.log("🎙️ Filtered English voices: \(voices.count)", category: "AppSettings")
         for voice in voices.prefix(5) {
-            print("  - \(voice.1)")
+            LogManager.shared.log("  - \(voice.1)", category: "AppSettings")
         }
 
         // Cache the result
@@ -275,7 +309,7 @@ class AppSettings: ObservableObject {
         let hashValue = stableHash(workingDirectory)
         let index = hashValue % premiumVoices.count
         let selectedVoice = premiumVoices[index]
-        print("🎙️ Voice rotation: project \(workingDirectory.split(separator: "/").last ?? "unknown") → \(selectedVoice.name) (index \(index) of \(premiumVoices.count))")
+        LogManager.shared.log("🎙️ Voice rotation: project \(workingDirectory.split(separator: "/").last ?? "unknown") → \(selectedVoice.name) (index \(index) of \(premiumVoices.count))", category: "AppSettings")
         return selectedVoice.identifier
     }
 
@@ -310,6 +344,10 @@ class AppSettings: ObservableObject {
         self.lastUsedDirectory = UserDefaults.standard.string(forKey: "lastUsedDirectory")
         self.recentDirectories = UserDefaults.standard.stringArray(forKey: "recentDirectories") ?? []
         #endif
+        self.headsetModeEnabled = UserDefaults.standard.bool(forKey: "headsetModeEnabled")
+        self.headsetPTTEnabled = UserDefaults.standard.bool(forKey: "headsetPTTEnabled")
+        self.headsetAutoSend = UserDefaults.standard.object(forKey: "headsetAutoSend") as? Bool ?? true
+        self.blueParrottEnabled = UserDefaults.standard.bool(forKey: "blueParrottEnabled")
 
         // Set up debounced publishers for text fields (serverURL and serverPort)
         // dropFirst() skips the initial value to avoid writing on init

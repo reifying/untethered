@@ -828,4 +828,58 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertEqual(voices1.count, voices2.count)
         XCTAssertEqual(voices1.map { $0.identifier }, voices2.map { $0.identifier })
     }
+
+    // MARK: - Headset Settings Tests
+
+    func testDefaultHeadsetModeEnabled() {
+        XCTAssertFalse(settings.headsetModeEnabled)
+    }
+
+    func testDefaultHeadsetPTTEnabled() {
+        XCTAssertFalse(settings.headsetPTTEnabled)
+    }
+
+    func testDefaultHeadsetAutoSend() {
+        // headsetAutoSend defaults to true when key is absent
+        XCTAssertTrue(settings.headsetAutoSend)
+    }
+
+    func testHeadsetModeEnabledPersistence() {
+        settings.headsetModeEnabled = true
+        XCTAssertTrue(UserDefaults.standard.bool(forKey: "headsetModeEnabled"))
+
+        let reloaded = AppSettings()
+        XCTAssertTrue(reloaded.headsetModeEnabled)
+    }
+
+    func testHeadsetPTTEnabledPersistence() {
+        settings.headsetPTTEnabled = true
+        XCTAssertTrue(UserDefaults.standard.bool(forKey: "headsetPTTEnabled"))
+
+        let reloaded = AppSettings()
+        XCTAssertTrue(reloaded.headsetPTTEnabled)
+    }
+
+    func testHeadsetAutoSendPersistence() {
+        settings.headsetAutoSend = false
+        XCTAssertEqual(UserDefaults.standard.object(forKey: "headsetAutoSend") as? Bool, false)
+
+        let reloaded = AppSettings()
+        XCTAssertFalse(reloaded.headsetAutoSend)
+    }
+
+    func testHeadsetAutoSendDefaultTrueWhenKeyAbsent() {
+        // Ensure the key is truly absent
+        UserDefaults.standard.removeObject(forKey: "headsetAutoSend")
+        let fresh = AppSettings()
+        XCTAssertTrue(fresh.headsetAutoSend)
+    }
+
+    func testHeadsetSettingsToggle() {
+        XCTAssertFalse(settings.headsetModeEnabled)
+        settings.headsetModeEnabled = true
+        XCTAssertTrue(settings.headsetModeEnabled)
+        settings.headsetModeEnabled = false
+        XCTAssertFalse(settings.headsetModeEnabled)
+    }
 }

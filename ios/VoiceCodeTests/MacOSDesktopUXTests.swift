@@ -212,9 +212,9 @@ final class MacOSDesktopUXTests: XCTestCase {
     }
 
     func testSwipeToBackAppliedToDebugLogsView() {
-        // Compile-time test: DebugLogsView uses .swipeToBack() at line 120.
+        // Compile-time test: DebugLogsView uses .swipeToBack() at line 115.
         // Uses default dismiss action to navigate back.
-        XCTAssertTrue(true, "DebugLogsView.swift:120 - .swipeToBack() pops back")
+        XCTAssertTrue(true, "DebugLogsView.swift:115 - .swipeToBack() pops back")
     }
 
     #endif
@@ -230,6 +230,21 @@ final class MacOSDesktopUXTests: XCTestCase {
             }
         }
         XCTAssertNotNil(CrossPlatformView.self)
+    }
+
+    // MARK: - DebugLogsView Log Source Tests
+
+    func testDebugLogsViewHasOnlyCapturedAndRenderStatsSources() {
+        // System Logs tab was removed (tmux-untethered-kmn): the OSLog subsystem
+        // mismatch made it nearly useless. Only Captured Logs and Render Stats remain.
+        let sources = DebugLogsView.LogSource.allCases
+        XCTAssertEqual(sources.count, 2, "DebugLogsView should expose exactly two log sources")
+        XCTAssertTrue(sources.contains(.captured), "Captured Logs source should remain")
+        XCTAssertTrue(sources.contains(.renderStats), "Render Stats source should remain")
+
+        let rawValues = sources.map(\.rawValue)
+        XCTAssertEqual(rawValues, ["Captured Logs", "Render Stats"])
+        XCTAssertFalse(rawValues.contains("System Logs"), "System Logs source must be gone")
     }
 
     // MARK: - Command History Sheet Sizing Tests

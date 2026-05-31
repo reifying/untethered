@@ -180,7 +180,7 @@ struct ResourceShareView: View {
         resourcesManager.updatePendingCount()
         resourcesManager.processPendingUploads()
 
-        print("✅ [ResourceShareView] File saved for upload: \(fileURL.lastPathComponent) -> session \(session.displayName)")
+        LogManager.shared.log("✅ [ResourceShareView] File saved for upload: \(fileURL.lastPathComponent) -> session \(session.displayName)", category: "ResourceShare")
     }
     #endif
 }

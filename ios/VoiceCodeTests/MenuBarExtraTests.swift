@@ -157,11 +157,13 @@ final class MenuBarExtraTests: XCTestCase {
         let client = VoiceCodeClient(serverURL: "ws://localhost:8080", setupObservers: false)
         let settings = AppSettings()
         let voiceOutput = VoiceOutputManager()
+        let voiceInput = VoiceInputManager(voiceOutputManager: voiceOutput)
 
         let view = MenuBarContentView(
             client: client,
             settings: settings,
-            voiceOutput: voiceOutput
+            voiceOutput: voiceOutput,
+            voiceInput: voiceInput
         )
         XCTAssertNotNil(view)
     }
@@ -170,11 +172,13 @@ final class MenuBarExtraTests: XCTestCase {
         let client = VoiceCodeClient(serverURL: "ws://localhost:8080", setupObservers: false)
         let settings = AppSettings()
         let voiceOutput = VoiceOutputManager()
+        let voiceInput = VoiceInputManager(voiceOutputManager: voiceOutput)
 
         let scene = VoiceCodeMenuBarExtra(
             client: client,
             settings: settings,
-            voiceOutput: voiceOutput
+            voiceOutput: voiceOutput,
+            voiceInput: voiceInput
         )
         XCTAssertNotNil(scene)
     }

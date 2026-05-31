@@ -9,9 +9,6 @@ import UIKit
 #elseif os(macOS)
 import AppKit
 #endif
-import os.log
-
-private let logger = Logger(subsystem: "dev.910labs.voice-code", category: "VoiceCodeClient")
 
 class VoiceCodeClient: ObservableObject {
     /// Maximum wire-protocol version this client can speak. Sent as
@@ -263,7 +260,7 @@ class VoiceCodeClient: ObservableObject {
     ///
     /// Called on the main queue from the message dispatcher.
     private func enterUpgradeRequiredState(received: String, detail: String) {
-        print("⛔ [VoiceCodeClient] Unsupported protocol version: \(detail)")
+        LogManager.shared.log("⛔ [VoiceCodeClient] Unsupported protocol version: \(detail)", category: "VoiceCodeClient")
         LogManager.shared.log("Unsupported protocol version (received: \(received)): \(detail)",
                               category: "VoiceCodeClient")
 
@@ -324,22 +321,22 @@ class VoiceCodeClient: ObservableObject {
     private func handleAppBecameActive() {
         // Don't reconnect if reauthentication is required - user must provide new credentials
         if requiresReauthentication {
-            print("📱 [VoiceCodeClient] App became active, skipping reconnection - reauthentication required")
+            LogManager.shared.log("📱 [VoiceCodeClient] App became active, skipping reconnection - reauthentication required", category: "VoiceCodeClient")
             return
         }
         if requiresUpgrade {
-            print("📱 [VoiceCodeClient] App became active, skipping reconnection - app upgrade required")
+            LogManager.shared.log("📱 [VoiceCodeClient] App became active, skipping reconnection - app upgrade required", category: "VoiceCodeClient")
             return
         }
         if !isConnected {
-            print("📱 [VoiceCodeClient] App became active, attempting reconnection...")
+            LogManager.shared.log("📱 [VoiceCodeClient] App became active, attempting reconnection...", category: "VoiceCodeClient")
             reconnectionAttempts = 0 // Reset backoff on foreground
             connect(sessionId: sessionId)
         }
     }
 
     private func handleAppEnteredBackground() {
-        print("📱 [VoiceCodeClient] App entering background")
+        LogManager.shared.log("📱 [VoiceCodeClient] App entering background", category: "VoiceCodeClient")
     }
 
     // MARK: - Debouncing
@@ -376,7 +373,7 @@ class VoiceCodeClient: ObservableObject {
 
         // Log which properties are being updated
         let keys = updates.keys.sorted().joined(separator: ", ")
-        logger.debug("🔄 VoiceCodeClient updating: \(keys)")
+        LogManager.shared.log("🔄 VoiceCodeClient updating: \(keys)", category: "VoiceCodeClient")
 
         // Apply all updates atomically on main queue
         for (key, value) in updates {
@@ -483,22 +480,22 @@ class VoiceCodeClient: ObservableObject {
         if let existingSocket = webSocket {
             switch existingSocket.state {
             case .running:
-                logger.debug("🔄 [VoiceCodeClient] connect() called but WebSocket is running, skipping")
+                LogManager.shared.log("🔄 [VoiceCodeClient] connect() called but WebSocket is running, skipping", category: "VoiceCodeClient")
                 return
             case .suspended:
-                logger.info("🔄 [VoiceCodeClient] Cleaning up suspended WebSocket (\(self.socketStateString(existingSocket.state)))")
+                LogManager.shared.log("🔄 [VoiceCodeClient] Cleaning up suspended WebSocket (\(self.socketStateString(existingSocket.state)))", category: "VoiceCodeClient")
                 existingSocket.cancel(with: .goingAway, reason: nil)
                 webSocket = nil
             case .canceling:
-                logger.info("🔄 [VoiceCodeClient] Cleaning up canceling WebSocket (\(self.socketStateString(existingSocket.state)))")
+                LogManager.shared.log("🔄 [VoiceCodeClient] Cleaning up canceling WebSocket (\(self.socketStateString(existingSocket.state)))", category: "VoiceCodeClient")
                 existingSocket.cancel(with: .goingAway, reason: nil)
                 webSocket = nil
             case .completed:
-                logger.info("🔄 [VoiceCodeClient] Cleaning up completed WebSocket (\(self.socketStateString(existingSocket.state)))")
+                LogManager.shared.log("🔄 [VoiceCodeClient] Cleaning up completed WebSocket (\(self.socketStateString(existingSocket.state)))", category: "VoiceCodeClient")
                 existingSocket.cancel(with: .goingAway, reason: nil)
                 webSocket = nil
             @unknown default:
-                logger.warning("🔄 [VoiceCodeClient] Unknown WebSocket state (\(self.socketStateString(existingSocket.state))), cleaning up")
+                LogManager.shared.log("🔄 [VoiceCodeClient] Unknown WebSocket state (\(self.socketStateString(existingSocket.state))), cleaning up", category: "VoiceCodeClient")
                 existingSocket.cancel(with: .goingAway, reason: nil)
                 webSocket = nil
             }
@@ -523,7 +520,7 @@ class VoiceCodeClient: ObservableObject {
 
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
-            logger.debug("🔄 VoiceCodeClient: WebSocket created, awaiting hello")
+            LogManager.shared.log("🔄 VoiceCodeClient: WebSocket created, awaiting hello", category: "VoiceCodeClient")
             self.currentError = nil
             // Note: isConnected will be set true when we receive "hello"
         }
@@ -549,7 +546,7 @@ class VoiceCodeClient: ObservableObject {
 
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
-            logger.debug("🔄 VoiceCodeClient updating: isConnected=false")
+            LogManager.shared.log("🔄 VoiceCodeClient updating: isConnected=false", category: "VoiceCodeClient")
             self.isConnected = false
             // Auth state belongs to a specific socket; once that socket is
             // gone, isAuthenticated is stale. The next `connected` after
@@ -570,14 +567,14 @@ class VoiceCodeClient: ObservableObject {
     /// Force reconnection to the server
     /// Called when user manually taps the connection status indicator
     func forceReconnect() {
-        logger.info("🔄 [VoiceCodeClient] Force reconnect requested by user")
+        LogManager.shared.log("🔄 [VoiceCodeClient] Force reconnect requested by user", category: "VoiceCodeClient")
         reconnectionAttempts = 0
         disconnect()
         connect(sessionId: sessionId)
     }
 
     func updateServerURL(_ url: String) {
-        print("🔄 [VoiceCodeClient] Updating server URL from \(serverURL) to \(url)")
+        LogManager.shared.log("🔄 [VoiceCodeClient] Updating server URL from \(serverURL) to \(url)", category: "VoiceCodeClient")
 
         // Disconnect from current connection (if any)
         disconnect()
@@ -588,7 +585,7 @@ class VoiceCodeClient: ObservableObject {
         // Connect to server
         // Note: We don't clear sessions because UUIDs are globally unique.
         // Even if the URL changed (e.g., VPN IP change), cached sessions remain valid.
-        print("🔄 [VoiceCodeClient] Connecting to server...")
+        LogManager.shared.log("🔄 [VoiceCodeClient] Connecting to server...", category: "VoiceCodeClient")
         reconnectionAttempts = 0
         connect()
     }
@@ -619,11 +616,11 @@ class VoiceCodeClient: ObservableObject {
         timer.setEventHandler { [weak self] in
             guard let self = self else { return }
 
-            logger.info("🔄 Reconnection timer fired: \(self.connectionStateDescription)")
+            LogManager.shared.log("🔄 Reconnection timer fired: \(self.connectionStateDescription)", category: "VoiceCodeClient")
 
             // Don't reconnect if reauthentication is required - user must provide new credentials
             if self.requiresReauthentication {
-                print("🔐 [VoiceCodeClient] Skipping reconnection - reauthentication required")
+                LogManager.shared.log("🔐 [VoiceCodeClient] Skipping reconnection - reauthentication required", category: "VoiceCodeClient")
                 self.reconnectionTimer?.cancel()
                 self.reconnectionTimer = nil
                 return
@@ -632,7 +629,7 @@ class VoiceCodeClient: ObservableObject {
             // Don't reconnect if the protocol versions don't match — the
             // backend will reject us on every retry until the app is updated.
             if self.requiresUpgrade {
-                print("⛔ [VoiceCodeClient] Skipping reconnection - app upgrade required")
+                LogManager.shared.log("⛔ [VoiceCodeClient] Skipping reconnection - app upgrade required", category: "VoiceCodeClient")
                 self.reconnectionTimer?.cancel()
                 self.reconnectionTimer = nil
                 return
@@ -641,7 +638,7 @@ class VoiceCodeClient: ObservableObject {
             if !self.isConnected {
                 // Check if we've exceeded max attempts
                 if self.reconnectionAttempts >= self.maxReconnectionAttempts {
-                    print("❌ [VoiceCodeClient] Max reconnection attempts (\(self.maxReconnectionAttempts)) reached. Stopping.")
+                    LogManager.shared.log("❌ [VoiceCodeClient] Max reconnection attempts (\(self.maxReconnectionAttempts)) reached. Stopping.", category: "VoiceCodeClient")
                     self.reconnectionTimer?.cancel()
                     self.reconnectionTimer = nil
                     DispatchQueue.main.async { [weak self] in
@@ -653,7 +650,7 @@ class VoiceCodeClient: ObservableObject {
 
                 self.reconnectionAttempts += 1
                 let nextDelay = self.calculateReconnectionDelay(attempt: self.reconnectionAttempts)
-                print("Attempting reconnection (attempt \(self.reconnectionAttempts)/\(self.maxReconnectionAttempts), next delay: \(String(format: "%.1f", nextDelay))s)...")
+                LogManager.shared.log("Attempting reconnection (attempt \(self.reconnectionAttempts)/\(self.maxReconnectionAttempts), next delay: \(String(format: "%.1f", nextDelay))s)...", category: "VoiceCodeClient")
                 self.connect()
             }
         }
@@ -677,14 +674,14 @@ class VoiceCodeClient: ObservableObject {
 
             // Only send ping if connected and authenticated
             if self.isConnected && self.isAuthenticated {
-                logger.debug("🏓 [VoiceCodeClient] Sending keepalive ping")
+                LogManager.shared.log("🏓 [VoiceCodeClient] Sending keepalive ping", category: "VoiceCodeClient")
                 self.ping()
             }
         }
         timer.resume()
 
         pingTimer = timer
-        logger.info("🏓 [VoiceCodeClient] Ping timer started (interval: \(self.pingInterval)s)")
+        LogManager.shared.log("🏓 [VoiceCodeClient] Ping timer started (interval: \(self.pingInterval)s)", category: "VoiceCodeClient")
     }
 
     /// Stop the ping timer
@@ -692,7 +689,7 @@ class VoiceCodeClient: ObservableObject {
     private func stopPingTimer() {
         pingTimer?.cancel()
         pingTimer = nil
-        logger.debug("🏓 [VoiceCodeClient] Ping timer stopped")
+        LogManager.shared.log("🏓 [VoiceCodeClient] Ping timer stopped", category: "VoiceCodeClient")
     }
 
     // MARK: - Message Handling
@@ -724,7 +721,6 @@ class VoiceCodeClient: ObservableObject {
 
             case .failure(let error):
                 // Log the error details for debugging
-                logger.error("❌ [VoiceCodeClient] WebSocket receive failed: \(error.localizedDescription)")
                 LogManager.shared.log("WebSocket receive failed: \(error.localizedDescription)", category: "VoiceCodeClient")
 
                 // Clear WebSocket reference inside main queue to ensure thread safety
@@ -739,7 +735,7 @@ class VoiceCodeClient: ObservableObject {
                     self.webSocket?.cancel(with: .goingAway, reason: nil)
                     self.webSocket = nil
 
-                    logger.debug("🔄 VoiceCodeClient updating: isConnected=false (failure)")
+                    LogManager.shared.log("🔄 VoiceCodeClient updating: isConnected=false (failure)", category: "VoiceCodeClient")
                     self.isConnected = false
                     // Auth state is socket-scoped; clear it so subscribe()'s
                     // isAuthenticated guard doesn't let calls through during
@@ -759,19 +755,16 @@ class VoiceCodeClient: ObservableObject {
 
     func handleMessage(_ text: String) {  // internal for testing
         guard let data = text.data(using: .utf8) else {
-            logger.error("❌ [VoiceCodeClient] Failed to convert message to UTF-8 data")
             LogManager.shared.log("Failed to convert message to UTF-8 data: \(text.prefix(200))", category: "VoiceCodeClient")
             return
         }
 
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            logger.error("❌ [VoiceCodeClient] Failed to parse JSON from message")
             LogManager.shared.log("Failed to parse JSON: \(text.prefix(200))", category: "VoiceCodeClient")
             return
         }
 
         guard let type = json["type"] as? String else {
-            logger.error("❌ [VoiceCodeClient] Message missing 'type' field: \(json.keys)")
             LogManager.shared.log("Message missing 'type' field: \(json.keys)", category: "VoiceCodeClient")
             return
         }
@@ -793,7 +786,7 @@ class VoiceCodeClient: ObservableObject {
             case "hello":
                 // Mark as connected when we receive hello from server
                 self.isConnected = true
-                print("📡 [VoiceCodeClient] Received hello from server, connection confirmed")
+                LogManager.shared.log("📡 [VoiceCodeClient] Received hello from server, connection confirmed", category: "VoiceCodeClient")
 
                 // Reject servers whose announced version is below the minimum floor.
                 // `hello.version` is the server's *max-cap* (preferred ceiling), not a
@@ -814,9 +807,9 @@ class VoiceCodeClient: ObservableObject {
                 // Check auth_version for compatibility (future-proofing)
                 if let authVersion = json["auth_version"] as? Int {
                     self.serverAuthVersion = authVersion
-                    print("📡 [VoiceCodeClient] Server auth_version: \(authVersion)")
+                    LogManager.shared.log("📡 [VoiceCodeClient] Server auth_version: \(authVersion)", category: "VoiceCodeClient")
                     if authVersion > 1 {
-                        print("⚠️ [VoiceCodeClient] Server requires newer auth version: \(authVersion)")
+                        LogManager.shared.log("⚠️ [VoiceCodeClient] Server requires newer auth version: \(authVersion)", category: "VoiceCodeClient")
                     }
                 }
 
@@ -829,10 +822,8 @@ class VoiceCodeClient: ObservableObject {
                 self.isAuthenticated = true
                 self.authenticationError = nil
                 self.requiresReauthentication = false
-                print("✅ [VoiceCodeClient] Session registered: \(json["message"] as? String ?? "")")
                 LogManager.shared.log("Session registered: \(json["message"] as? String ?? "")", category: "VoiceCodeClient")
                 if let sessionId = json["session_id"] as? String {
-                    print("📥 [VoiceCodeClient] Backend confirmed session: \(sessionId)")
                     LogManager.shared.log("Backend confirmed session: \(sessionId)", category: "VoiceCodeClient")
                 }
 
@@ -861,7 +852,7 @@ class VoiceCodeClient: ObservableObject {
                 if let messageData = json["message"] as? [String: Any],
                    let roleString = messageData["role"] as? String,
                    let text = messageData["text"] as? String {
-                    print("🔄 [VoiceCodeClient] Received replayed message")
+                    LogManager.shared.log("🔄 [VoiceCodeClient] Received replayed message", category: "VoiceCodeClient")
                     let role: MessageRole = roleString == "assistant" ? .assistant : .user
                     let message = Message(role: role, text: text)
                     self.onReplayReceived?(message)
@@ -876,7 +867,7 @@ class VoiceCodeClient: ObservableObject {
                 // Acknowledgment received
                 scheduleUpdate(key: "isProcessing", value: true)
                 if let message = json["message"] as? String {
-                    print("Server ack: \(message)")
+                    LogManager.shared.log("Server ack: \(message)", category: "VoiceCodeClient")
                 }
 
             case "response":
@@ -890,23 +881,23 @@ class VoiceCodeClient: ObservableObject {
                     if let text = json["text"] as? String {
                         // Check for quick prompt handler first
                         if let handler = self.quickPromptHandlers.removeValue(forKey: iosSessionId) {
-                            print("📥 [VoiceCodeClient] Quick prompt response for: \(iosSessionId)")
+                            LogManager.shared.log("📥 [VoiceCodeClient] Quick prompt response for: \(iosSessionId)", category: "VoiceCodeClient")
                             DispatchQueue.main.async {
                                 handler(text)
                             }
                         } else {
                             let message = Message(role: .assistant, text: text)
-                            print("📥 [VoiceCodeClient] Response for iOS session: \(iosSessionId)")
+                            LogManager.shared.log("📥 [VoiceCodeClient] Response for iOS session: \(iosSessionId)", category: "VoiceCodeClient")
                             self.onMessageReceived?(message, iosSessionId)
                         }
                     }
 
                     // Check both underscore and hyphen variants (Clojure uses hyphens)
                     if let sessionId = (json["session_id"] as? String) ?? (json["session-id"] as? String) {
-                        print("📥 [VoiceCodeClient] Received claude session_id from backend: \(sessionId)")
+                        LogManager.shared.log("📥 [VoiceCodeClient] Received claude session_id from backend: \(sessionId)", category: "VoiceCodeClient")
                         self.onSessionIdReceived?(sessionId)
                     } else {
-                        print("⚠️ [VoiceCodeClient] No claude session_id in backend response")
+                        LogManager.shared.log("⚠️ [VoiceCodeClient] No claude session_id in backend response", category: "VoiceCodeClient")
                     }
 
                     scheduleUpdate(key: "currentError", value: nil as String?)
@@ -915,7 +906,7 @@ class VoiceCodeClient: ObservableObject {
                     let error = json["error"] as? String ?? "Unknown error"
                     let iosSessionId = (json["ios_session_id"] as? String) ?? (json["ios-session-id"] as? String) ?? ""
                     if let handler = self.quickPromptHandlers.removeValue(forKey: iosSessionId) {
-                        print("📥 [VoiceCodeClient] Quick prompt error for: \(iosSessionId)")
+                        LogManager.shared.log("📥 [VoiceCodeClient] Quick prompt error for: \(iosSessionId)", category: "VoiceCodeClient")
                         DispatchQueue.main.async {
                             handler("Error: \(error)")
                         }
@@ -944,7 +935,6 @@ class VoiceCodeClient: ObservableObject {
 
                 // File upload errors are handled silently; ResourcesManager will timeout instead.
                 if error.contains("Failed to upload file") {
-                    print("❌ [VoiceCodeClient] File upload failed: \(error)")
                     LogManager.shared.log("File upload failed: \(error)", category: "VoiceCodeClient")
                     return
                 }
@@ -965,7 +955,7 @@ class VoiceCodeClient: ObservableObject {
                 // Route to quick prompt handler if applicable
                 let errorIosSessionId = (json["ios_session_id"] as? String) ?? (json["ios-session-id"] as? String) ?? ""
                 if let handler = self.quickPromptHandlers.removeValue(forKey: errorIosSessionId) {
-                    print("📥 [VoiceCodeClient] Quick prompt error for: \(errorIosSessionId)")
+                    LogManager.shared.log("📥 [VoiceCodeClient] Quick prompt error for: \(errorIosSessionId)", category: "VoiceCodeClient")
                     DispatchQueue.main.async {
                         handler("Error: \(error)")
                     }
@@ -973,7 +963,7 @@ class VoiceCodeClient: ObservableObject {
 
             case "auth_error":
                 // Authentication failed - graceful UX with re-scan option
-                print("🔐 [VoiceCodeClient] Authentication error received")
+                LogManager.shared.log("🔐 [VoiceCodeClient] Authentication error received", category: "VoiceCodeClient")
                 let errorMessage = json["message"] as? String ?? "Authentication failed"
                 self.isAuthenticated = false
                 self.requiresReauthentication = true
@@ -982,7 +972,7 @@ class VoiceCodeClient: ObservableObject {
                 // Stop reconnection attempts - user must provide new credentials
                 self.reconnectionTimer?.cancel()
                 self.reconnectionTimer = nil
-                print("🔐 [VoiceCodeClient] Stopped reconnection attempts - reauthentication required")
+                LogManager.shared.log("🔐 [VoiceCodeClient] Stopped reconnection attempts - reauthentication required", category: "VoiceCodeClient")
                 // Note: Backend will close connection after auth_error
 
             case "pong":
@@ -1005,7 +995,7 @@ class VoiceCodeClient: ObservableObject {
             case "session_list":
                 // Initial session list received after connection
                 if let sessions = json["sessions"] as? [[String: Any]] {
-                    print("📋 [VoiceCodeClient] Received session_list with \(sessions.count) sessions")
+                    LogManager.shared.log("📋 [VoiceCodeClient] Received session_list with \(sessions.count) sessions", category: "VoiceCodeClient")
 
                     // Handle session list asynchronously and resume continuation when done
                     Task {
@@ -1022,7 +1012,7 @@ class VoiceCodeClient: ObservableObject {
             case "recent_sessions":
                 // Recent sessions list for display in Recent section
                 if let sessions = json["sessions"] as? [[String: Any]] {
-                    print("📋 [VoiceCodeClient] Received recent_sessions with \(sessions.count) sessions")
+                    LogManager.shared.log("📋 [VoiceCodeClient] Received recent_sessions with \(sessions.count) sessions", category: "VoiceCodeClient")
                     let parsed = RecentSession.parseRecentSessions(sessions)
                     DispatchQueue.main.async {
                         self.parsedRecentSessions = parsed
@@ -1032,7 +1022,7 @@ class VoiceCodeClient: ObservableObject {
 
             case "session_created":
                 // New session created (terminal or iOS)
-                print("✨ [VoiceCodeClient] Received session_created")
+                LogManager.shared.log("✨ [VoiceCodeClient] Received session_created", category: "VoiceCodeClient")
                 self.sessionSyncManager.handleSessionCreated(json)
 
             case "ghost_prompt":
@@ -1063,7 +1053,7 @@ class VoiceCodeClient: ObservableObject {
             case "session_ready":
                 // Backend signals that new session is in index and ready for subscription
                 if let sessionId = json["session_id"] as? String {
-                    print("✅ [VoiceCodeClient] Received session_ready for \(sessionId)")
+                    LogManager.shared.log("✅ [VoiceCodeClient] Received session_ready for \(sessionId)", category: "VoiceCodeClient")
 
                     // Only auto-subscribe if this session is still the foreground session.
                     // If the user navigated away before session_ready arrived, attaching
@@ -1077,10 +1067,10 @@ class VoiceCodeClient: ObservableObject {
                         // .desired one. The prior `!contains` guard suppressed
                         // recovery whenever the set was poisoned by a pre-auth
                         // call (tmux-untethered-a83).
-                        print("📥 [VoiceCodeClient] Auto-subscribing to new session after session_ready: \(sessionId)")
+                        LogManager.shared.log("📥 [VoiceCodeClient] Auto-subscribing to new session after session_ready: \(sessionId)", category: "VoiceCodeClient")
                         self.subscribe(sessionId: sessionId)
                     } else {
-                        print("⏭️ [VoiceCodeClient] Skipping auto-subscribe for \(sessionId) — no longer the active session")
+                        LogManager.shared.log("⏭️ [VoiceCodeClient] Skipping auto-subscribe for \(sessionId) — no longer the active session", category: "VoiceCodeClient")
                     }
                 }
 
@@ -1090,7 +1080,7 @@ class VoiceCodeClient: ObservableObject {
                 // or compaction; treat identically to a normal turn_complete for now.
                 if let sessionId = json["session_id"] as? String {
                     let aborted = json["aborted"] as? Bool ?? false
-                    print("✅ [VoiceCodeClient] Received turn_complete for \(sessionId) (aborted: \(aborted))")
+                    LogManager.shared.log("✅ [VoiceCodeClient] Received turn_complete for \(sessionId) (aborted: \(aborted))", category: "VoiceCodeClient")
 
                     // Note: Subscription now happens earlier via session_ready message
                     // This is kept as fallback for compatibility. Same isActive() guard
@@ -1101,78 +1091,78 @@ class VoiceCodeClient: ObservableObject {
 
                     if isStillActive {
                         // Idempotent — see session_ready handler above.
-                        print("📥 [VoiceCodeClient] Auto-subscribing to new session after turn_complete (fallback): \(sessionId)")
+                        LogManager.shared.log("📥 [VoiceCodeClient] Auto-subscribing to new session after turn_complete (fallback): \(sessionId)", category: "VoiceCodeClient")
                         self.subscribe(sessionId: sessionId)
                     } else {
-                        print("⏭️ [VoiceCodeClient] Skipping turn_complete fallback subscribe for \(sessionId) — no longer the active session")
+                        LogManager.shared.log("⏭️ [VoiceCodeClient] Skipping turn_complete fallback subscribe for \(sessionId) — no longer the active session", category: "VoiceCodeClient")
                     }
                 }
 
             case "compaction_complete":
                 // Session compaction completed successfully
                 if let sessionId = json["session_id"] as? String {
-                    print("⚡️ [VoiceCodeClient] Received compaction_complete for \(sessionId)")
+                    LogManager.shared.log("⚡️ [VoiceCodeClient] Received compaction_complete for \(sessionId)", category: "VoiceCodeClient")
                 }
                 self.onCompactionResponse?(json)
 
             case "compaction_error":
                 // Session compaction failed
                 if let sessionId = json["session_id"] as? String {
-                    print("❌ [VoiceCodeClient] Received compaction_error for \(sessionId)")
+                    LogManager.shared.log("❌ [VoiceCodeClient] Received compaction_error for \(sessionId)", category: "VoiceCodeClient")
                 }
                 self.onCompactionResponse?(json)
 
             case "session_name_inferred":
                 // Session name inference completed successfully
-                print("✨ [VoiceCodeClient] Received session_name_inferred")
+                LogManager.shared.log("✨ [VoiceCodeClient] Received session_name_inferred", category: "VoiceCodeClient")
                 self.onInferNameResponse?(json)
 
             case "infer_name_error":
                 // Session name inference failed
-                print("❌ [VoiceCodeClient] Received infer_name_error")
+                LogManager.shared.log("❌ [VoiceCodeClient] Received infer_name_error", category: "VoiceCodeClient")
                 self.onInferNameResponse?(json)
 
             case "worktree_session_created":
                 // Worktree session created successfully
-                print("✨ [VoiceCodeClient] Received worktree_session_created")
+                LogManager.shared.log("✨ [VoiceCodeClient] Received worktree_session_created", category: "VoiceCodeClient")
                 if let sessionId = json["session_id"] as? String,
                    let worktreePath = json["worktree_path"] as? String,
                    let branchName = json["branch_name"] as? String {
-                    print("📁 [VoiceCodeClient] Worktree session created: \(sessionId)")
-                    print("   Worktree path: \(worktreePath)")
-                    print("   Branch: \(branchName)")
+                    LogManager.shared.log("📁 [VoiceCodeClient] Worktree session created: \(sessionId)", category: "VoiceCodeClient")
+                    LogManager.shared.log("   Worktree path: \(worktreePath)", category: "VoiceCodeClient")
+                    LogManager.shared.log("   Branch: \(branchName)", category: "VoiceCodeClient")
                     // Session will arrive via session_created message when backend filesystem watcher detects it
                 }
 
             case "worktree_session_error":
                 // Worktree session creation failed
-                print("❌ [VoiceCodeClient] Received worktree_session_error")
+                LogManager.shared.log("❌ [VoiceCodeClient] Received worktree_session_error", category: "VoiceCodeClient")
                 if let error = json["error"] as? String {
-                    print("   Error: \(error)")
+                    LogManager.shared.log("   Error: \(error)", category: "VoiceCodeClient")
                     scheduleUpdate(key: "currentError", value: error as String?)
                 }
 
             case "session_killed":
                 // Session process was terminated
                 if let sessionId = json["session_id"] as? String {
-                    print("🛑 [VoiceCodeClient] Session killed: \(sessionId)")
+                    LogManager.shared.log("🛑 [VoiceCodeClient] Session killed: \(sessionId)", category: "VoiceCodeClient")
                 }
 
             case "available_commands":
                 // Available commands for current directory
-                print("📋 [VoiceCodeClient] Received available_commands")
+                LogManager.shared.log("📋 [VoiceCodeClient] Received available_commands", category: "VoiceCodeClient")
                 if let jsonData = try? JSONSerialization.data(withJSONObject: json),
                    let commands = try? JSONDecoder().decode(AvailableCommands.self, from: jsonData) {
                     scheduleUpdate(key: "availableCommands", value: commands as AvailableCommands?)
-                    print("   Project commands: \(commands.projectCommands.count)")
-                    print("   General commands: \(commands.generalCommands.count)")
+                    LogManager.shared.log("   Project commands: \(commands.projectCommands.count)", category: "VoiceCodeClient")
+                    LogManager.shared.log("   General commands: \(commands.generalCommands.count)", category: "VoiceCodeClient")
                 }
 
             case "command_started":
                 if let commandSessionId = json["command_session_id"] as? String,
                    let commandId = json["command_id"] as? String,
                    let shellCommand = json["shell_command"] as? String {
-                    print("🚀 [VoiceCodeClient] Command started: \(commandId) (\(commandSessionId))")
+                    LogManager.shared.log("🚀 [VoiceCodeClient] Command started: \(commandId) (\(commandSessionId))", category: "VoiceCodeClient")
                     let execution = CommandExecution(id: commandSessionId, commandId: commandId, shellCommand: shellCommand)
                     var updatedCommands = getCurrentValue(for: "runningCommands", current: self.runningCommands)
                     updatedCommands[commandSessionId] = execution
@@ -1190,7 +1180,7 @@ class VoiceCodeClient: ObservableObject {
                    let streamString = json["stream"] as? String,
                    let text = json["text"] as? String,
                    let stream = CommandExecution.OutputLine.StreamType(rawValue: streamString) {
-                    print("📝 [VoiceCodeClient] Command output [\(streamString)]: \(text.prefix(50))...")
+                    LogManager.shared.log("📝 [VoiceCodeClient] Command output [\(streamString)]: \(text.prefix(50))...", category: "VoiceCodeClient")
                     var updatedCommands = getCurrentValue(for: "runningCommands", current: self.runningCommands)
                     updatedCommands[commandSessionId]?.appendOutput(stream: stream, text: text)
                     scheduleUpdate(key: "runningCommands", value: updatedCommands)
@@ -1201,7 +1191,7 @@ class VoiceCodeClient: ObservableObject {
                    let exitCode = json["exit_code"] as? Int,
                    let durationMs = json["duration_ms"] as? Int {
                     let duration = TimeInterval(durationMs) / 1000.0
-                    print("✅ [VoiceCodeClient] Command complete: \(commandSessionId) (exit: \(exitCode), duration: \(duration)s)")
+                    LogManager.shared.log("✅ [VoiceCodeClient] Command complete: \(commandSessionId) (exit: \(exitCode), duration: \(duration)s)", category: "VoiceCodeClient")
                     var updatedCommands = getCurrentValue(for: "runningCommands", current: self.runningCommands)
                     updatedCommands[commandSessionId]?.complete(exitCode: exitCode, duration: duration)
                     scheduleUpdate(key: "runningCommands", value: updatedCommands)
@@ -1210,7 +1200,7 @@ class VoiceCodeClient: ObservableObject {
             case "command_error":
                 if let commandId = json["command_id"] as? String,
                    let error = json["error"] as? String {
-                    print("❌ [VoiceCodeClient] Command error: \(commandId) - \(error)")
+                    LogManager.shared.log("❌ [VoiceCodeClient] Command error: \(commandId) - \(error)", category: "VoiceCodeClient")
                     // Command error means it failed to start, not tracked in runningCommands
                     scheduleUpdate(key: "currentError", value: "Command failed: \(error)" as String?)
                     // Resume any waiting continuation so the caller's Task does not hang.
@@ -1220,25 +1210,24 @@ class VoiceCodeClient: ObservableObject {
                 }
 
             case "command_history":
-                print("📜 [VoiceCodeClient] Received command_history")
+                LogManager.shared.log("📜 [VoiceCodeClient] Received command_history", category: "VoiceCodeClient")
                 if let jsonData = try? JSONSerialization.data(withJSONObject: json),
                    let history = try? JSONDecoder().decode(CommandHistory.self, from: jsonData) {
                     scheduleUpdate(key: "commandHistory", value: history.sessions)
-                    print("   History sessions: \(history.sessions.count)")
+                    LogManager.shared.log("   History sessions: \(history.sessions.count)", category: "VoiceCodeClient")
                 }
 
             case "command_output_full":
-                print("📄 [VoiceCodeClient] Received command_output_full")
+                LogManager.shared.log("📄 [VoiceCodeClient] Received command_output_full", category: "VoiceCodeClient")
                 if let jsonData = try? JSONSerialization.data(withJSONObject: json),
                    let output = try? JSONDecoder().decode(CommandOutputFull.self, from: jsonData) {
                     scheduleUpdate(key: "commandOutputFull", value: output as CommandOutputFull?)
-                    print("   Command session: \(output.commandSessionId)")
+                    LogManager.shared.log("   Command session: \(output.commandSessionId)", category: "VoiceCodeClient")
                 }
 
             case "file-uploaded", "file_uploaded":
                 // File upload successful
                 if let filename = json["filename"] as? String {
-                    print("✅ [VoiceCodeClient] File uploaded successfully: \(filename)")
                     LogManager.shared.log("File uploaded successfully: \(filename)", category: "VoiceCodeClient")
                     scheduleUpdate(key: "fileUploadResponse", value: (filename: filename, success: true) as (filename: String, success: Bool)?)
                 } else {
@@ -1247,14 +1236,13 @@ class VoiceCodeClient: ObservableObject {
 
             case "resources-list", "resources_list":
                 // Resources list received from backend
-                print("📋 [VoiceCodeClient] Received resources_list")
+                LogManager.shared.log("📋 [VoiceCodeClient] Received resources_list", category: "VoiceCodeClient")
                 if let resourcesArray = json["resources"] as? [[String: Any]] {
                     let resources = resourcesArray.compactMap { Resource(json: $0) }
-                    print("   Found \(resources.count) resources")
+                    LogManager.shared.log("   Found \(resources.count) resources", category: "VoiceCodeClient")
                     LogManager.shared.log("Resources list received: \(resources.count) resources", category: "VoiceCodeClient")
                     scheduleUpdate(key: "resourcesList", value: resources)
                 } else {
-                    print("⚠️ [VoiceCodeClient] Invalid resources_list format")
                     LogManager.shared.log("Invalid resources_list format", category: "VoiceCodeClient")
                     scheduleUpdate(key: "resourcesList", value: [] as [Resource])
                 }
@@ -1262,7 +1250,6 @@ class VoiceCodeClient: ObservableObject {
             case "resource-deleted", "resource_deleted":
                 // Resource deleted successfully
                 if let filename = json["filename"] as? String {
-                    print("🗑️ [VoiceCodeClient] Resource deleted: \(filename)")
                     LogManager.shared.log("Resource deleted: \(filename)", category: "VoiceCodeClient")
                     // Remove from local list
                     var updatedResources = getCurrentValue(for: "resourcesList", current: self.resourcesList)
@@ -1272,7 +1259,7 @@ class VoiceCodeClient: ObservableObject {
 
             case "available_recipes":
                 // Available recipes list from backend
-                print("📋 [VoiceCodeClient] Received available_recipes")
+                LogManager.shared.log("📋 [VoiceCodeClient] Received available_recipes", category: "VoiceCodeClient")
                 if let recipesArray = json["recipes"] as? [[String: Any]] {
                     let recipes = recipesArray.compactMap { recipeJson -> Recipe? in
                         guard let id = recipeJson["id"] as? String,
@@ -1283,7 +1270,7 @@ class VoiceCodeClient: ObservableObject {
                         return Recipe(id: id, label: label, description: description)
                     }
                     scheduleUpdate(key: "availableRecipes", value: recipes)
-                    print("   Found \(recipes.count) recipes")
+                    LogManager.shared.log("   Found \(recipes.count) recipes", category: "VoiceCodeClient")
                 }
 
             case "recipe_started":
@@ -1310,7 +1297,7 @@ class VoiceCodeClient: ObservableObject {
                     return
                 }
 
-                print("🎯 [VoiceCodeClient] Recipe started: \(recipeLabel) for session \(sessionId) (step: \(currentStep), stepCount: \(stepCount))")
+                LogManager.shared.log("🎯 [VoiceCodeClient] Recipe started: \(recipeLabel) for session \(sessionId) (step: \(currentStep), stepCount: \(stepCount))", category: "VoiceCodeClient")
                 let activeRecipe = ActiveRecipe(
                     recipeId: recipeId,
                     recipeLabel: recipeLabel,
@@ -1328,13 +1315,13 @@ class VoiceCodeClient: ObservableObject {
                     return
                 }
                 let reason = json["reason"] as? String ?? "unknown"
-                print("🏁 [VoiceCodeClient] Recipe exited for session \(sessionId): \(reason)")
+                LogManager.shared.log("🏁 [VoiceCodeClient] Recipe exited for session \(sessionId): \(reason)", category: "VoiceCodeClient")
                 var updatedRecipes = getCurrentValue(for: "activeRecipes", current: self.activeRecipes)
                 updatedRecipes.removeValue(forKey: sessionId)
                 scheduleUpdate(key: "activeRecipes", value: updatedRecipes)
 
             default:
-                print("Unknown message type: \(type)")
+                LogManager.shared.log("Unknown message type: \(type)", category: "VoiceCodeClient")
             }
         }
     }
@@ -1350,9 +1337,9 @@ class VoiceCodeClient: ObservableObject {
 
         if let sessionId = sessionId {
             message["session_id"] = sessionId
-            print("📤 [VoiceCodeClient] Sending prompt WITH claude session_id: \(sessionId)")
+            LogManager.shared.log("📤 [VoiceCodeClient] Sending prompt WITH claude session_id: \(sessionId)", category: "VoiceCodeClient")
         } else {
-            print("📤 [VoiceCodeClient] Sending prompt WITHOUT claude session_id (will create new)")
+            LogManager.shared.log("📤 [VoiceCodeClient] Sending prompt WITHOUT claude session_id (will create new)", category: "VoiceCodeClient")
         }
 
         if let workingDirectory = workingDirectory {
@@ -1364,8 +1351,8 @@ class VoiceCodeClient: ObservableObject {
             message["system_prompt"] = systemPrompt
         }
 
-        print("📤 [VoiceCodeClient] Sending from iOS session: \(iosSessionId)")
-        print("📤 [VoiceCodeClient] Full message: \(message)")
+        LogManager.shared.log("📤 [VoiceCodeClient] Sending from iOS session: \(iosSessionId)", category: "VoiceCodeClient")
+        LogManager.shared.log("📤 [VoiceCodeClient] Full message: \(message)", category: "VoiceCodeClient")
         sendMessage(message)
     }
 
@@ -1375,7 +1362,7 @@ class VoiceCodeClient: ObservableObject {
     @MainActor
     func sendQuickPrompt(text: String, directory: String, completion: @escaping (String) -> Void) {
         guard isConnected else {
-            print("⚠️ [VoiceCodeClient] Quick prompt failed: not connected")
+            LogManager.shared.log("⚠️ [VoiceCodeClient] Quick prompt failed: not connected", category: "VoiceCodeClient")
             completion("Error: Not connected to server")
             return
         }
@@ -1389,7 +1376,7 @@ class VoiceCodeClient: ObservableObject {
         // Timeout after 120 seconds to prevent leaked handlers
         DispatchQueue.main.asyncAfter(deadline: .now() + 120) { [weak self] in
             if let handler = self?.quickPromptHandlers.removeValue(forKey: quickPromptId) {
-                print("⏰ [VoiceCodeClient] Quick prompt timed out: \(quickPromptId)")
+                LogManager.shared.log("⏰ [VoiceCodeClient] Quick prompt timed out: \(quickPromptId)", category: "VoiceCodeClient")
                 handler("Error: Request timed out")
             }
         }
@@ -1408,7 +1395,7 @@ class VoiceCodeClient: ObservableObject {
             message["system_prompt"] = systemPrompt
         }
 
-        print("📤 [VoiceCodeClient] Sending quick prompt, session: \(sessionId), tracking: \(quickPromptId), dir: \(directory)")
+        LogManager.shared.log("📤 [VoiceCodeClient] Sending quick prompt, session: \(sessionId), tracking: \(quickPromptId), dir: \(directory)", category: "VoiceCodeClient")
         sendMessage(message)
     }
 
@@ -1417,7 +1404,7 @@ class VoiceCodeClient: ObservableObject {
             "type": "set_max_message_size",
             "size_kb": sizeKB
         ]
-        print("📤 [VoiceCodeClient] Setting max message size: \(sizeKB) KB")
+        LogManager.shared.log("📤 [VoiceCodeClient] Setting max message size: \(sizeKB) KB", category: "VoiceCodeClient")
         sendMessage(message)
     }
 
@@ -1514,13 +1501,12 @@ class VoiceCodeClient: ObservableObject {
         let dropped = Set(allKeys).subtracting(toRestore)
         if !dropped.isEmpty {
             for sessionId in dropped {
-                logger.info("🧹 [VoiceCodeClient] Skipping reconnect-resubscribe for user-deleted session: \(sessionId)")
+                LogManager.shared.log("🧹 [VoiceCodeClient] Skipping reconnect-resubscribe for user-deleted session: \(sessionId)", category: "VoiceCodeClient")
                 subscriptions[sessionId] = nil
             }
         }
 
         guard !toRestore.isEmpty else { return }
-        print("🔄 [VoiceCodeClient] Restoring \(toRestore.count) subscription(s) after reconnection")
         LogManager.shared.log("Restoring \(toRestore.count) subscription(s) after reconnection", category: "VoiceCodeClient")
         for sessionId in toRestore {
             subscribe(sessionId: sessionId, context: context)
@@ -1547,7 +1533,7 @@ class VoiceCodeClient: ObservableObject {
             if subscriptions[sessionId] != .confirmed {
                 subscriptions[sessionId] = .desired
             }
-            logger.info("📖 [VoiceCodeClient] Deferring subscribe (not authenticated), session: \(sessionId) (total tracked: \(self.subscriptions.count))")
+            LogManager.shared.log("📖 [VoiceCodeClient] Deferring subscribe (not authenticated), session: \(sessionId) (total tracked: \(self.subscriptions.count))", category: "VoiceCodeClient")
             return
         }
 
@@ -1575,7 +1561,7 @@ class VoiceCodeClient: ObservableObject {
                 "session_id": sessionId,
                 "last_seq": lastSeq
             ]
-            logger.info("📖 [VoiceCodeClient] Subscribing v0.4.0, last_seq: \(lastSeq), session: \(sessionId) (total tracked: \(trackedCount))")
+            LogManager.shared.log("📖 [VoiceCodeClient] Subscribing v0.4.0, last_seq: \(lastSeq), session: \(sessionId) (total tracked: \(trackedCount))", category: "VoiceCodeClient")
         case .v0_5_0:
             let fromOffset = lastOffsetMerged(sessionId: sessionId, context: context)
             let signature = lastFileSignature(sessionId: sessionId, context: context)
@@ -1588,7 +1574,7 @@ class VoiceCodeClient: ObservableObject {
                 v5Message["file_signature_seen"] = sig
             }
             message = v5Message
-            logger.info("📖 [VoiceCodeClient] Subscribing v0.5.0, from_offset: \(fromOffset), file_signature_seen: \(signature ?? "<nil>", privacy: .public), session: \(sessionId) (total tracked: \(trackedCount))")
+            LogManager.shared.log("📖 [VoiceCodeClient] Subscribing v0.5.0, from_offset: \(fromOffset), file_signature_seen: \(signature ?? "<nil>"), session: \(sessionId) (total tracked: \(trackedCount))", category: "VoiceCodeClient")
         }
 
         sendMessage(message)
@@ -1615,7 +1601,7 @@ class VoiceCodeClient: ObservableObject {
                           context: NSManagedObjectContext? = nil,
                           container: NSPersistentContainer? = nil) -> Int64 {
         guard let sessionUUID = UUID(uuidString: sessionId) else {
-            logger.warning("⚠️ [VoiceCodeClient] Invalid session ID for v5 cursor read: \(sessionId)")
+            LogManager.shared.log("⚠️ [VoiceCodeClient] Invalid session ID for v5 cursor read: \(sessionId)", category: "VoiceCodeClient")
             return 0
         }
 
@@ -1624,7 +1610,7 @@ class VoiceCodeClient: ObservableObject {
             do {
                 return try ctx.fetch(request).first?.lastOffsetMerged ?? 0
             } catch {
-                logger.error("⚠️ [VoiceCodeClient] Failed to fetch lastOffsetMerged: \(error.localizedDescription)")
+                LogManager.shared.log("⚠️ [VoiceCodeClient] Failed to fetch lastOffsetMerged: \(error.localizedDescription)", category: "VoiceCodeClient")
                 return 0
             }
         }
@@ -1718,7 +1704,7 @@ class VoiceCodeClient: ObservableObject {
                          context: NSManagedObjectContext? = nil,
                          container: NSPersistentContainer? = nil) -> Int64 {
         guard let sessionUUID = UUID(uuidString: sessionId) else {
-            logger.warning("⚠️ [VoiceCodeClient] Invalid session ID for delta sync: \(sessionId)")
+            LogManager.shared.log("⚠️ [VoiceCodeClient] Invalid session ID for delta sync: \(sessionId)", category: "VoiceCodeClient")
             return 0
         }
 
@@ -1731,7 +1717,7 @@ class VoiceCodeClient: ObservableObject {
             do {
                 messageMax = try ctx.fetch(messageRequest).first?.seq ?? 0
             } catch {
-                logger.error("⚠️ [VoiceCodeClient] Failed to fetch newest seq for delta sync: \(error.localizedDescription)")
+                LogManager.shared.log("⚠️ [VoiceCodeClient] Failed to fetch newest seq for delta sync: \(error.localizedDescription)", category: "VoiceCodeClient")
                 messageMax = 0
             }
 
@@ -1745,7 +1731,7 @@ class VoiceCodeClient: ObservableObject {
                 let storedNextSeq = try ctx.fetch(sessionRequest).first?.nextSeq ?? 0
                 sessionCursor = storedNextSeq > 0 ? storedNextSeq - 1 : 0
             } catch {
-                logger.error("⚠️ [VoiceCodeClient] Failed to fetch session next_seq for delta sync: \(error.localizedDescription)")
+                LogManager.shared.log("⚠️ [VoiceCodeClient] Failed to fetch session next_seq for delta sync: \(error.localizedDescription)", category: "VoiceCodeClient")
                 sessionCursor = 0
             }
 
@@ -1774,7 +1760,7 @@ class VoiceCodeClient: ObservableObject {
     @available(*, deprecated, message: "Use newestCachedSeq(sessionId:context:) — protocol v0.4.0 uses Int64 seq as the cursor")
     func getNewestCachedMessageId(sessionId: String, context: NSManagedObjectContext? = nil) -> String? {
         guard let sessionUUID = UUID(uuidString: sessionId) else {
-            logger.warning("⚠️ [VoiceCodeClient] Invalid session ID for delta sync: \(sessionId)")
+            LogManager.shared.log("⚠️ [VoiceCodeClient] Invalid session ID for delta sync: \(sessionId)", category: "VoiceCodeClient")
             return nil
         }
 
@@ -1789,7 +1775,7 @@ class VoiceCodeClient: ObservableObject {
             // CDMessage.id contains the backend's UUID (extracted from "uuid" field)
             return messages.first?.id.uuidString.lowercased()
         } catch {
-            logger.error("⚠️ [VoiceCodeClient] Failed to fetch newest message for delta sync: \(error.localizedDescription)")
+            LogManager.shared.log("⚠️ [VoiceCodeClient] Failed to fetch newest message for delta sync: \(error.localizedDescription)", category: "VoiceCodeClient")
             return nil
         }
     }
@@ -1811,14 +1797,14 @@ class VoiceCodeClient: ObservableObject {
             "type": "unsubscribe",
             "session_id": sessionId
         ]
-        print("📕 [VoiceCodeClient] Unsubscribing from session: \(sessionId) (total tracked: \(subscriptions.count))")
+        LogManager.shared.log("📕 [VoiceCodeClient] Unsubscribing from session: \(sessionId) (total tracked: \(subscriptions.count))", category: "VoiceCodeClient")
         sendMessage(message)
     }
 
     func requestSessionList() async {
         // Ensure we're authenticated before requesting
         guard isAuthenticated else {
-            print("⚠️ [VoiceCodeClient] Cannot refresh sessions - not authenticated")
+            LogManager.shared.log("⚠️ [VoiceCodeClient] Cannot refresh sessions - not authenticated", category: "VoiceCodeClient")
             return
         }
 
@@ -1836,9 +1822,9 @@ class VoiceCodeClient: ObservableObject {
             // Include recent sessions limit from settings
             if let limit = appSettings?.recentSessionsLimit {
                 message["recent_sessions_limit"] = limit
-                print("🔄 [VoiceCodeClient] Requesting session list refresh (limit: \(limit))")
+                LogManager.shared.log("🔄 [VoiceCodeClient] Requesting session list refresh (limit: \(limit))", category: "VoiceCodeClient")
             } else {
-                print("🔄 [VoiceCodeClient] Requesting session list refresh")
+                LogManager.shared.log("🔄 [VoiceCodeClient] Requesting session list refresh", category: "VoiceCodeClient")
             }
 
             sendMessage(message)
@@ -1848,7 +1834,7 @@ class VoiceCodeClient: ObservableObject {
                 if let cont = self?.sessionListContinuation {
                     self?.sessionListContinuation = nil
                     cont.resume()
-                    print("⚠️ [VoiceCodeClient] Session list request timed out after 5 seconds")
+                    LogManager.shared.log("⚠️ [VoiceCodeClient] Session list request timed out after 5 seconds", category: "VoiceCodeClient")
                 }
             }
         }
@@ -1898,7 +1884,7 @@ class VoiceCodeClient: ObservableObject {
                 let newEpoch = (self.sessionRefreshEpoch[sessionId] ?? 0) + 1
                 self.sessionRefreshEpoch[sessionId] = newEpoch
 
-                print("🔄 [VoiceCodeClient] Requesting session refresh: \(sessionId) (epoch \(newEpoch))")
+                LogManager.shared.log("🔄 [VoiceCodeClient] Requesting session refresh: \(sessionId) (epoch \(newEpoch))", category: "VoiceCodeClient")
                 self.unsubscribe(sessionId: sessionId)
 
                 continuation.resume(returning: newEpoch)
@@ -1947,7 +1933,7 @@ class VoiceCodeClient: ObservableObject {
                         self.sessionRefreshPending.removeValue(forKey: sessionId)
                     }
                     if pending.resumeOnceIfPending() {
-                        print("⚠️ [VoiceCodeClient] Session refresh request timed out after 10 seconds for \(sessionId) (epoch \(epoch))")
+                        LogManager.shared.log("⚠️ [VoiceCodeClient] Session refresh request timed out after 10 seconds for \(sessionId) (epoch \(epoch))", category: "VoiceCodeClient")
                     }
                 }
             }
@@ -1957,7 +1943,7 @@ class VoiceCodeClient: ObservableObject {
     private func sendConnectMessage() {
         // Check if API key is available
         guard let key = apiKey else {
-            print("⚠️ [VoiceCodeClient] No API key available, cannot authenticate")
+            LogManager.shared.log("⚠️ [VoiceCodeClient] No API key available, cannot authenticate", category: "VoiceCodeClient")
             DispatchQueue.main.async { [weak self] in
                 guard let self = self else { return }
                 self.isAuthenticated = false
@@ -1966,7 +1952,7 @@ class VoiceCodeClient: ObservableObject {
                 // Stop reconnection attempts - user must configure API key first
                 self.reconnectionTimer?.cancel()
                 self.reconnectionTimer = nil
-                print("🔐 [VoiceCodeClient] Stopped reconnection attempts - API key required")
+                LogManager.shared.log("🔐 [VoiceCodeClient] Stopped reconnection attempts - API key required", category: "VoiceCodeClient")
             }
             return
         }
@@ -1981,18 +1967,18 @@ class VoiceCodeClient: ObservableObject {
 
         if let sessionId = sessionId {
             message["session_id"] = sessionId
-            print("📤 [VoiceCodeClient] Sending connect with session_id: \(sessionId)")
+            LogManager.shared.log("📤 [VoiceCodeClient] Sending connect with session_id: \(sessionId)", category: "VoiceCodeClient")
         } else {
-            print("📤 [VoiceCodeClient] Sending connect without session_id")
+            LogManager.shared.log("📤 [VoiceCodeClient] Sending connect without session_id", category: "VoiceCodeClient")
         }
 
         // Include recent sessions limit from settings
         if let limit = appSettings?.recentSessionsLimit {
             message["recent_sessions_limit"] = limit
-            print("📤 [VoiceCodeClient] Requesting \(limit) recent sessions")
+            LogManager.shared.log("📤 [VoiceCodeClient] Requesting \(limit) recent sessions", category: "VoiceCodeClient")
         }
 
-        print("📤 [VoiceCodeClient] Sending connect with API key")
+        LogManager.shared.log("📤 [VoiceCodeClient] Sending connect with API key", category: "VoiceCodeClient")
         sendMessage(message)
     }
 
@@ -2008,11 +1994,10 @@ class VoiceCodeClient: ObservableObject {
             return
         }
         guard let version = ProtocolVersion(rawValue: raw) else {
-            logger.warning("⚠️ [VoiceCodeClient] Ignoring unknown negotiated_protocol_version: \(raw, privacy: .public)")
+            LogManager.shared.log("⚠️ [VoiceCodeClient] Ignoring unknown negotiated_protocol_version: \(raw)", category: "VoiceCodeClient")
             return
         }
         if version != self.negotiatedProtocolVersion {
-            logger.info("🔀 [VoiceCodeClient] Negotiated protocol version: \(version.rawValue, privacy: .public)")
             LogManager.shared.log("Negotiated protocol version: \(version.rawValue)", category: "VoiceCodeClient")
         }
         self.negotiatedProtocolVersion = version
@@ -2031,7 +2016,7 @@ class VoiceCodeClient: ObservableObject {
         do {
             data = try JSONSerialization.data(withJSONObject: json, options: [])
         } catch {
-            logger.error("❌ [VoiceCodeClient] Failed to serialize session_history JSON: \(error.localizedDescription)")
+            LogManager.shared.log("❌ [VoiceCodeClient] Failed to serialize session_history JSON: \(error.localizedDescription)", category: "VoiceCodeClient")
             return false
         }
         let decoder = JSONDecoder()
@@ -2041,9 +2026,9 @@ class VoiceCodeClient: ObservableObject {
             do {
                 let payload = try decoder.decode(SessionHistoryPayload.self, from: data)
                 if payload.isComplete {
-                    logger.info("📚 [VoiceCodeClient] session_history \(payload.sessionId) count=\(payload.messages.count) first=\(payload.firstSeq.map { String($0) } ?? "-") last=\(payload.lastSeq.map { String($0) } ?? "-") next=\(payload.nextSeq)")
+                    LogManager.shared.log("📚 [VoiceCodeClient] session_history \(payload.sessionId) count=\(payload.messages.count) first=\(payload.firstSeq.map { String($0) } ?? "-") last=\(payload.lastSeq.map { String($0) } ?? "-") next=\(payload.nextSeq)", category: "VoiceCodeClient")
                 } else {
-                    logger.warning("⚠️ [VoiceCodeClient] session_history \(payload.sessionId) is_complete=false; \(payload.messages.count) messages, will chain re-subscribe")
+                    LogManager.shared.log("⚠️ [VoiceCodeClient] session_history \(payload.sessionId) is_complete=false; \(payload.messages.count) messages, will chain re-subscribe", category: "VoiceCodeClient")
                 }
                 self.sessionSyncManager.handleSessionHistoryPayload(payload)
                 if let pending = self.sessionRefreshPending.removeValue(forKey: payload.sessionId) {
@@ -2051,20 +2036,20 @@ class VoiceCodeClient: ObservableObject {
                 }
                 return true
             } catch {
-                logger.error("❌ [VoiceCodeClient] Failed to decode v0.4.0 session_history payload: \(error.localizedDescription)")
+                LogManager.shared.log("❌ [VoiceCodeClient] Failed to decode v0.4.0 session_history payload: \(error.localizedDescription)", category: "VoiceCodeClient")
                 return false
             }
         case .v0_5_0:
             do {
                 let payload = try decoder.decode(SessionHistoryPayloadV5.self, from: data)
-                logger.info("📚 [VoiceCodeClient] session_history v5 \(payload.sessionId) count=\(payload.messages.count) next_offset=\(payload.nextOffset) eof=\(payload.endOfFile) replaced=\(payload.fileReplaced ?? false) signature=\(payload.fileSignature ?? "-")")
+                LogManager.shared.log("📚 [VoiceCodeClient] session_history v5 \(payload.sessionId) count=\(payload.messages.count) next_offset=\(payload.nextOffset) eof=\(payload.endOfFile) replaced=\(payload.fileReplaced ?? false) signature=\(payload.fileSignature ?? "-")", category: "VoiceCodeClient")
                 self.sessionSyncManager.handleSessionHistoryPayload(payload)
                 if let pending = self.sessionRefreshPending.removeValue(forKey: payload.sessionId) {
                     pending.resumeOnce()
                 }
                 return true
             } catch {
-                logger.error("❌ [VoiceCodeClient] Failed to decode v0.5.0 session_history payload: \(error.localizedDescription)")
+                LogManager.shared.log("❌ [VoiceCodeClient] Failed to decode v0.5.0 session_history payload: \(error.localizedDescription)", category: "VoiceCodeClient")
                 return false
             }
         }
@@ -2075,7 +2060,7 @@ class VoiceCodeClient: ObservableObject {
             "type": "message_ack",
             "message_id": messageId
         ]
-        print("✅ [VoiceCodeClient] Sending ACK for message: \(messageId)")
+        LogManager.shared.log("✅ [VoiceCodeClient] Sending ACK for message: \(messageId)", category: "VoiceCodeClient")
         sendMessage(message)
     }
 
@@ -2122,7 +2107,7 @@ class VoiceCodeClient: ObservableObject {
                         resumeLock.unlock()
                         timeoutWorkItem?.cancel()
                         continuation.resume(returning: result)
-                        print("⚡️ [VoiceCodeClient] Compaction callback restored after success")
+                        LogManager.shared.log("⚡️ [VoiceCodeClient] Compaction callback restored after success", category: "VoiceCodeClient")
                     } else {
                         resumeLock.unlock()
                     }
@@ -2138,12 +2123,12 @@ class VoiceCodeClient: ObservableObject {
                         continuation.resume(throwing: NSError(domain: "VoiceCodeClient",
                                                                code: -1,
                                                                userInfo: [NSLocalizedDescriptionKey: error]))
-                        print("⚡️ [VoiceCodeClient] Compaction callback restored after error")
+                        LogManager.shared.log("⚡️ [VoiceCodeClient] Compaction callback restored after error", category: "VoiceCodeClient")
                     } else {
                         resumeLock.unlock()
                     }
                 } else if messageType != nil {
-                    print("⚠️ [VoiceCodeClient] Unexpected message type in compaction callback: \(messageType!)")
+                    LogManager.shared.log("⚠️ [VoiceCodeClient] Unexpected message type in compaction callback: \(messageType!)", category: "VoiceCodeClient")
                 }
             }
 
@@ -2152,7 +2137,7 @@ class VoiceCodeClient: ObservableObject {
                 "type": "compact_session",
                 "session_id": sessionId
             ]
-            print("⚡️ [VoiceCodeClient] Sending compact request for session: \(sessionId)")
+            LogManager.shared.log("⚡️ [VoiceCodeClient] Sending compact request for session: \(sessionId)", category: "VoiceCodeClient")
             sendMessage(message)
 
             // Set cancellable timeout (60 seconds)
@@ -2166,7 +2151,7 @@ class VoiceCodeClient: ObservableObject {
                     continuation.resume(throwing: NSError(domain: "VoiceCodeClient",
                                                            code: -2,
                                                            userInfo: [NSLocalizedDescriptionKey: "Compaction timed out after 60 seconds"]))
-                    print("⚡️ [VoiceCodeClient] Compaction callback restored after timeout")
+                    LogManager.shared.log("⚡️ [VoiceCodeClient] Compaction callback restored after timeout", category: "VoiceCodeClient")
                 } else {
                     resumeLock.unlock()
                 }
@@ -2177,7 +2162,7 @@ class VoiceCodeClient: ObservableObject {
     }
 
     func killSession(sessionId: String) {
-        print("🛑 [VoiceCodeClient] Killing session: \(sessionId)")
+        LogManager.shared.log("🛑 [VoiceCodeClient] Killing session: \(sessionId)", category: "VoiceCodeClient")
 
         let message: [String: Any] = [
             "type": "kill_session",
@@ -2188,7 +2173,7 @@ class VoiceCodeClient: ObservableObject {
     }
 
     func requestInferredName(sessionId: String, messageText: String) {
-        print("✨ [VoiceCodeClient] Requesting inferred name for session: \(sessionId)")
+        LogManager.shared.log("✨ [VoiceCodeClient] Requesting inferred name for session: \(sessionId)", category: "VoiceCodeClient")
 
         // Set up callback for name inference response
         let originalCallback = onInferNameResponse
@@ -2204,7 +2189,7 @@ class VoiceCodeClient: ObservableObject {
                 if let inferredName = json["name"] as? String,
                    let returnedSessionId = json["session_id"] as? String,
                    let sessionUUID = UUID(uuidString: returnedSessionId) {
-                    print("✨ [VoiceCodeClient] Received inferred name: \(inferredName) for session: \(returnedSessionId)")
+                    LogManager.shared.log("✨ [VoiceCodeClient] Received inferred name: \(inferredName) for session: \(returnedSessionId)", category: "VoiceCodeClient")
 
                     // Update the session's localName in CoreData
                     self.sessionSyncManager.updateSessionLocalName(sessionId: sessionUUID, name: inferredName)
@@ -2214,7 +2199,7 @@ class VoiceCodeClient: ObservableObject {
                 }
             } else if messageType == "infer_name_error" {
                 let error = json["error"] as? String ?? "Unknown name inference error"
-                print("❌ [VoiceCodeClient] Name inference error: \(error)")
+                LogManager.shared.log("❌ [VoiceCodeClient] Name inference error: \(error)", category: "VoiceCodeClient")
 
                 // Restore original callback
                 self.onInferNameResponse = originalCallback
@@ -2240,7 +2225,7 @@ class VoiceCodeClient: ObservableObject {
     ///   - workingDirectory: The directory to execute the command in
     /// - Returns: The command session ID assigned by the backend, or nil on failure.
     func executeCommand(commandId: String, workingDirectory: String) async -> String? {
-        print("📤 [VoiceCodeClient] Executing command: \(commandId) in \(workingDirectory)")
+        LogManager.shared.log("📤 [VoiceCodeClient] Executing command: \(commandId) in \(workingDirectory)", category: "VoiceCodeClient")
 
         return await withCheckedContinuation { continuation in
             // Store continuation to be resumed when command_started (or command_error) arrives.
@@ -2257,7 +2242,7 @@ class VoiceCodeClient: ObservableObject {
     }
 
     func getCommandHistory(workingDirectory: String? = nil, limit: Int = 50) {
-        print("📤 [VoiceCodeClient] Requesting command history (limit: \(limit))")
+        LogManager.shared.log("📤 [VoiceCodeClient] Requesting command history (limit: \(limit))", category: "VoiceCodeClient")
 
         var message: [String: Any] = [
             "type": "get_command_history",
@@ -2270,7 +2255,7 @@ class VoiceCodeClient: ObservableObject {
     }
 
     func getCommandOutput(commandSessionId: String) {
-        print("📤 [VoiceCodeClient] Requesting command output for: \(commandSessionId)")
+        LogManager.shared.log("📤 [VoiceCodeClient] Requesting command output for: \(commandSessionId)", category: "VoiceCodeClient")
 
         let message: [String: Any] = [
             "type": "get_command_output",
@@ -2282,7 +2267,7 @@ class VoiceCodeClient: ObservableObject {
     // MARK: - Recipe Orchestration
 
     func getAvailableRecipes() {
-        print("📤 [VoiceCodeClient] Requesting available recipes")
+        LogManager.shared.log("📤 [VoiceCodeClient] Requesting available recipes", category: "VoiceCodeClient")
         let message: [String: Any] = [
             "type": "get_available_recipes"
         ]
@@ -2290,7 +2275,7 @@ class VoiceCodeClient: ObservableObject {
     }
 
     func startRecipe(sessionId: String, recipeId: String, workingDirectory: String, provider: String) {
-        print("📤 [VoiceCodeClient] Starting recipe \(recipeId) for session \(sessionId) in \(workingDirectory) with provider \(provider)")
+        LogManager.shared.log("📤 [VoiceCodeClient] Starting recipe \(recipeId) for session \(sessionId) in \(workingDirectory) with provider \(provider)", category: "VoiceCodeClient")
         let message: [String: Any] = [
             "type": "start_recipe",
             "session_id": sessionId,
@@ -2302,7 +2287,7 @@ class VoiceCodeClient: ObservableObject {
     }
 
     func exitRecipe(sessionId: String) {
-        print("📤 [VoiceCodeClient] Exiting recipe for session \(sessionId)")
+        LogManager.shared.log("📤 [VoiceCodeClient] Exiting recipe for session \(sessionId)", category: "VoiceCodeClient")
         let message: [String: Any] = [
             "type": "exit_recipe",
             "session_id": sessionId
@@ -2452,7 +2437,6 @@ class VoiceCodeClient: ObservableObject {
             "type": "list_resources",
             "storage_location": storageLocation
         ]
-        print("📋 [VoiceCodeClient] Requesting resources list from: \(storageLocation)")
         LogManager.shared.log("Requesting resources list from: \(storageLocation)", category: "VoiceCodeClient")
         sendMessage(message)
     }
@@ -2463,7 +2447,6 @@ class VoiceCodeClient: ObservableObject {
             "filename": filename,
             "storage_location": storageLocation
         ]
-        print("🗑️ [VoiceCodeClient] Requesting deletion of: \(filename)")
         LogManager.shared.log("Requesting deletion of: \(filename)", category: "VoiceCodeClient")
         sendMessage(message)
     }
@@ -2481,7 +2464,7 @@ extension VoiceCodeClient: SessionSyncDelegate {
     /// the `@Published` write below runs on the main actor.
     func didDetectPrunedGap(_ sessionId: String, gap: SessionHistoryPayload.Gap) {
         let key = sessionId.lowercased()
-        logger.info("⚠️ Pruned gap surfaced to UI for \(key)")
+        LogManager.shared.log("⚠️ Pruned gap surfaced to UI for \(key)", category: "VoiceCodeClient")
         prunedGaps[key] = gap
     }
 
@@ -2501,7 +2484,7 @@ extension VoiceCodeClient: SessionSyncDelegate {
     /// `lastOffsetMerged`), which the upsert path has already advanced to the
     /// correct next position before this delegate fires.
     func sessionSyncNeedsResubscribe(_ sessionId: String, fromSeq: Int64) {
-        logger.info("🔁 Resubscribe requested for \(sessionId) fromSeq=\(fromSeq)")
+        LogManager.shared.log("🔁 Resubscribe requested for \(sessionId) fromSeq=\(fromSeq)", category: "VoiceCodeClient")
         refreshSubscription(sessionId: sessionId)
     }
 
@@ -2513,7 +2496,7 @@ extension VoiceCodeClient: SessionSyncDelegate {
     /// `@Published` write below runs on the main actor.
     func sessionSyncDidStallChain(_ sessionId: String, atCursor: Int64) {
         let key = sessionId.lowercased()
-        logger.error("⛔ is_complete chain stalled for \(key) at cursor \(atCursor)")
+        LogManager.shared.log("⛔ is_complete chain stalled for \(key) at cursor \(atCursor)", category: "VoiceCodeClient")
         stalledChains[key] = atCursor
     }
 
@@ -2525,7 +2508,7 @@ extension VoiceCodeClient: SessionSyncDelegate {
     /// confirmed state so `subscribe` actually emits the wire send.
     func sessionSyncRequestsResubscribeFromZero(_ sessionId: UUID) {
         let sid = sessionId.uuidString.lowercased()
-        logger.info("🔁 [VoiceCodeClient] file_replaced re-subscribe requested for \(sid)")
+        LogManager.shared.log("🔁 [VoiceCodeClient] file_replaced re-subscribe requested for \(sid)", category: "VoiceCodeClient")
         if subscriptions[sid] == .confirmed {
             subscriptions[sid] = .desired
         }
