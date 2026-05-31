@@ -140,3 +140,40 @@
       (finally
         (tmux/kill-window! tmux/ghost-tmux-session window)
         (repl/unregister-ghost-fork! workdir)))))
+
+(defn ghost-prompt!
+  "End-to-end ghost prompt against `source-id`: fork the session, have the fork
+   generate the real prompt P for `task`, then nudge P into the ORIGINAL session
+   via `tmux/deliver!` so the agent acts on it with no awareness it authored it.
+
+   Gated to the Claude provider (forks rely on `--fork-session`). Retries the
+   fork ONCE on failure. On ANY failure NOTHING is delivered to the source
+   session — no garbage prompt reaches the user's real session.
+
+   Emits `:ghost.success` / `:ghost.failed` counters for observability.
+
+   Returns {:ok true :text P} on success, or {:ok false :reason kw} where reason
+   is :unknown-session, :unsupported-provider, or the fork failure reason
+   (:timeout / :error)."
+  [source-id task]
+  (let [meta (repl/get-session-metadata source-id)
+        provider (:provider meta)
+        workdir (:working-directory meta)]
+    (cond
+      (nil? meta) {:ok false :reason :unknown-session}
+      (not= :claude provider) {:ok false :reason :unsupported-provider}
+      :else
+      ;; Up to 2 attempts (initial + one retry). Deliver + success metric only on
+      ;; the FIRST ok result; emit the failure metric only after the retry is
+      ;; exhausted, so a transient first failure that succeeds on retry is not
+      ;; counted as failed.
+      (loop [attempts 2]
+        (let [{:keys [ok text reason]} (one-shot-fork! source-id task :workdir workdir)]
+          (cond
+            ok (do (tmux/deliver! source-id text)
+                   (repl/emit-metric! :counter :ghost.success {:session-id source-id})
+                   {:ok true :text text})
+            (> attempts 1) (recur (dec attempts))
+            :else (do (repl/emit-metric! :counter :ghost.failed
+                                         {:session-id source-id :reason reason})
+                      {:ok false :reason reason})))))))

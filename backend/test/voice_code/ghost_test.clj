@@ -266,3 +266,116 @@
         (ghost/one-shot-fork! "S-1" "do X" :workdir "/repo" :timeout-ms 5)
         (is (true? @guarded-at-launch) "guard already registered when start-ephemeral-window! runs")
         (is (not (repl/ghost-guarded? "/repo")) "guard cleared after one-shot-fork! returns")))))
+
+;; ============================================================================
+;; ghost-prompt! — end-to-end orchestration (mocked one-shot-fork! + deliver!)
+;; ============================================================================
+;; one-shot-fork! is exercised on its own above; here it is redefed so the
+;; orchestration logic (provider gate, deliver-on-success, retry-once,
+;; deliver-nothing-on-failure, metrics) is tested in isolation.
+
+(deftest ghost-prompt!-unknown-session-test
+  (testing "nil session metadata -> :unknown-session, nothing delivered, no metric"
+    (let [delivered (atom :NOT-CALLED)
+          metrics (atom [])]
+      (with-redefs [repl/get-session-metadata (constantly nil)
+                    ghost/one-shot-fork! (fn [& _] (throw (ex-info "fork must not run" {})))
+                    tmux/deliver! (fn [s t] (reset! delivered [s t]))
+                    repl/emit-metric! (fn [t n d] (swap! metrics conj [t n d]))]
+        (let [r (ghost/ghost-prompt! "S-unknown" "do X")]
+          (is (= {:ok false :reason :unknown-session} r))
+          (is (= :NOT-CALLED @delivered) "no prompt delivered for an unknown session")
+          (is (empty? @metrics) "no metric emitted on the unknown-session gate"))))))
+
+(deftest ghost-prompt!-unsupported-provider-test
+  (testing "non-claude resumed session -> :unsupported-provider, nothing delivered"
+    (let [delivered (atom :NOT-CALLED)
+          metrics (atom [])]
+      (with-redefs [repl/get-session-metadata
+                    (constantly {:provider :copilot :working-directory "/repo"})
+                    ghost/one-shot-fork! (fn [& _] (throw (ex-info "fork must not run" {})))
+                    tmux/deliver! (fn [s t] (reset! delivered [s t]))
+                    repl/emit-metric! (fn [t n d] (swap! metrics conj [t n d]))]
+        (let [r (ghost/ghost-prompt! "S-cop" "do X")]
+          (is (= {:ok false :reason :unsupported-provider} r))
+          (is (= :NOT-CALLED @delivered) "no prompt delivered for a non-claude provider")
+          (is (empty? @metrics) "no metric emitted on the provider gate"))))))
+
+(deftest ghost-prompt!-success-delivers-P-and-success-metric-test
+  (testing "fork ok -> deliver! called with P into the SOURCE session + :ghost.success metric"
+    (let [fork-calls (atom 0)
+          delivered (atom nil)
+          metrics (atom [])]
+      (with-redefs [repl/get-session-metadata
+                    (constantly {:provider :claude :working-directory "/repo"})
+                    ghost/one-shot-fork!
+                    (fn [source-id task & {:keys [workdir]}]
+                      (swap! fork-calls inc)
+                      (is (= "S-ok" source-id) "fork runs against the source session")
+                      (is (= "do X" task))
+                      (is (= "/repo" workdir) "fork launched in the session's working directory")
+                      {:ok true :text "Refactor the auth module." :nonce "gp-ok"})
+                    tmux/deliver! (fn [sid txt] (reset! delivered [sid txt]))
+                    repl/emit-metric! (fn [t n d] (swap! metrics conj [t n d]))]
+        (let [r (ghost/ghost-prompt! "S-ok" "do X")]
+          (is (= {:ok true :text "Refactor the auth module."} r))
+          (is (= 1 @fork-calls) "no retry on first success")
+          (is (= ["S-ok" "Refactor the auth module."] @delivered)
+              "extracted P delivered into the ORIGINAL session")
+          (is (= [[:counter :ghost.success {:session-id "S-ok"}]] @metrics)
+              "exactly the success counter, no failed counter"))))))
+
+(deftest ghost-prompt!-retries-once-then-succeeds-test
+  (testing "first fork fails, retry succeeds -> deliver P, success metric, no failed metric"
+    (let [fork-calls (atom 0)
+          delivered (atom nil)
+          metrics (atom [])]
+      (with-redefs [repl/get-session-metadata
+                    (constantly {:provider :claude :working-directory "/repo"})
+                    ghost/one-shot-fork!
+                    (fn [& _]
+                      (if (= 1 (swap! fork-calls inc))
+                        {:ok false :reason :timeout :nonce "gp-1"}
+                        {:ok true :text "P-on-retry" :nonce "gp-2"}))
+                    tmux/deliver! (fn [sid txt] (reset! delivered [sid txt]))
+                    repl/emit-metric! (fn [t n d] (swap! metrics conj [t n d]))]
+        (let [r (ghost/ghost-prompt! "S-retry" "do X")]
+          (is (= {:ok true :text "P-on-retry"} r))
+          (is (= 2 @fork-calls) "forked twice: initial failure + one retry")
+          (is (= ["S-retry" "P-on-retry"] @delivered) "P from the successful retry delivered")
+          (is (= [[:counter :ghost.success {:session-id "S-retry"}]] @metrics)
+              "transient first failure that recovers on retry is NOT counted as failed"))))))
+
+(deftest ghost-prompt!-both-attempts-fail-delivers-nothing-test
+  (testing "both fork attempts fail -> NO deliver!, single :ghost.failed metric with reason (AC3)"
+    (let [fork-calls (atom 0)
+          delivered (atom :NOT-CALLED)
+          metrics (atom [])]
+      (with-redefs [repl/get-session-metadata
+                    (constantly {:provider :claude :working-directory "/repo"})
+                    ghost/one-shot-fork!
+                    (fn [& _]
+                      (swap! fork-calls inc)
+                      {:ok false :reason :timeout :nonce "gp-f"})
+                    tmux/deliver! (fn [sid txt] (reset! delivered [sid txt]))
+                    repl/emit-metric! (fn [t n d] (swap! metrics conj [t n d]))]
+        (let [r (ghost/ghost-prompt! "S-fail" "do X")]
+          (is (= {:ok false :reason :timeout} r))
+          (is (= 2 @fork-calls) "exactly two attempts (initial + one retry)")
+          (is (= :NOT-CALLED @delivered) "NOTHING delivered to the source session on failure")
+          (is (= [[:counter :ghost.failed {:session-id "S-fail" :reason :timeout}]] @metrics)
+              "single failed counter carrying the fork failure reason"))))))
+
+(deftest ghost-prompt!-error-reason-propagates-test
+  (testing "fork :error reason (e.g. a throw inside one-shot-fork!) propagates and emits :ghost.failed"
+    (let [metrics (atom [])
+          delivered (atom :NOT-CALLED)]
+      (with-redefs [repl/get-session-metadata
+                    (constantly {:provider :claude :working-directory "/repo"})
+                    ghost/one-shot-fork! (fn [& _] {:ok false :reason :error :nonce "gp-e"})
+                    tmux/deliver! (fn [sid txt] (reset! delivered [sid txt]))
+                    repl/emit-metric! (fn [t n d] (swap! metrics conj [t n d]))]
+        (let [r (ghost/ghost-prompt! "S-err" "do X")]
+          (is (= {:ok false :reason :error} r))
+          (is (= :NOT-CALLED @delivered))
+          (is (= [[:counter :ghost.failed {:session-id "S-err" :reason :error}]] @metrics)))))))
