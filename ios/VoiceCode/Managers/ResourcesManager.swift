@@ -57,7 +57,6 @@ class ResourcesManager: ObservableObject {
     /// Request list of resources from backend
     func listResources() {
         guard let client = voiceCodeClient, client.isConnected else {
-            print("⚠️ [ResourcesManager] Not connected, cannot list resources")
             LogManager.shared.log("Not connected, cannot list resources", category: "ResourcesManager")
             return
         }
@@ -70,7 +69,6 @@ class ResourcesManager: ObservableObject {
     /// Delete a resource from backend
     func deleteResource(_ resource: Resource) {
         guard let client = voiceCodeClient, client.isConnected else {
-            print("⚠️ [ResourcesManager] Not connected, cannot delete resource")
             LogManager.shared.log("Not connected, cannot delete resource", category: "ResourcesManager")
             return
         }
@@ -82,13 +80,11 @@ class ResourcesManager: ObservableObject {
     /// Process all pending uploads from the App Group container
     func processPendingUploads() {
         guard !isProcessing else {
-            print("⏭️ [ResourcesManager] Already processing uploads, skipping")
             LogManager.shared.log("Already processing uploads, skipping", category: "ResourcesManager")
             return
         }
 
         guard let client = voiceCodeClient, client.isConnected else {
-            print("⚠️ [ResourcesManager] Not connected, deferring upload processing")
             LogManager.shared.log("Not connected, deferring upload processing", category: "ResourcesManager")
             return
         }
@@ -120,7 +116,6 @@ class ResourcesManager: ObservableObject {
                 self.pendingUploadCount = metadataFiles.count
             }
         } catch {
-            print("⚠️ [ResourcesManager] Failed to count pending uploads: \(error)")
             LogManager.shared.log("Failed to count pending uploads: \(error)", category: "ResourcesManager")
             DispatchQueue.main.async {
                 self.pendingUploadCount = 0
@@ -144,12 +139,10 @@ class ResourcesManager: ObservableObject {
         }
 
         guard let pendingUploadsURL = getPendingUploadsDirectory() else {
-            print("❌ [ResourcesManager] Failed to access App Group container")
             LogManager.shared.log("Failed to access App Group container", category: "ResourcesManager")
             return
         }
 
-        print("📂 [ResourcesManager] Checking for pending uploads at: \(pendingUploadsURL.path)")
         LogManager.shared.log("Checking for pending uploads at: \(pendingUploadsURL.path)", category: "ResourcesManager")
 
         // Find all metadata files
@@ -160,13 +153,11 @@ class ResourcesManager: ObservableObject {
                 includingPropertiesForKeys: nil
             ).filter { $0.pathExtension == "json" }
         } catch {
-            print("❌ [ResourcesManager] Failed to list pending uploads: \(error)")
             LogManager.shared.log("Failed to list pending uploads: \(error)", category: "ResourcesManager")
             return
         }
 
         guard !metadataFiles.isEmpty else {
-            print("✅ [ResourcesManager] No pending uploads found")
             LogManager.shared.log("No pending uploads found", category: "ResourcesManager")
             await MainActor.run {
                 self.pendingUploadCount = 0
@@ -174,7 +165,6 @@ class ResourcesManager: ObservableObject {
             return
         }
 
-        print("📤 [ResourcesManager] Found \(metadataFiles.count) pending upload(s)")
         LogManager.shared.log("Found \(metadataFiles.count) pending upload(s)", category: "ResourcesManager")
         await MainActor.run {
             self.pendingUploadCount = metadataFiles.count
@@ -192,7 +182,6 @@ class ResourcesManager: ObservableObject {
     private func processUpload(metadataURL: URL, pendingUploadsURL: URL) async {
         let uploadId = metadataURL.deletingPathExtension().lastPathComponent
 
-        print("📄 [ResourcesManager] Processing upload: \(uploadId)")
         LogManager.shared.log("Processing upload: \(uploadId)", category: "ResourcesManager")
 
         // Read metadata
@@ -200,21 +189,18 @@ class ResourcesManager: ObservableObject {
         do {
             let metadataData = try Data(contentsOf: metadataURL)
             guard let json = try JSONSerialization.jsonObject(with: metadataData) as? [String: Any] else {
-                print("❌ [ResourcesManager] Invalid metadata format for upload: \(uploadId)")
                 LogManager.shared.log("Invalid metadata format for upload: \(uploadId)", category: "ResourcesManager")
                 try? FileManager.default.removeItem(at: metadataURL)
                 return
             }
             metadata = json
         } catch {
-            print("❌ [ResourcesManager] Failed to read metadata for upload \(uploadId): \(error)")
             LogManager.shared.log("Failed to read metadata for upload \(uploadId): \(error)", category: "ResourcesManager")
             try? FileManager.default.removeItem(at: metadataURL)
             return
         }
 
         guard let filename = metadata["filename"] as? String else {
-            print("❌ [ResourcesManager] Missing filename in metadata for upload: \(uploadId)")
             LogManager.shared.log("Missing filename in metadata for upload: \(uploadId)", category: "ResourcesManager")
             try? FileManager.default.removeItem(at: metadataURL)
             return
@@ -228,7 +214,6 @@ class ResourcesManager: ObservableObject {
         do {
             fileData = try Data(contentsOf: dataURL)
         } catch {
-            print("❌ [ResourcesManager] Failed to read data file for upload \(uploadId): \(error)")
             LogManager.shared.log("Failed to read data file for upload \(uploadId): \(error)", category: "ResourcesManager")
             // Clean up metadata if data file is missing
             try? FileManager.default.removeItem(at: metadataURL)
@@ -238,7 +223,6 @@ class ResourcesManager: ObservableObject {
         // Base64 encode
         let base64Content = fileData.base64EncodedString()
 
-        print("📤 [ResourcesManager] Uploading file: \(filename) (\(fileData.count) bytes)")
         LogManager.shared.log("Uploading file: \(filename) (\(fileData.count) bytes)", category: "ResourcesManager")
 
         // Send upload_file message
@@ -249,14 +233,11 @@ class ResourcesManager: ObservableObject {
             do {
                 try FileManager.default.removeItem(at: metadataURL)
                 try FileManager.default.removeItem(at: dataURL)
-                print("✅ [ResourcesManager] Upload successful, cleaned up: \(uploadId)")
                 LogManager.shared.log("Upload successful, cleaned up: \(uploadId)", category: "ResourcesManager")
             } catch {
-                print("⚠️ [ResourcesManager] Upload successful but failed to clean up files: \(error)")
                 LogManager.shared.log("Upload successful but failed to clean up files: \(error)", category: "ResourcesManager")
             }
         } else {
-            print("⚠️ [ResourcesManager] Upload failed, will retry later: \(uploadId)")
             LogManager.shared.log("Upload failed, will retry later: \(uploadId)", category: "ResourcesManager")
         }
     }
@@ -270,12 +251,10 @@ class ResourcesManager: ObservableObject {
                 "storage_location": appSettings.resourceStorageLocation
             ]
 
-            print("📨 [ResourcesManager] Sending upload_file message for: \(filename) to: \(appSettings.resourceStorageLocation)")
             LogManager.shared.log("Sending upload_file message for: \(filename) to: \(appSettings.resourceStorageLocation)", category: "ResourcesManager")
 
             // Check if client is still available
             guard let client = self.voiceCodeClient else {
-                print("⚠️ [ResourcesManager] Client deallocated, cannot send upload for: \(filename)")
                 LogManager.shared.log("Client deallocated, cannot send upload for: \(filename)", category: "ResourcesManager")
                 continuation.resume(returning: false)
                 return
@@ -293,7 +272,6 @@ class ResourcesManager: ObservableObject {
             DispatchQueue.main.asyncAfter(deadline: .now() + 30.0) { [weak self] in
                 guard let self = self else { return }
                 if self.pendingAcknowledgments[filename] != nil {
-                    print("⚠️ [ResourcesManager] Upload timeout for: \(filename)")
                     LogManager.shared.log("Upload timeout for: \(filename)", category: "ResourcesManager")
                     self.pendingAcknowledgments.removeValue(forKey: filename)
                     continuation.resume(returning: false)
@@ -317,7 +295,6 @@ class ResourcesManager: ObservableObject {
             completion(success)
         } else if let (originalFilename, completion) = pendingAcknowledgments.first {
             // Filename changed due to conflict, complete the first pending upload
-            print("⚠️ [ResourcesManager] Filename mismatch: sent '\(originalFilename)', received '\(filename)'. Completing first pending upload.")
             LogManager.shared.log("Filename mismatch: sent '\(originalFilename)', received '\(filename)'. Completing first pending upload.", category: "ResourcesManager")
             pendingAcknowledgments.removeValue(forKey: originalFilename)
             completion(success)
@@ -332,7 +309,7 @@ class ResourcesManager: ObservableObject {
         guard let containerURL = FileManager.default.containerURL(
             forSecurityApplicationGroupIdentifier: appGroupIdentifier
         ) else {
-            print("❌ [ResourcesManager] Failed to access App Group container: \(appGroupIdentifier)")
+            LogManager.shared.log("Failed to access App Group container: \(appGroupIdentifier)", category: "ResourcesManager")
             return nil
         }
 

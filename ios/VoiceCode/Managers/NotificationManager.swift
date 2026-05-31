@@ -3,10 +3,7 @@
 
 import Foundation
 import UserNotifications
-import OSLog
 import Intents
-
-private let logger = Logger(subsystem: "com.travisbrown.VoiceCode", category: "NotificationManager")
 
 class NotificationManager: NSObject, ObservableObject, UNUserNotificationCenterDelegate {
     static let shared = NotificationManager()
@@ -30,7 +27,7 @@ class NotificationManager: NSObject, ObservableObject, UNUserNotificationCenterD
     
     func setVoiceOutputManager(_ manager: VoiceOutputManager) {
         self.voiceOutputManager = manager
-        logger.info("✅ VoiceOutputManager set for notification TTS playback")
+        LogManager.shared.log("✅ VoiceOutputManager set for notification TTS playback", category: "NotificationManager")
     }
     
     // MARK: - Setup
@@ -60,7 +57,7 @@ class NotificationManager: NSObject, ObservableObject, UNUserNotificationCenterD
         
         // Register category
         UNUserNotificationCenter.current().setNotificationCategories([category])
-        logger.info("✅ Notification categories registered")
+        LogManager.shared.log("✅ Notification categories registered", category: "NotificationManager")
     }
     
     // MARK: - Permission Handling
@@ -68,7 +65,7 @@ class NotificationManager: NSObject, ObservableObject, UNUserNotificationCenterD
     func requestAuthorization() async -> Bool {
         // Skip permission prompts during UI tests to prevent blocking automation
         if TestingEnvironment.isUITesting {
-            logger.info("🧪 Skipping notification authorization in UI testing mode")
+            LogManager.shared.log("🧪 Skipping notification authorization in UI testing mode", category: "NotificationManager")
             return false
         }
 
@@ -77,13 +74,13 @@ class NotificationManager: NSObject, ObservableObject, UNUserNotificationCenterD
                 options: [.alert, .sound, .badge]
             )
             if granted {
-                logger.info("✅ Notification authorization granted")
+                LogManager.shared.log("✅ Notification authorization granted", category: "NotificationManager")
             } else {
-                logger.warning("⚠️ Notification authorization denied by user")
+                LogManager.shared.log("⚠️ Notification authorization denied by user", category: "NotificationManager")
             }
             return granted
         } catch {
-            logger.error("❌ Failed to request notification authorization: \(error.localizedDescription)")
+            LogManager.shared.log("❌ Failed to request notification authorization: \(error.localizedDescription)", category: "NotificationManager")
             return false
         }
     }
@@ -105,7 +102,7 @@ class NotificationManager: NSObject, ObservableObject, UNUserNotificationCenterD
         let status = await checkAuthorizationStatus()
 
         guard status == .authorized || status == .provisional else {
-            logger.warning("⚠️ Cannot post notification - authorization status: \(status.rawValue)")
+            LogManager.shared.log("⚠️ Cannot post notification - authorization status: \(status.rawValue)", category: "NotificationManager")
             return
         }
 
@@ -149,9 +146,9 @@ class NotificationManager: NSObject, ObservableObject, UNUserNotificationCenterD
         // Post notification
         do {
             try await UNUserNotificationCenter.current().add(request)
-            logger.info("📬 Posted notification for Claude response (ID: \(notificationId))")
+            LogManager.shared.log("📬 Posted notification for Claude response (ID: \(notificationId))", category: "NotificationManager")
         } catch {
-            logger.error("❌ Failed to post notification: \(error.localizedDescription)")
+            LogManager.shared.log("❌ Failed to post notification: \(error.localizedDescription)", category: "NotificationManager")
         }
     }
     
@@ -166,18 +163,18 @@ class NotificationManager: NSObject, ObservableObject, UNUserNotificationCenterD
         let actionIdentifier = response.actionIdentifier
         let userInfo = response.notification.request.content.userInfo
         
-        logger.info("📱 Notification action received: \(actionIdentifier)")
+        LogManager.shared.log("📱 Notification action received: \(actionIdentifier)", category: "NotificationManager")
         
         if actionIdentifier == readAloudActionIdentifier {
             // Extract response text from userInfo
             if let text = userInfo["responseText"] as? String {
-                logger.info("🔊 Reading response aloud (\(text.count) characters)")
+                LogManager.shared.log("🔊 Reading response aloud (\(text.count) characters)", category: "NotificationManager")
 
                 // Trigger TTS playback via VoiceOutputManager
                 let workingDirectory = userInfo["workingDirectory"] as? String
                 voiceOutputManager?.speak(text, workingDirectory: workingDirectory)
             } else {
-                logger.error("❌ No response text found in notification userInfo")
+                LogManager.shared.log("❌ No response text found in notification userInfo", category: "NotificationManager")
             }
             
             // Clean up stored response
@@ -185,7 +182,7 @@ class NotificationManager: NSObject, ObservableObject, UNUserNotificationCenterD
                 pendingResponses.removeValue(forKey: notificationId)
             }
         } else if actionIdentifier == dismissActionIdentifier {
-            logger.info("✋ User dismissed notification")
+            LogManager.shared.log("✋ User dismissed notification", category: "NotificationManager")
             
             // Clean up stored response
             if let notificationId = userInfo["notificationId"] as? String {
@@ -203,7 +200,7 @@ class NotificationManager: NSObject, ObservableObject, UNUserNotificationCenterD
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
     ) {
         // Show notification banner even when app is in foreground
-        logger.info("📱 Presenting notification while app in foreground")
+        LogManager.shared.log("📱 Presenting notification while app in foreground", category: "NotificationManager")
         completionHandler([.banner, .sound])
     }
     
@@ -212,12 +209,12 @@ class NotificationManager: NSObject, ObservableObject, UNUserNotificationCenterD
     func clearAllNotifications() {
         UNUserNotificationCenter.current().removeAllDeliveredNotifications()
         pendingResponses.removeAll()
-        logger.info("🧹 Cleared all notifications and pending responses")
+        LogManager.shared.log("🧹 Cleared all notifications and pending responses", category: "NotificationManager")
     }
     
     func clearNotification(identifier: String) {
         UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: [identifier])
         pendingResponses.removeValue(forKey: identifier)
-        logger.info("🧹 Cleared notification: \(identifier)")
+        LogManager.shared.log("🧹 Cleared notification: \(identifier)", category: "NotificationManager")
     }
 }

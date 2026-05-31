@@ -4,9 +4,6 @@
 import Foundation
 import Speech
 import AVFoundation
-import os.log
-
-private let logger = Logger(subsystem: "dev.910labs.voice-code", category: "VoiceInput")
 
 class VoiceInputManager: NSObject, ObservableObject {
     @Published var isRecording = false
@@ -76,7 +73,7 @@ class VoiceInputManager: NSObject, ObservableObject {
     private func startRecordingAfterTTSStopped(onSessionReady: (() -> Void)? = nil) {
         // Check authorization
         guard authorizationStatus == .authorized else {
-            print("Speech recognition not authorized")
+            LogManager.shared.log("Speech recognition not authorized", category: "VoiceInput")
             return
         }
 
@@ -110,7 +107,6 @@ class VoiceInputManager: NSObject, ObservableObject {
             try audioSession.setCategory(.playAndRecord, mode: .default, options: [.allowBluetoothA2DP])
             try audioSession.setActive(true)
             let msg = "VoiceInput: audio session → .playAndRecord/.default (was \(prevCategory)/\(prevMode)) route=\(audioSession.currentRoute.inputs.map(\.portName))"
-            logger.info("\(msg, privacy: .public)")
             LogManager.shared.log(msg, category: "VoiceInput")
             // Notify caller that session is in .playAndRecord context. Dispatched
             // async on main so it runs after this function returns and after
@@ -120,7 +116,6 @@ class VoiceInputManager: NSObject, ObservableObject {
             DispatchQueue.main.async { onSessionReady?() }
         } catch {
             let msg = "VoiceInput: failed to configure audio session: \(error.localizedDescription) (was \(prevCategory)/\(prevMode))"
-            logger.error("\(msg, privacy: .public)")
             LogManager.shared.log("❌ \(msg)", category: "VoiceInput")
             return
         }
@@ -130,7 +125,7 @@ class VoiceInputManager: NSObject, ObservableObject {
         // Create recognition request
         recognitionRequest = SFSpeechAudioBufferRecognitionRequest()
         guard let recognitionRequest = recognitionRequest else {
-            print("Unable to create recognition request")
+            LogManager.shared.log("Unable to create recognition request", category: "VoiceInput")
             return
         }
 
@@ -139,7 +134,7 @@ class VoiceInputManager: NSObject, ObservableObject {
         // Create audio engine
         audioEngine = AVAudioEngine()
         guard let audioEngine = audioEngine else {
-            print("Unable to create audio engine")
+            LogManager.shared.log("Unable to create audio engine", category: "VoiceInput")
             return
         }
 
@@ -155,7 +150,7 @@ class VoiceInputManager: NSObject, ObservableObject {
         do {
             try audioEngine.start()
         } catch {
-            print("Failed to start audio engine: \(error)")
+            LogManager.shared.log("Failed to start audio engine: \(error)", category: "VoiceInput")
             return
         }
 
@@ -171,16 +166,15 @@ class VoiceInputManager: NSObject, ObservableObject {
             }
 
             if let error = error {
-                logger.warning("VoiceInput: recognition ended with error: \(error.localizedDescription), isFinal=\(result?.isFinal ?? false)")
+                LogManager.shared.log("VoiceInput: recognition ended with error: \(error.localizedDescription), isFinal=\(result?.isFinal ?? false)", category: "VoiceInput")
                 self.stopRecording()
             } else if result?.isFinal == true {
-                logger.info("VoiceInput: recognition finalized, text='\(result?.bestTranscription.formattedString ?? "")'")
+                LogManager.shared.log("VoiceInput: recognition finalized, text='\(result?.bestTranscription.formattedString ?? "")'", category: "VoiceInput")
                 self.stopRecording()
             }
         }
 
         let startMsg = "VoiceInput: recording started — engine running, route=\(audioEngine.inputNode.outputFormat(forBus: 0).sampleRate)Hz"
-        logger.info("\(startMsg, privacy: .public)")
         LogManager.shared.log(startMsg, category: "VoiceInput")
         DispatchQueue.main.async {
             self.isRecording = true
@@ -199,11 +193,9 @@ class VoiceInputManager: NSObject, ObservableObject {
         // creates a race window where another app can seize the Now Playing slot. For
         // non-headset usage the session staying active in .playAndRecord is harmless.
         let sessionMsg = "VoiceInput: stopRecording — session left active, category=\(AVAudioSession.sharedInstance().category.rawValue)"
-        logger.info("\(sessionMsg, privacy: .public)")
         LogManager.shared.log(sessionMsg, category: "VoiceInput")
         #endif
 
-        logger.info("VoiceInput: recording stopped")
         LogManager.shared.log("VoiceInput: recording stopped", category: "VoiceInput")
         DispatchQueue.main.async {
             self.isRecording = false

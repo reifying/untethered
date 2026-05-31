@@ -1,27 +1,20 @@
 import Foundation
 import MediaPlayer
 import Combine
-import os.log
 #if os(iOS)
 import AVFoundation
 #endif
 
-private let logger = Logger(subsystem: "dev.910labs.voice-code", category: "HeadsetRemote")
-
-/// Log to both the system log (os.log) and the in-app LogManager so messages
-/// appear in the in-app debug log viewer as well as Console.app.
+/// Log to the in-app LogManager so messages appear in the in-app debug log viewer.
 private func hLog(_ msg: String) {
-    logger.info("\(msg, privacy: .public)")
     LogManager.shared.log(msg, category: "HeadsetRemote")
 }
 
 private func hLogWarning(_ msg: String) {
-    logger.warning("\(msg, privacy: .public)")
     LogManager.shared.log("⚠️ \(msg)", category: "HeadsetRemote")
 }
 
 private func hLogError(_ msg: String) {
-    logger.error("\(msg, privacy: .public)")
     LogManager.shared.log("❌ \(msg)", category: "HeadsetRemote")
 }
 
@@ -182,7 +175,7 @@ class HeadsetRemoteCommandManager: ObservableObject {
             guard let self = self, self.isActive else { return }
             guard let typeValue = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
                   let type = AVAudioSession.InterruptionType(rawValue: typeValue) else {
-                logger.warning("Headset: interruption notification with unreadable type")
+                hLogWarning("Headset: interruption notification with unreadable type")
                 return
             }
             let shouldResume = (notification.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt)
@@ -420,7 +413,7 @@ class HeadsetRemoteCommandManager: ObservableObject {
         voiceOutput.stop()
         state = .ready
         updateNowPlayingState()
-        logger.info("Headset interrupt: stopped TTS")
+        hLog("Headset interrupt: stopped TTS")
     }
 
     // MARK: - Recording Lifecycle
@@ -609,7 +602,7 @@ extension HeadsetRemoteCommandManager {
             keepAlivePlayer?.numberOfLoops = -1  // Loop indefinitely
             keepAlivePlayer?.prepareToPlay()
         } catch {
-            logger.error("Headset: failed to create silence player: \(error.localizedDescription)")
+            hLogError("Headset: failed to create silence player: \(error.localizedDescription)")
         }
     }
 

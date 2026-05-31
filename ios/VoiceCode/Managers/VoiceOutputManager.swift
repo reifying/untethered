@@ -4,10 +4,7 @@
 import Foundation
 import AVFoundation
 import Combine
-import os.log
 import ObjectiveC.runtime
-
-private let logger = Logger(subsystem: "dev.910labs.voice-code", category: "VoiceOutput")
 
 // Per-utterance session tag, attached via associated objects. Lets the
 // AVSpeechSynthesizerDelegate callbacks identify which session an utterance
@@ -95,7 +92,7 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
     private func handleActiveSessionChange(_ activeId: UUID?) {
         let inFlightStr = inFlightSessionId?.uuidString.lowercased() ?? "nil"
         let activeStr = activeId?.uuidString.lowercased() ?? "nil"
-        logger.info("🎯 handleActiveSessionChange: inFlight=\(inFlightStr, privacy: .public) active=\(activeStr, privacy: .public)")
+        LogManager.shared.log("🎯 handleActiveSessionChange: inFlight=\(inFlightStr) active=\(activeStr)", category: "VoiceOutput")
         // Only cancel on transitions to a DIFFERENT non-nil session. Ignoring
         // nil transitions avoids false positives from SwiftUI firing
         // onDisappear during transient view rebuilds (sheet presentation,
@@ -107,7 +104,7 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
         // "user is no longer in any session" signal.
         guard let newActive = activeId else { return }
         guard let inFlight = inFlightSessionId, inFlight != newActive else { return }
-        logger.info("🔇 STOPPING TTS — in-flight \(inFlight.uuidString.lowercased(), privacy: .public) != active \(activeStr, privacy: .public)")
+        LogManager.shared.log("🔇 STOPPING TTS — in-flight \(inFlight.uuidString.lowercased()) != active \(activeStr)", category: "VoiceOutput")
         synthesizer.stopSpeaking(at: .immediate)
     }
 
@@ -123,7 +120,7 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
 
         guard let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: AVAudioChannelCount(channelCount)),
               let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else {
-            print("Failed to create silent audio buffer")
+            LogManager.shared.log("Failed to create silent audio buffer", category: "VoiceOutput")
             return
         }
 
@@ -143,7 +140,7 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
             silencePlayer = try AVAudioPlayer(contentsOf: silenceURL)
             silencePlayer?.prepareToPlay()
         } catch {
-            print("Failed to setup silence player: \(error)")
+            LogManager.shared.log("Failed to setup silence player: \(error)", category: "VoiceOutput")
         }
     }
 
@@ -197,7 +194,7 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
         #if os(macOS)
         // When muted, silently ignore all speech requests
         if isMuted {
-            logger.info("🔇 Speech muted, ignoring request")
+            LogManager.shared.log("🔇 Speech muted, ignoring request", category: "VoiceOutput")
             return
         }
         #endif
@@ -220,21 +217,18 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
                 if shouldRespectSilentMode {
                     try audioSessionManager.configureAudioSessionForSilentMode()
                     let msg = "VoiceOutput: audio session → .ambient/.spokenAudio (silentMode)"
-                    logger.info("\(msg, privacy: .public)")
                     LogManager.shared.log(msg, category: "VoiceOutput")
                 } else {
                     try audioSessionManager.configureAudioSessionForForcedPlayback()
                     let msg = "VoiceOutput: audio session → .playback/.spokenAudio (forcedPlayback)"
-                    logger.info("\(msg, privacy: .public)")
                     LogManager.shared.log(msg, category: "VoiceOutput")
                 }
             } catch {
-                print("Failed to setup audio session: \(error)")
+                LogManager.shared.log("Failed to setup audio session: \(error)", category: "VoiceOutput")
                 return
             }
         } else {
             let msg = "VoiceOutput: headset mode active — keeping .playAndRecord session"
-            logger.info("\(msg, privacy: .public)")
             LogManager.shared.log(msg, category: "VoiceOutput")
         }
         #endif
@@ -248,26 +242,26 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
         if let identifier = voiceIdentifier,
            let voice = AVSpeechSynthesisVoice(identifier: identifier) {
             utterance.voice = voice
-            logger.info("🔊 Using voice: \(voice.name, privacy: .public) [\(voice.language, privacy: .public)]")
+            LogManager.shared.log("🔊 Using voice: \(voice.name) [\(voice.language)]", category: "VoiceOutput")
         } else if let voiceIdentifier = voiceIdentifier {
             // Voice identifier was provided but not found
-            logger.warning("⚠️ Voice not found for identifier: \(voiceIdentifier, privacy: .public), trying fallback")
+            LogManager.shared.log("⚠️ Voice not found for identifier: \(voiceIdentifier), trying fallback", category: "VoiceOutput")
             // Try en-US first
             if let enUSVoice = AVSpeechSynthesisVoice(language: "en-US") {
                 utterance.voice = enUSVoice
-                logger.info("🔊 Using fallback en-US voice: \(enUSVoice.name, privacy: .public)")
+                LogManager.shared.log("🔊 Using fallback en-US voice: \(enUSVoice.name)", category: "VoiceOutput")
             } else {
                 // Use system default
-                logger.warning("⚠️ en-US voice not available, using system default")
+                LogManager.shared.log("⚠️ en-US voice not available, using system default", category: "VoiceOutput")
                 utterance.voice = nil  // AVSpeechSynthesizer will use system default
             }
         } else {
             // No voice identifier provided, use en-US or system default
             if let enUSVoice = AVSpeechSynthesisVoice(language: "en-US") {
                 utterance.voice = enUSVoice
-                logger.info("🔊 Using default en-US voice: \(enUSVoice.name, privacy: .public)")
+                LogManager.shared.log("🔊 Using default en-US voice: \(enUSVoice.name)", category: "VoiceOutput")
             } else {
-                logger.warning("⚠️ en-US voice not available, using system default")
+                LogManager.shared.log("⚠️ en-US voice not available, using system default", category: "VoiceOutput")
                 utterance.voice = nil  // AVSpeechSynthesizer will use system default
             }
         }
@@ -283,7 +277,7 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
         inFlightSessionId = sessionId
 
         // Speak
-        logger.info("🔊 Invoking synthesizer.speak() with text length: \(text.count), voice: \(utterance.voice?.name ?? "system default", privacy: .public), sessionId: \(sessionId?.uuidString.lowercased() ?? "nil", privacy: .public)")
+        LogManager.shared.log("🔊 Invoking synthesizer.speak() with text length: \(text.count), voice: \(utterance.voice?.name ?? "system default"), sessionId: \(sessionId?.uuidString.lowercased() ?? "nil")", category: "VoiceOutput")
         synthesizer.speak(utterance)
 
         DispatchQueue.main.async {
@@ -350,7 +344,7 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
     // MARK: - AVSpeechSynthesizerDelegate
 
     func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didStart utterance: AVSpeechUtterance) {
-        logger.info("🔊 Speech STARTED: \(utterance.speechString.prefix(50), privacy: .public)...")
+        LogManager.shared.log("🔊 Speech STARTED: \(utterance.speechString.prefix(50))...", category: "VoiceOutput")
         DispatchQueue.main.async {
             self.isSpeaking = true
         }
@@ -361,7 +355,7 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
     }
 
     func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
-        logger.info("🔊 Speech FINISHED")
+        LogManager.shared.log("🔊 Speech FINISHED", category: "VoiceOutput")
         #if os(iOS)
         // Stop keep-alive timer
         stopKeepAliveTimer()
@@ -374,7 +368,7 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
             do {
                 try audioSession.setActive(false, options: .notifyOthersOnDeactivation)
             } catch {
-                logger.error("Failed to deactivate audio session: \(error.localizedDescription, privacy: .public)")
+                LogManager.shared.log("Failed to deactivate audio session: \(error.localizedDescription)", category: "VoiceOutput")
             }
         }
         #endif
@@ -389,7 +383,7 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
     }
 
     func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
-        logger.info("🔊 Speech CANCELLED")
+        LogManager.shared.log("🔊 Speech CANCELLED", category: "VoiceOutput")
         #if os(iOS)
         // Stop keep-alive timer
         stopKeepAliveTimer()

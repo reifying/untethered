@@ -1,9 +1,6 @@
 #if os(macOS)
 import Foundation
 import CoreAudio
-import os.log
-
-private let logger = Logger(subsystem: "dev.910labs.voice-code", category: "BluetoothAudio")
 
 class BluetoothAudioMonitor {
     private var monitoredDeviceID: AudioDeviceID = kAudioObjectUnknown
@@ -71,7 +68,7 @@ class BluetoothAudioMonitor {
         for device in devices {
             if isBluetoothDevice(device) && hasInputChannels(device) {
                 let name = deviceName(device) ?? "unknown"
-                logger.info("Found Bluetooth input device: \(name, privacy: .public) (ID: \(device))")
+                LogManager.shared.log("Found Bluetooth input device: \(name) (ID: \(device))", category: "BluetoothAudio")
                 return device
             }
         }
@@ -159,9 +156,9 @@ class BluetoothAudioMonitor {
 
         if status == noErr {
             let name = deviceName(deviceID) ?? "unknown"
-            logger.info("Monitoring mute on: \(name, privacy: .public)")
+            LogManager.shared.log("Monitoring mute on: \(name)", category: "BluetoothAudio")
         } else {
-            logger.error("Failed to add mute listener: \(status)")
+            LogManager.shared.log("Failed to add mute listener: \(status)", category: "BluetoothAudio")
         }
     }
 
@@ -179,7 +176,7 @@ class BluetoothAudioMonitor {
     private lazy var muteListener: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
         guard let self = self else { return }
         let muted = self.isMuted(self.monitoredDeviceID)
-        logger.info("Bluetooth mute changed: \(muted ? "muted" : "unmuted")")
+        LogManager.shared.log("Bluetooth mute changed: \(muted ? "muted" : "unmuted")", category: "BluetoothAudio")
         self.onMuteChanged?(muted)
     }
 
@@ -191,7 +188,7 @@ class BluetoothAudioMonitor {
             }
         } else {
             self.stopMonitoringCurrentDevice()
-            logger.info("Bluetooth input device disconnected")
+            LogManager.shared.log("Bluetooth input device disconnected", category: "BluetoothAudio")
         }
     }
 

@@ -175,7 +175,7 @@ class AppSettings: ObservableObject {
             // Trigger voice loading and caching
             _ = Self.availableVoices
             _ = Self.premiumVoices
-            print("🎙️ Voices pre-loaded and cached")
+            LogManager.shared.log("🎙️ Voices pre-loaded and cached", category: "AppSettings")
         }
     }
 
@@ -189,9 +189,9 @@ class AppSettings: ObservableObject {
         let allVoices = AVSpeechSynthesisVoice.speechVoices()
 
         // Debug: Print all available voices
-        print("🎙️ Total voices available: \(allVoices.count)")
+        LogManager.shared.log("🎙️ Total voices available: \(allVoices.count)", category: "AppSettings")
         for voice in allVoices.prefix(5) {
-            print("  - \(voice.name) (\(voice.quality.displayName)) [\(voice.language)] - \(voice.identifier)")
+            LogManager.shared.log("  - \(voice.name) (\(voice.quality.displayName)) [\(voice.language)] - \(voice.identifier)", category: "AppSettings")
         }
 
         let voices = allVoices
@@ -226,9 +226,9 @@ class AppSettings: ObservableObject {
                 return (voice.identifier, displayName, qualityName, voice.language)
             }
 
-        print("🎙️ Filtered English voices: \(voices.count)")
+        LogManager.shared.log("🎙️ Filtered English voices: \(voices.count)", category: "AppSettings")
         for voice in voices.prefix(5) {
-            print("  - \(voice.1)")
+            LogManager.shared.log("  - \(voice.1)", category: "AppSettings")
         }
 
         // Cache the result
@@ -309,7 +309,7 @@ class AppSettings: ObservableObject {
         let hashValue = stableHash(workingDirectory)
         let index = hashValue % premiumVoices.count
         let selectedVoice = premiumVoices[index]
-        print("🎙️ Voice rotation: project \(workingDirectory.split(separator: "/").last ?? "unknown") → \(selectedVoice.name) (index \(index) of \(premiumVoices.count))")
+        LogManager.shared.log("🎙️ Voice rotation: project \(workingDirectory.split(separator: "/").last ?? "unknown") → \(selectedVoice.name) (index \(index) of \(premiumVoices.count))", category: "AppSettings")
         return selectedVoice.identifier
     }
 

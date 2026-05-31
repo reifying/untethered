@@ -1,22 +1,16 @@
 import Foundation
-import os.log
 #if os(iOS)
 import BPHeadset
 
-private let logger = Logger(subsystem: "dev.910labs.voice-code", category: "BlueParrott")
-
 private func bpLog(_ msg: String) {
-    logger.info("\(msg, privacy: .public)")
     LogManager.shared.log(msg, category: "BlueParrott")
 }
 
 private func bpLogWarning(_ msg: String) {
-    logger.warning("\(msg, privacy: .public)")
     LogManager.shared.log("⚠️ \(msg)", category: "BlueParrott")
 }
 
 private func bpLogError(_ msg: String) {
-    logger.error("\(msg, privacy: .public)")
     LogManager.shared.log("❌ \(msg)", category: "BlueParrott")
 }
 
