@@ -4,7 +4,7 @@ Create individual implementation tasks as children of the epic.
 
 ## Task Creation Guidelines
 
-For each task, run `bd create` with:
+For each task, run `br create` with:
 - **Parent**: The epic you just created
 - **Title**: Action-oriented (e.g., 'Add validation to user input handler')
 - **Type**: task
@@ -63,27 +63,27 @@ Can be worked alongside: [list task titles]
 
 ### Setting Up Dependency Links
 
-After creating all tasks, establish dependency links using `bd dep add`.
-This ensures `bd ready` only shows tasks that are actually ready to work on.
+After creating all tasks, establish dependency links using `br dep add`.
+This ensures `br ready` only shows tasks that are actually ready to work on.
 
-**Syntax:** `bd dep add <blocked-task> <blocking-task>`
+**Syntax:** `br dep add <blocked-task> <blocking-task>`
 (The blocked-task depends on blocking-task completing first)
 
 **Required dependencies:**
 1. Epic depends on ALL child tasks (epic can't close until children complete):
    ```bash
-   bd dep add <epic-id> <child-task-1>
-   bd dep add <epic-id> <child-task-2>
+   br dep add <epic-id> <child-task-1>
+   br dep add <epic-id> <child-task-2>
    # ... repeat for each child
    ```
 
 2. Tasks depend on their prerequisites (tests depend on implementation, etc.):
    ```bash
    # Example: "Write tests" depends on "Implement handler"
-   bd dep add <test-task-id> <impl-task-id>
+   br dep add <test-task-id> <impl-task-id>
    ```
 
-**Verify with:** `bd blocked` to see dependency relationships
+**Verify with:** `br blocked` to see dependency relationships
 
 **Outcomes:** complete, other
 

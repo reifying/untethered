@@ -155,3 +155,48 @@
     (let [error-result {:success false
                         :error "Test error"}]
       (is (nil? (gen/print-sync-summary error-result))))))
+
+;; bd -> br migration guards (tmux-untethered-t7v.6).
+;; Recipe .md files are generated from recipes.clj, so these tests guard both
+;; the committed documentation artifacts and any future regeneration from
+;; re-introducing the retired `bd` CLI. The substring "bd " mirrors the task's
+;; verification: `grep -r "bd " recipes/ --include="*.md"` must return 0 matches.
+
+(defn- recipe-md-files
+  "All recipe markdown files under dir (recursive)."
+  [dir]
+  (->> (file-seq (io/file dir))
+       (filter #(.isFile ^java.io.File %))
+       (filter #(str/ends-with? (.getName ^java.io.File %) ".md"))))
+
+(defn- bd-reference-lines
+  "[path line-number line] tuples for lines containing a `bd ` command
+   reference, for diagnostics."
+  [^java.io.File file]
+  (->> (str/split-lines (slurp file))
+       (map-indexed (fn [i line] [(inc i) line]))
+       (filter (fn [[_ line]] (str/includes? line "bd ")))
+       (map (fn [[n line]] [(.getPath file) n line]))))
+
+(deftest committed-recipe-md-has-no-bd-references-test
+  (testing "no `bd ` command references remain in committed recipe .md files"
+    ;; backend-test runs with user.dir = backend/, so recipes/ is one level up.
+    (let [recipes-dir (io/file (System/getProperty "user.dir") ".." "recipes")
+          files (recipe-md-files recipes-dir)
+          offenders (mapcat bd-reference-lines files)]
+      (is (pos? (count files))
+          (str "Expected recipe .md files under " (.getPath recipes-dir)))
+      (is (empty? offenders)
+          (str "Legacy `bd ` references in committed recipe markdown: "
+               (vec offenders))))))
+
+(deftest generated-recipe-md-has-no-bd-references-test
+  (testing "regenerating recipe markdown from recipes.clj yields no `bd ` references"
+    (let [temp-dir (io/file "/tmp/recipe-no-bd-test")
+          _ (.mkdirs temp-dir)
+          result (gen/sync-recipes recipes/all-recipes (str temp-dir))
+          offenders (mapcat bd-reference-lines (recipe-md-files temp-dir))]
+      (is (:success result))
+      (is (empty? offenders)
+          (str "Generated recipe markdown contains legacy `bd ` references: "
+               (vec offenders))))))

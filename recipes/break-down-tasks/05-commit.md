@@ -3,7 +3,7 @@
 Commit and push the beads changes.
 
 ## Commit Requirements
-- Include all files in `beads/` directory
+- Run `br sync --flush-only` then stage issue state with `git add .beads/issues.jsonl`
 - Use the epic ID in the commit message
 - Write a clear commit message
 

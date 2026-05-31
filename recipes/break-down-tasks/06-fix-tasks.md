@@ -2,11 +2,11 @@
 
 Address the issues found in the task review.
 
-Use `bd edit <task-id>` to update task descriptions.
-Use `bd create` to create missing tasks.
-Use `bd delete <task-id>` to remove duplicate or unnecessary tasks.
-Use `bd dep add <blocked> <blocking>` to add missing dependency links.
-Use `bd dep rm <blocked> <blocking>` to remove incorrect dependencies.
+Use `br update <task-id> --description/--notes/--design` to update task descriptions.
+Use `br create` to create missing tasks.
+Use `br delete <task-id>` to remove duplicate or unnecessary tasks.
+Use `br dep add <blocked> <blocking>` to add missing dependency links.
+Use `br dep remove <blocked> <blocking>` to remove incorrect dependencies.
 
 **Outcomes:** complete, other
 

@@ -3,13 +3,13 @@
 Implement the current task from beads.
 
 ## Prerequisites
-1. Run `bd ready --limit 1` to see the task details
+1. Run `br ready --limit 1 --type task --type bug --type feature --type chore --type docs --type question` and `br show <task-id>` to see the task details
 2. Read the design document referenced in the task
 3. Review relevant code standards (@STANDARDS.md, @CLAUDE.md)
 4. Familiarize yourself with the codebase context
 
 ## No Tasks Available
-If `bd ready --limit 1` indicates there are no tasks ready for implementation, select the `no-tasks` outcome. This is a normal situation—the recipe will exit gracefully.
+If `br ready --limit 1 --type task --type bug --type feature --type chore --type docs --type question` indicates there are no tasks ready for implementation, select the `no-tasks` outcome. This is a normal situation—the recipe will exit gracefully.
 
 ## Implementation Requirements
 - Follow the technical approach specified in the task

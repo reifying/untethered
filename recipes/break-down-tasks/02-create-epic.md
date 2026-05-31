@@ -3,7 +3,7 @@
 Create the parent epic for this implementation work.
 
 ## Epic Creation
-Run `bd create` to create an epic with:
+Run `br create` to create an epic with:
 - **Title**: Clear, concise name for the feature/change
 - **Description**: Reference the design document using @path/to/design.md
 - **Type**: epic
