@@ -247,6 +247,54 @@ final class SessionSyncManagerOffsetPayloadTests: XCTestCase {
                        "first non-empty reply latches liveFromOffset at nextOffset")
     }
 
+    /// Regression: endOfFile:false chain payloads must NOT set liveFromOffset.
+    /// In v0.5.0, `nextOffset` is the batch end (not the global session head
+    /// like v0.4.0's `nextSeq`). If we anchored liveFromOffset to the first
+    /// batch's nextOffset, chain payloads at offsets ≥ that boundary would
+    /// pass the TTS gate and be spoken aloud as history replays.
+    func test_endOfFile_false_does_not_set_liveFromOffset() {
+        seedSession(lastOffsetMerged: 0, liveFromOffset: 0)
+
+        // First chain payload: endOfFile:false — must NOT anchor liveFromOffset.
+        let p1 = payload(messages: [wire(offset: 0, role: "assistant")],
+                         nextOffset: 1,
+                         endOfFile: false)
+        manager.handleSessionHistoryPayload(p1)
+        waitForHistoryUpdate()
+        drainMainQueue()
+
+        XCTAssertEqual(fetchSession()?.liveFromOffset, 0,
+                       "endOfFile:false must not anchor the TTS boundary")
+    }
+
+    /// Full chain scenario: multiple endOfFile:false payloads followed by
+    /// endOfFile:true. liveFromOffset is set only on the final payload, using
+    /// the true global head (nextOffset at end-of-file), so all chain messages
+    /// have offset < liveFromOffset and would NOT be spoken.
+    func test_chain_sets_liveFromOffset_only_on_final_endOfFile_true_payload() {
+        seedSession(lastOffsetMerged: 0, liveFromOffset: 0)
+
+        // Batch 1 (endOfFile:false): messages at offsets 0..99, nextOffset=100
+        let chainMsgs1 = (Int64(0)..<100).map { wire(offset: $0) }
+        let p1 = payload(messages: chainMsgs1, nextOffset: 100, endOfFile: false)
+        manager.handleSessionHistoryPayload(p1)
+        waitForHistoryUpdate()
+        drainMainQueue()
+
+        XCTAssertEqual(fetchSession()?.liveFromOffset, 0,
+                       "liveFromOffset must remain 0 after first endOfFile:false batch")
+
+        // Batch 2 (endOfFile:true): messages at offsets 100..199, nextOffset=200
+        let chainMsgs2 = (Int64(100)..<200).map { wire(offset: $0) }
+        let p2 = payload(messages: chainMsgs2, nextOffset: 200, endOfFile: true)
+        manager.handleSessionHistoryPayload(p2)
+        waitForHistoryUpdate()
+        drainMainQueue()
+
+        XCTAssertEqual(fetchSession()?.liveFromOffset, 200,
+                       "liveFromOffset must be anchored at nextOffset of the final endOfFile:true payload")
+    }
+
     /// Reverse-direction guard: once captured, `liveFromOffset` does not
     /// regress just because a later reply happens to carry a smaller
     /// `nextOffset` (e.g. push and history reply crossing on the wire).

@@ -291,6 +291,41 @@ final class ResourcesManagerTests: XCTestCase {
 
         waitForExpectations(timeout: 1.0)
     }
+
+    // MARK: - Share-Logs Response Isolation (tmux-untethered-11d)
+
+    func testForeignShareLogsResponseIgnoredWhenNoExactMatch() {
+        // A "logs-" response from ConversationView's share-logs flow has no
+        // matching pending acknowledgment here, so ResourcesManager must ignore
+        // it rather than misattribute it to an unrelated pending upload via the
+        // "first pending" fallback.
+        XCTAssertTrue(ResourcesManager.isForeignShareLogsResponse(
+            filename: "logs-20260531-143022.txt",
+            hasExactPendingMatch: false
+        ))
+    }
+
+    func testOwnLogsNamedResourceNotIgnoredWhenExactMatch() {
+        // If a user genuinely uploaded a resource named "logs-…" via
+        // ResourcesManager, it has an exact pending match and must be handled.
+        XCTAssertFalse(ResourcesManager.isForeignShareLogsResponse(
+            filename: "logs-notes.txt",
+            hasExactPendingMatch: true
+        ))
+    }
+
+    func testNonLogsResponseNeverTreatedAsForeign() {
+        // Ordinary resource uploads (no "logs-" prefix) are always handled,
+        // regardless of exact-match state — including backend conflict renames.
+        XCTAssertFalse(ResourcesManager.isForeignShareLogsResponse(
+            filename: "screenshot.png",
+            hasExactPendingMatch: false
+        ))
+        XCTAssertFalse(ResourcesManager.isForeignShareLogsResponse(
+            filename: "file-20251111123456.txt",
+            hasExactPendingMatch: false
+        ))
+    }
 }
 
 // MARK: - Mock VoiceCodeClient

@@ -3,9 +3,6 @@
 
 import Foundation
 import CoreData
-import os.log
-
-private let logger = Logger(subsystem: "com.travisbrown.VoiceCode", category: "SessionSync")
 
 // MARK: - Notification Names
 
@@ -165,16 +162,16 @@ class SessionSyncManager {
     /// Handle session_list message from backend
     /// - Parameter sessions: Array of session metadata dictionaries
     func handleSessionList(_ sessions: [[String: Any]]) async {
-        logger.info("📥 Received session_list with \(sessions.count) sessions")
+        LogManager.shared.log("📥 Received session_list with \(sessions.count) sessions", category: "SessionSync")
 
         // Log all received sessions with their details
-        logger.info("📋 Sessions received from backend:")
+        LogManager.shared.log("📋 Sessions received from backend:", category: "SessionSync")
         for (index, sessionData) in sessions.enumerated() {
             let sessionId = sessionData["session_id"] as? String ?? "unknown"
             let name = sessionData["name"] as? String ?? "unknown"
             let workingDir = sessionData["working_directory"] as? String ?? "unknown"
             let messageCount = sessionData["message_count"] as? Int ?? 0
-            logger.info("  [\(index + 1)] \(sessionId) | \(messageCount) msgs | \(name) | \(workingDir)")
+            LogManager.shared.log("  [\(index + 1)] \(sessionId) | \(messageCount) msgs | \(name) | \(workingDir)", category: "SessionSync")
         }
 
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
@@ -191,7 +188,7 @@ class SessionSyncManager {
                 do {
                     if backgroundContext.hasChanges {
                         try backgroundContext.save()
-                        logger.info("✅ Saved \(sessions.count) sessions to CoreData")
+                        LogManager.shared.log("✅ Saved \(sessions.count) sessions to CoreData", category: "SessionSync")
 
                         // Notify observers that session list was updated
                         DispatchQueue.main.async {
@@ -199,7 +196,7 @@ class SessionSyncManager {
                         }
                     }
                 } catch {
-                    logger.error("❌ Failed to save session_list: \(error.localizedDescription)")
+                    LogManager.shared.log("❌ Failed to save session_list: \(error.localizedDescription)", category: "SessionSync")
                 }
 
                 continuation.resume()
@@ -220,24 +217,24 @@ class SessionSyncManager {
         let messageCount = sessionData["message_count"] as? Int ?? 0
         let hasPreview = (sessionData["preview"] as? String)?.isEmpty == false
 
-        logger.info("📨 session_created received: \(sessionId)")
-        logger.info("  Name: \(name)")
-        logger.info("  Working dir: \(workingDir)")
-        logger.info("  Message count: \(messageCount)")
-        logger.info("  Has preview: \(hasPreview)")
+        LogManager.shared.log("📨 session_created received: \(sessionId)", category: "SessionSync")
+        LogManager.shared.log("  Name: \(name)", category: "SessionSync")
+        LogManager.shared.log("  Working dir: \(workingDir)", category: "SessionSync")
+        LogManager.shared.log("  Message count: \(messageCount)", category: "SessionSync")
+        LogManager.shared.log("  Has preview: \(hasPreview)", category: "SessionSync")
 
         guard sessionData["session_id"] as? String != nil else {
-            logger.warning("⚠️ session_created missing session_id, dropping")
+            LogManager.shared.log("⚠️ session_created missing session_id, dropping", category: "SessionSync")
             return
         }
 
         // Backend guarantees all notified sessions have messages via delayed notification pattern
         // Just log for observability if we receive a 0-message session
         if messageCount == 0 {
-            logger.info("📝 Note: Received session with 0 messages (may update soon): \(sessionId)")
+            LogManager.shared.log("📝 Note: Received session with 0 messages (may update soon): \(sessionId)", category: "SessionSync")
         }
 
-        logger.info("✅ Accepting session_created for: \(sessionId)")
+        LogManager.shared.log("✅ Accepting session_created for: \(sessionId)", category: "SessionSync")
 
         persistenceController.performBackgroundTask { [weak self] backgroundContext in
             guard let self = self else { return }
@@ -247,7 +244,7 @@ class SessionSyncManager {
             do {
                 if backgroundContext.hasChanges {
                     try backgroundContext.save()
-                    logger.info("Created session: \(sessionId)")
+                    LogManager.shared.log("Created session: \(sessionId)", category: "SessionSync")
 
                     // Call completion on main thread after successful save
                     if let completion = completion {
@@ -257,7 +254,7 @@ class SessionSyncManager {
                     }
                 }
             } catch {
-                logger.error("Failed to save session_created: \(error.localizedDescription)")
+                LogManager.shared.log("Failed to save session_created: \(error.localizedDescription)", category: "SessionSync")
             }
         }
     }
@@ -274,12 +271,12 @@ class SessionSyncManager {
     ///   - messages: Array of message dictionaries (may be delta or full history)
     func handleSessionHistory(sessionId: String, messages: [[String: Any]]) {
         let historyStart = Date()
-        logger.info("⏱️ handleSessionHistory START - \(sessionId.prefix(8))... with \(messages.count) messages")
+        LogManager.shared.log("⏱️ handleSessionHistory START - \(sessionId.prefix(8))... with \(messages.count) messages", category: "SessionSync")
 
         // Early return if no messages - delta sync with no new messages
         // Don't touch existing messages
         if messages.isEmpty {
-            logger.info("⏱️ handleSessionHistory COMPLETE - no new messages (delta sync up to date)")
+            LogManager.shared.log("⏱️ handleSessionHistory COMPLETE - no new messages (delta sync up to date)", category: "SessionSync")
             return
         }
 
@@ -288,7 +285,7 @@ class SessionSyncManager {
 
             // Validate UUID format
             guard let sessionUUID = UUID(uuidString: sessionId) else {
-                logger.error("Invalid session ID format in handleSessionHistory: \(sessionId)")
+                LogManager.shared.log("Invalid session ID format in handleSessionHistory: \(sessionId)", category: "SessionSync")
                 return
             }
 
@@ -297,16 +294,16 @@ class SessionSyncManager {
             let fetchRequest = CDBackendSession.fetchBackendSession(id: sessionUUID)
 
             guard let session = try? backgroundContext.fetch(fetchRequest).first else {
-                logger.warning("Session not found for history: \(sessionId)")
+                LogManager.shared.log("Session not found for history: \(sessionId)", category: "SessionSync")
                 return
             }
-            logger.info("⏱️ +\(Int(Date().timeIntervalSince(fetchStart) * 1000))ms - fetched session")
+            LogManager.shared.log("⏱️ +\(Int(Date().timeIntervalSince(fetchStart) * 1000))ms - fetched session", category: "SessionSync")
 
             // Get existing message IDs to avoid duplicates
             let existingIds: Set<UUID>
             if let existingMessages = session.messages?.allObjects as? [CDMessage] {
                 existingIds = Set(existingMessages.map { $0.id })
-                logger.info("⏱️ Found \(existingIds.count) existing messages")
+                LogManager.shared.log("⏱️ Found \(existingIds.count) existing messages", category: "SessionSync")
             } else {
                 existingIds = Set()
             }
@@ -324,14 +321,14 @@ class SessionSyncManager {
                 self.createMessage(messageData, sessionId: sessionId, in: backgroundContext, session: session)
                 addedCount += 1
             }
-            logger.info("⏱️ +\(Int(Date().timeIntervalSince(createStart) * 1000))ms - added \(addedCount) new messages (skipped \(messages.count - addedCount) duplicates)")
+            LogManager.shared.log("⏱️ +\(Int(Date().timeIntervalSince(createStart) * 1000))ms - added \(addedCount) new messages (skipped \(messages.count - addedCount) duplicates)", category: "SessionSync")
 
             // Prune old messages to prevent unbounded growth in long-running sessions
             // This keeps only the newest N messages (iOS only needs recent history; backend retains full)
             let pruneStart = Date()
             let prunedCount = CDMessage.pruneOldMessages(sessionId: sessionUUID, in: backgroundContext)
             if prunedCount > 0 {
-                logger.info("⏱️ +\(Int(Date().timeIntervalSince(pruneStart) * 1000))ms - pruned \(prunedCount) old messages")
+                LogManager.shared.log("⏱️ +\(Int(Date().timeIntervalSince(pruneStart) * 1000))ms - pruned \(prunedCount) old messages", category: "SessionSync")
             }
 
             // Update session metadata with actual count after pruning
@@ -355,8 +352,8 @@ class SessionSyncManager {
                 if backgroundContext.hasChanges {
                     let saveStart = Date()
                     try backgroundContext.save()
-                    logger.info("⏱️ +\(Int(Date().timeIntervalSince(saveStart) * 1000))ms - saved to CoreData")
-                    logger.info("⏱️ handleSessionHistory COMPLETE - total: \(Int(Date().timeIntervalSince(historyStart) * 1000))ms, \(addedCount) new messages, \(prunedCount) pruned")
+                    LogManager.shared.log("⏱️ +\(Int(Date().timeIntervalSince(saveStart) * 1000))ms - saved to CoreData", category: "SessionSync")
+                    LogManager.shared.log("⏱️ handleSessionHistory COMPLETE - total: \(Int(Date().timeIntervalSince(historyStart) * 1000))ms, \(addedCount) new messages, \(prunedCount) pruned", category: "SessionSync")
 
                     // Post notification on main thread to trigger UI refresh
                     // This is needed because @FetchRequest may not auto-update when messages are
@@ -371,10 +368,10 @@ class SessionSyncManager {
                         }
                     }
                 } else {
-                    logger.info("⏱️ handleSessionHistory COMPLETE - no changes to save")
+                    LogManager.shared.log("⏱️ handleSessionHistory COMPLETE - no changes to save", category: "SessionSync")
                 }
             } catch {
-                logger.error("Failed to save session_history: \(error.localizedDescription)")
+                LogManager.shared.log("Failed to save session_history: \(error.localizedDescription)", category: "SessionSync")
             }
         }
     }
@@ -412,7 +409,7 @@ class SessionSyncManager {
         // Mark the session synchronously so any subsequent non-gap payload
         // that arrives before the async delegate hop runs is refused below.
         if let gap = payload.gap, gap.reason == "pruned" {
-            logger.warning("⚠️ Pruned gap for \(payload.sessionId): requested_last_seq=\(gap.requestedLastSeq), min_available_seq=\(gap.minAvailableSeq)")
+            LogManager.shared.log("⚠️ Pruned gap for \(payload.sessionId): requested_last_seq=\(gap.requestedLastSeq), min_available_seq=\(gap.minAvailableSeq)", category: "SessionSync")
             prunedSessions.insert(prunedKey)
             let sessionId = payload.sessionId
             DispatchQueue.main.async { [weak self] in
@@ -432,12 +429,12 @@ class SessionSyncManager {
         // between pruned detection and the delegate hop would mix stale and
         // post-gap messages with no visual break.
         if prunedSessions.contains(prunedKey) {
-            logger.warning("🚫 Refusing session_history merge for \(payload.sessionId) — pruned-gap flag still set; awaiting user acknowledgment")
+            LogManager.shared.log("🚫 Refusing session_history merge for \(payload.sessionId) — pruned-gap flag still set; awaiting user acknowledgment", category: "SessionSync")
             return
         }
 
         guard let sessionUUID = UUID(uuidString: payload.sessionId) else {
-            logger.error("Invalid session ID format in handleSessionHistoryPayload: \(payload.sessionId)")
+            LogManager.shared.log("Invalid session ID format in handleSessionHistoryPayload: \(payload.sessionId)", category: "SessionSync")
             return
         }
 
@@ -464,7 +461,7 @@ class SessionSyncManager {
             // 3-case gap decision. Empty windows (no first_seq) never trip a gap.
             let gapDetected: Bool
             if let firstSeq = payload.firstSeq, firstSeq > localLastSeq + 1 {
-                logger.warning("📭 Gap for \(payload.sessionId): local_last_seq=\(localLastSeq), first_seq=\(firstSeq); backfilling from \(localLastSeq)")
+                LogManager.shared.log("📭 Gap for \(payload.sessionId): local_last_seq=\(localLastSeq), first_seq=\(firstSeq); backfilling from \(localLastSeq)", category: "SessionSync")
                 gapDetected = true
             } else {
                 gapDetected = false
@@ -538,7 +535,7 @@ class SessionSyncManager {
             if !newAssistantTexts.isEmpty
                 && UserDefaults.standard.bool(forKey: "priorityQueueEnabled") {
                 CDBackendSession.addToPriorityQueue(session, context: backgroundContext)
-                logger.info("📌 Auto-added session to priority queue after assistant response: \(payload.sessionId)")
+                LogManager.shared.log("📌 Auto-added session to priority queue after assistant response: \(payload.sessionId)", category: "SessionSync")
             }
 
             // Keep messageCount in sync with actual row count to avoid
@@ -566,7 +563,7 @@ class SessionSyncManager {
                 }
             } catch {
                 let nsError = error as NSError
-                logger.error("Failed to save session_history payload: domain=\(nsError.domain, privacy: .public) code=\(nsError.code, privacy: .public) userInfo=\(nsError.userInfo, privacy: .public)")
+                LogManager.shared.log("Failed to save session_history payload: domain=\(nsError.domain) code=\(nsError.code) userInfo=\(nsError.userInfo)", category: "SessionSync")
                 // Don't stay stuck: ask the client to resubscribe from the
                 // pre-payload cursor so the next push attempts a fresh save
                 // instead of permanently leaving local_last_seq stale. Also
@@ -588,7 +585,7 @@ class SessionSyncManager {
                 if deletedCount > 0 {
                     session.messageCount -= Int32(deletedCount)
                     try? backgroundContext.save()
-                    logger.info("🧹 Pruned \(deletedCount) old messages from session \(payload.sessionId)")
+                    LogManager.shared.log("🧹 Pruned \(deletedCount) old messages from session \(payload.sessionId)", category: "SessionSync")
                 }
             }
 
@@ -675,7 +672,7 @@ class SessionSyncManager {
                             advanced = false
                         }
                         if !advanced {
-                            logger.error("⛔ Aborting is_complete:false chain for \(sessionId): cursor stalled at \(prevAskedCursor); payload last_seq=\(receivedLastSeq.map(String.init) ?? "nil")")
+                            LogManager.shared.log("⛔ Aborting is_complete:false chain for \(sessionId): cursor stalled at \(prevAskedCursor); payload last_seq=\(receivedLastSeq.map(String.init) ?? "nil")", category: "SessionSync")
                             self.incompleteChainCursors.removeValue(forKey: key)
                             self.delegate?.sessionSyncDidStallChain(sessionId, atCursor: prevAskedCursor)
                             return
@@ -705,7 +702,7 @@ class SessionSyncManager {
     /// §3.5 / §6 R2 (file_replaced recovery and purge semantics).
     func handleSessionHistoryPayload(_ payload: SessionHistoryPayloadV5) {
         guard let sessionUUID = UUID(uuidString: payload.sessionId) else {
-            logger.error("Invalid session ID in v5 handleSessionHistoryPayload: \(payload.sessionId)")
+            LogManager.shared.log("Invalid session ID in v5 handleSessionHistoryPayload: \(payload.sessionId)", category: "SessionSync")
             return
         }
 
@@ -728,7 +725,7 @@ class SessionSyncManager {
                 // next subscribe re-sends the stale signature and the
                 // server replies `file_replaced: true` again, looping.
                 if payload.fileReplaced == true {
-                    logger.warning("🧹 file_replaced for \(payload.sessionId): purging cache and re-subscribing from offset 0 (new signature=\(payload.fileSignature ?? "<nil>"))")
+                    LogManager.shared.log("🧹 file_replaced for \(payload.sessionId): purging cache and re-subscribing from offset 0 (new signature=\(payload.fileSignature ?? "<nil>"))", category: "SessionSync")
                     session.lastOffsetMerged = 0
                     session.liveFromOffset = 0
                     // Server contract says R2 always carries a fresh
@@ -744,7 +741,7 @@ class SessionSyncManager {
                     do {
                         try ctx.save()
                     } catch {
-                        logger.error("Failed to save file_replaced recovery for \(payload.sessionId): \(error.localizedDescription)")
+                        LogManager.shared.log("Failed to save file_replaced recovery for \(payload.sessionId): \(error.localizedDescription)", category: "SessionSync")
                         return
                     }
                     let sessionId = payload.sessionId
@@ -773,17 +770,31 @@ class SessionSyncManager {
                 // past the new watermark and let the upsert below refill
                 // anything the reply carries.
                 if payload.nextOffset < session.lastOffsetMerged {
-                    logger.warning("🔁 Reset cursor for \(payload.sessionId): had=\(session.lastOffsetMerged), server next_offset=\(payload.nextOffset)")
+                    LogManager.shared.log("🔁 Reset cursor for \(payload.sessionId): had=\(session.lastOffsetMerged), server next_offset=\(payload.nextOffset)", category: "SessionSync")
                     session.lastOffsetMerged = payload.nextOffset
                     self.purgeMessagesAtOrAbove(offset: payload.nextOffset, session: session, in: ctx)
                 }
 
-                // TTS boundary — capture on the first *non-empty* reply this
-                // launch. The `nextOffset > 0` guard prevents an empty
-                // caught-up reply from pinning `liveFromOffset=0`, which
-                // would re-speak historical messages on subsequent payloads
+                // TTS boundary — capture on the first *complete* (endOfFile:true)
+                // non-empty reply this launch.
+                //
+                // Why endOfFile is required: in v0.5.0, `nextOffset` is the batch
+                // end (last_message_offset + 1), NOT the global session head like
+                // v0.4.0's `nextSeq`. An endOfFile:false chain re-subscribes from
+                // nextOffset, so the next batch starts at that same offset. If we
+                // anchored liveFromOffset to the first batch's nextOffset (e.g. 100),
+                // chain payloads would contain messages at offsets 100, 101, …—all
+                // ≥ liveFromOffset—and would be spoken aloud as if live. Holding
+                // liveFromOffset=0 keeps the `liveFromOffset > 0` gate closed for
+                // the entire chain; the final endOfFile:true payload carries
+                // nextOffset = file-end-line-count (true global head), which is the
+                // correct TTS boundary (regression fix for "session history replay TTS").
+                //
+                // The `nextOffset > 0` guard prevents an empty caught-up reply
+                // (nextOffset=0) from pinning liveFromOffset=0, which would cause
+                // all subsequent messages to satisfy `offset >= 0` and be spoken
                 // (regression guard for tmux-untethered-i2n).
-                if session.liveFromOffset == 0 && payload.nextOffset > 0 {
+                if session.liveFromOffset == 0 && payload.nextOffset > 0 && payload.endOfFile {
                     session.liveFromOffset = payload.nextOffset
                 }
                 let liveFromOffset = session.liveFromOffset
@@ -839,7 +850,7 @@ class SessionSyncManager {
                 if !newAssistantTexts.isEmpty
                     && UserDefaults.standard.bool(forKey: "priorityQueueEnabled") {
                     CDBackendSession.addToPriorityQueue(session, context: ctx)
-                    logger.info("📌 Auto-added session to priority queue after assistant response: \(payload.sessionId)")
+                    LogManager.shared.log("📌 Auto-added session to priority queue after assistant response: \(payload.sessionId)", category: "SessionSync")
                 }
 
                 do {
@@ -858,7 +869,7 @@ class SessionSyncManager {
                     }
                 } catch {
                     let nsError = error as NSError
-                    logger.error("Failed to save v5 session_history payload: domain=\(nsError.domain, privacy: .public) code=\(nsError.code, privacy: .public) userInfo=\(nsError.userInfo, privacy: .public)")
+                    LogManager.shared.log("Failed to save v5 session_history payload: domain=\(nsError.domain) code=\(nsError.code) userInfo=\(nsError.userInfo)", category: "SessionSync")
                     return
                 }
 
@@ -867,7 +878,7 @@ class SessionSyncManager {
                     if deletedCount > 0 {
                         session.messageCount -= Int32(deletedCount)
                         try? ctx.save()
-                        logger.info("🧹 Pruned \(deletedCount) old messages from session \(payload.sessionId)")
+                        LogManager.shared.log("🧹 Pruned \(deletedCount) old messages from session \(payload.sessionId)", category: "SessionSync")
                     }
                 }
 
@@ -888,7 +899,7 @@ class SessionSyncManager {
                     if !endOfFile {
                         if let prevCursor = self.incompleteChainCursorsV5[key],
                            nextOffset <= prevCursor {
-                            logger.error("⛔ Aborting end_of_file:false chain for \(sessionId): cursor stalled at \(prevCursor); payload next_offset=\(nextOffset)")
+                            LogManager.shared.log("⛔ Aborting end_of_file:false chain for \(sessionId): cursor stalled at \(prevCursor); payload next_offset=\(nextOffset)", category: "SessionSync")
                             self.incompleteChainCursorsV5.removeValue(forKey: key)
                             self.delegate?.sessionSyncDidStallChain(sessionId, atCursor: prevCursor)
                             return
@@ -965,10 +976,10 @@ class SessionSyncManager {
                 let changes: [AnyHashable: Any] = [NSDeletedObjectsKey: deletedIDs]
                 NSManagedObjectContext.mergeChanges(fromRemoteContextSave: changes,
                                                    into: [ctx, persistenceController.container.viewContext])
-                logger.info("🧹 Purged \(deletedIDs.count) messages at-or-above offset \(offset) for session \(session.id.uuidString.lowercased())")
+                LogManager.shared.log("🧹 Purged \(deletedIDs.count) messages at-or-above offset \(offset) for session \(session.id.uuidString.lowercased())", category: "SessionSync")
             }
         } catch {
-            logger.error("purgeMessagesAtOrAbove failed for session \(session.id.uuidString.lowercased()) offset=\(offset): \(error.localizedDescription)")
+            LogManager.shared.log("purgeMessagesAtOrAbove failed for session \(session.id.uuidString.lowercased()) offset=\(offset): \(error.localizedDescription)", category: "SessionSync")
         }
     }
 
@@ -981,12 +992,12 @@ class SessionSyncManager {
     @discardableResult
     internal func upsertMessage(_ wireMessage: WireMessageV5, session: CDBackendSession, in context: NSManagedObjectContext) -> Bool {
         guard let wireSessionUUID = UUID(uuidString: wireMessage.sessionId) else {
-            logger.warning("Invalid wire session ID in v5 upsert: \(wireMessage.sessionId)")
+            LogManager.shared.log("Invalid wire session ID in v5 upsert: \(wireMessage.sessionId)", category: "SessionSync")
             return false
         }
 
         guard wireSessionUUID == session.id else {
-            logger.error("v5 wire message session \(wireMessage.sessionId) does not match payload session \(session.id.uuidString.lowercased()); dropping")
+            LogManager.shared.log("v5 wire message session \(wireMessage.sessionId) does not match payload session \(session.id.uuidString.lowercased()); dropping", category: "SessionSync")
             return false
         }
 
@@ -1106,7 +1117,7 @@ class SessionSyncManager {
         if let existing = try? context.fetch(request).first {
             return existing
         }
-        logger.info("Creating new session from history payload: \(sessionUUID.uuidString.lowercased())")
+        LogManager.shared.log("Creating new session from history payload: \(sessionUUID.uuidString.lowercased())", category: "SessionSync")
         let session = CDBackendSession(context: context)
         session.id = sessionUUID
         session.backendName = ""
@@ -1129,7 +1140,7 @@ class SessionSyncManager {
     @discardableResult
     internal func upsertMessage(_ wireMessage: WireMessage, session: CDBackendSession, in context: NSManagedObjectContext) -> Bool {
         guard let wireSessionUUID = UUID(uuidString: wireMessage.sessionId) else {
-            logger.warning("Invalid wire session ID in upsert: \(wireMessage.sessionId)")
+            LogManager.shared.log("Invalid wire session ID in upsert: \(wireMessage.sessionId)", category: "SessionSync")
             return false
         }
 
@@ -1138,7 +1149,7 @@ class SessionSyncManager {
         // so the scalar `sessionId` and the `session` relationship never
         // disagree. Backend should never emit this, but trust-but-verify.
         guard wireSessionUUID == session.id else {
-            logger.error("Wire message session \(wireMessage.sessionId) does not match payload session \(session.id.uuidString.lowercased()); dropping")
+            LogManager.shared.log("Wire message session \(wireMessage.sessionId) does not match payload session \(session.id.uuidString.lowercased()); dropping", category: "SessionSync")
             return false
         }
 
@@ -1257,7 +1268,7 @@ class SessionSyncManager {
     ///   - text: User's prompt text
     ///   - completion: Called on main thread with the created message ID
     func createOptimisticMessage(sessionId: UUID, text: String, completion: @escaping (UUID) -> Void) {
-        logger.info("Creating optimistic message for session: \(sessionId.uuidString.lowercased())")
+        LogManager.shared.log("Creating optimistic message for session: \(sessionId.uuidString.lowercased())", category: "SessionSync")
 
         let messageId = UUID()
 
@@ -1268,7 +1279,7 @@ class SessionSyncManager {
             let fetchRequest = CDBackendSession.fetchBackendSession(id: sessionId)
 
             guard let session = try? backgroundContext.fetch(fetchRequest).first else {
-                logger.warning("Session not found for optimistic message: \(sessionId.uuidString.lowercased())")
+                LogManager.shared.log("Session not found for optimistic message: \(sessionId.uuidString.lowercased())", category: "SessionSync")
                 return
             }
 
@@ -1294,7 +1305,7 @@ class SessionSyncManager {
             // a pending prompt with historical content. See beads tmux-untethered-mqo.
             message.offset = Self.optimisticSeq(for: messageId)
 
-            logger.info("📝 Optimistic message prepared: id=\(messageId) sessionId=\(sessionId.uuidString.lowercased()) role=user text_length=\(text.count) status=sending seq=\(message.seq) offset=\(message.offset)")
+            LogManager.shared.log("📝 Optimistic message prepared: id=\(messageId) sessionId=\(sessionId.uuidString.lowercased()) role=user text_length=\(text.count) status=sending seq=\(message.seq) offset=\(message.offset)", category: "SessionSync")
             
             // Update session metadata optimistically
             session.lastModified = Date()
@@ -1304,14 +1315,14 @@ class SessionSyncManager {
             do {
                 if backgroundContext.hasChanges {
                     try backgroundContext.save()
-                    logger.info("📝 Saved optimistic message: \(messageId)")
-                    
+                    LogManager.shared.log("📝 Saved optimistic message: \(messageId)", category: "SessionSync")
+
                     DispatchQueue.main.async {
                         completion(messageId)
                     }
                 }
             } catch {
-                logger.error("Failed to save optimistic message: \(error.localizedDescription)")
+                LogManager.shared.log("Failed to save optimistic message: \(error.localizedDescription)", category: "SessionSync")
             }
         }
     }
@@ -1327,7 +1338,7 @@ class SessionSyncManager {
         let fetchRequest = CDMessage.fetchMessage(sessionId: sessionId, role: role, text: text)
         
         guard let message = try? context.fetch(fetchRequest).first else {
-            logger.info("No optimistic message found to reconcile (backend-originated message)")
+            LogManager.shared.log("No optimistic message found to reconcile (backend-originated message)", category: "SessionSync")
             return
         }
         
@@ -1337,9 +1348,182 @@ class SessionSyncManager {
             message.serverTimestamp = serverTimestamp
         }
         
-        logger.info("Reconciled optimistic message: \(message.id)")
+        LogManager.shared.log("Reconciled optimistic message: \(message.id)", category: "SessionSync")
     }
-    
+
+    // MARK: - Ghost Prompt Reconciliation
+
+    /// Pending ghost reconciliations: sessionId → queue of optimistic message ids
+    /// awaiting their `ghost_prompt` (success) or error event. A ghost send
+    /// registers its bubble's id here so the matching event reconciles THAT bubble
+    /// rather than merely "the latest sending message" — which an interleaved
+    /// *ordinary* send would otherwise displace. That ordinary-interleave case is
+    /// the realistic one: ghost mode resets after each send, so a second
+    /// concurrent ghost on the same session requires a deliberate re-toggle.
+    ///
+    /// Drained oldest-first. This is **exact** for the common case (at most one
+    /// ghost in flight per session) and **best-effort** otherwise: two concurrent
+    /// ghosts on the SAME session can have their `ghost_prompt` events emitted out
+    /// of send order, because the backend generates each P on an independent
+    /// fork/future with no per-session serialization (server.clj ghost dispatch),
+    /// so the slower task's event can arrive second. The event carries no
+    /// correlation id (only session_id + text), so the client cannot perfectly
+    /// disambiguate that case — the worst outcome is the two effective prompts
+    /// annotating each other's bubble (cosmetic, no data loss). A precise fix
+    /// would require the protocol to echo a per-send correlation key.
+    ///
+    /// Main-thread access only: registered from `createOptimisticMessage`'s
+    /// main-queue completion, drained from `VoiceCodeClient`'s main-queue handler.
+    private var pendingGhostMessageIds: [UUID: [UUID]] = [:]
+
+    /// Remember the optimistic bubble a ghost send just created so its later
+    /// `ghost_prompt`/error event can target it precisely. Call on the main thread.
+    func registerPendingGhost(sessionId: UUID, messageId: UUID) {
+        pendingGhostMessageIds[sessionId, default: []].append(messageId)
+    }
+
+    /// Pop the oldest pending ghost bubble id for a session (oldest-first), or nil
+    /// when none is registered (e.g. the in-memory registry was lost to an app
+    /// restart between send and event). Call on the main thread.
+    private func dequeuePendingGhost(sessionId: UUID) -> UUID? {
+        guard var queue = pendingGhostMessageIds[sessionId], !queue.isEmpty else { return nil }
+        let id = queue.removeFirst()
+        if queue.isEmpty {
+            pendingGhostMessageIds.removeValue(forKey: sessionId)
+        } else {
+            pendingGhostMessageIds[sessionId] = queue
+        }
+        return id
+    }
+
+    /// Display text for a reconciled ghost bubble. Keeps the user's task (when
+    /// known) and appends the effective prompt P the agent actually acted on.
+    /// Defensive guard: an already-annotated bubble (leading 👻) is returned
+    /// unchanged so a re-annotation can't double-wrap it. (Whole-event
+    /// idempotency on a re-delivered `ghost_prompt` is enforced separately in
+    /// `reconcileGhostPrompt`.)
+    static func ghostDisplayText(task: String?, effectivePrompt: String) -> String {
+        let trimmedTask = (task ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmedTask.hasPrefix("👻") { return trimmedTask }
+        let trimmedPrompt = effectivePrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmedTask.isEmpty {
+            return "👻 Effective prompt\n\(trimmedPrompt)"
+        }
+        return "👻 Ghost task: \(trimmedTask)\n\n— Effective prompt —\n\(trimmedPrompt)"
+    }
+
+    /// The optimistic bubble a ghost event should act on: the precise row the
+    /// send registered (`targetId`, still `.sending`) when known, else the most
+    /// recent still-`.sending` user row as a best-effort fallback (lost registry).
+    private static func ghostBubble(targetId: UUID?, sessionId: UUID, in context: NSManagedObjectContext) -> CDMessage? {
+        if let targetId = targetId {
+            let req = CDMessage.fetchRequest()
+            req.predicate = NSPredicate(format: "id == %@ AND sessionId == %@ AND status == %@",
+                                        targetId as CVarArg, sessionId as CVarArg, MessageStatus.sending.rawValue)
+            req.fetchLimit = 1
+            if let hit = (try? context.fetch(req))?.first { return hit }
+        }
+        return try? context.fetch(CDMessage.fetchLatestSendingUserMessage(sessionId: sessionId)).first
+    }
+
+    /// True when some row in the session already carries `needle`. Used to make a
+    /// re-delivered `ghost_prompt` idempotent: once P is present (whether annotated
+    /// onto the task bubble or stand-alone), a duplicate fallback bubble is skipped.
+    private static func sessionHasMessageContaining(_ needle: String, sessionId: UUID, in context: NSManagedObjectContext) -> Bool {
+        let trimmed = needle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        let req = CDMessage.fetchRequest()
+        req.predicate = NSPredicate(format: "sessionId == %@ AND text CONTAINS %@", sessionId as CVarArg, trimmed)
+        req.fetchLimit = 1
+        return ((try? context.count(for: req)) ?? 0) > 0
+    }
+
+    /// Reconcile a ghost send: the optimistic bubble currently shows the *task X*
+    /// the user typed, but the agent acts on the effective prompt *P* carried by
+    /// the `ghost_prompt` event. Annotate the send's registered bubble in place
+    /// with P and confirm it. If that row is gone (pruned/late/lost registry),
+    /// create a confirmed bubble carrying P — the event is the only channel that
+    /// delivers P to iOS, so it must never be dropped silently — unless P is
+    /// already present (re-delivered event), which is a no-op for idempotency.
+    /// See ghost-prompt design §3.3 / protocol §ghost.
+    func reconcileGhostPrompt(sessionId: UUID, effectivePrompt: String) {
+        let targetId = dequeuePendingGhost(sessionId: sessionId)
+        let sessionIdStr = sessionId.uuidString.lowercased()
+        persistenceController.performBackgroundTask { [weak self] context in
+            guard self != nil else { return }
+
+            if let optimistic = Self.ghostBubble(targetId: targetId, sessionId: sessionId, in: context) {
+                optimistic.text = Self.ghostDisplayText(task: optimistic.text, effectivePrompt: effectivePrompt)
+                optimistic.messageStatus = .confirmed
+                optimistic.serverTimestamp = Date()
+                optimistic.session?.preview = String(optimistic.text.prefix(100))
+                LogManager.shared.log("👻 Reconciled ghost optimistic bubble for session \(sessionIdStr)", category: "SessionSync")
+            } else {
+                // No optimistic row to annotate. P must still surface — unless it
+                // is already present (a re-delivered event), which we skip so the
+                // reconcile stays idempotent.
+                guard !Self.sessionHasMessageContaining(effectivePrompt, sessionId: sessionId, in: context) else {
+                    LogManager.shared.log("👻 ghost_prompt P already present for session \(sessionIdStr); skipping duplicate", category: "SessionSync")
+                    return
+                }
+                let fetch = CDBackendSession.fetchBackendSession(id: sessionId)
+                guard let session = try? context.fetch(fetch).first else {
+                    LogManager.shared.log("👻 ghost_prompt for unknown session \(sessionIdStr); dropping effective prompt", category: "SessionSync")
+                    return
+                }
+                let messageId = UUID()
+                let message = CDMessage(context: context)
+                message.id = messageId
+                message.sessionId = sessionId
+                message.role = "user"
+                message.text = Self.ghostDisplayText(task: nil, effectivePrompt: effectivePrompt)
+                message.timestamp = Date()
+                message.serverTimestamp = Date()
+                message.messageStatus = .confirmed
+                message.session = session
+                // Negative sentinel seq/offset so the (sessionId, offset) upsert
+                // path never matches this locally-minted row (mirrors the
+                // optimistic-message convention).
+                message.seq = Self.optimisticSeq(for: messageId)
+                message.offset = Self.optimisticSeq(for: messageId)
+                session.lastModified = Date()
+                session.messageCount += 1
+                session.preview = String(message.text.prefix(100))
+                LogManager.shared.log("👻 Created fallback ghost bubble for session \(sessionIdStr)", category: "SessionSync")
+            }
+
+            do {
+                if context.hasChanges { try context.save() }
+            } catch {
+                LogManager.shared.log("Failed to save ghost reconcile for \(sessionIdStr): \(error.localizedDescription)", category: "SessionSync")
+            }
+        }
+    }
+
+    /// Mark a ghost send as failed: the backend returned an error envelope and
+    /// delivered nothing to the session, so the send's optimistic task-X bubble
+    /// would otherwise sit "sending" forever. Flip the registered bubble to
+    /// `.error` (falling back to the latest still-sending row if the registry was
+    /// lost). No-op if the row is already gone. The error text itself is surfaced
+    /// via `currentError`.
+    func failGhostPrompt(sessionId: UUID) {
+        let targetId = dequeuePendingGhost(sessionId: sessionId)
+        let sessionIdStr = sessionId.uuidString.lowercased()
+        persistenceController.performBackgroundTask { [weak self] context in
+            guard self != nil else { return }
+            guard let optimistic = Self.ghostBubble(targetId: targetId, sessionId: sessionId, in: context) else {
+                LogManager.shared.log("👻 No optimistic ghost bubble to fail for session \(sessionIdStr)", category: "SessionSync")
+                return
+            }
+            optimistic.messageStatus = .error
+            do {
+                if context.hasChanges { try context.save() }
+            } catch {
+                LogManager.shared.log("Failed to save ghost failure for \(sessionIdStr): \(error.localizedDescription)", category: "SessionSync")
+            }
+        }
+    }
+
     // MARK: - Session Updated Handling
     
     /// Handle session_updated message from backend
@@ -1347,14 +1531,14 @@ class SessionSyncManager {
     ///   - sessionId: Session UUID
     ///   - messages: Array of new message dictionaries
     func handleSessionUpdated(sessionId: String, messages: [[String: Any]]) {
-        logger.info("Received session_updated for: \(sessionId) with \(messages.count) messages")
+        LogManager.shared.log("Received session_updated for: \(sessionId) with \(messages.count) messages", category: "SessionSync")
 
         persistenceController.performBackgroundTask { [weak self] backgroundContext in
             guard let self = self else { return }
 
             // Validate UUID format
             guard let sessionUUID = UUID(uuidString: sessionId) else {
-                logger.error("Invalid session ID format in handleSessionUpdated: \(sessionId)")
+                LogManager.shared.log("Invalid session ID format in handleSessionUpdated: \(sessionId)", category: "SessionSync")
                 return
             }
 
@@ -1366,7 +1550,7 @@ class SessionSyncManager {
                 session = existingSession
             } else {
                 // Session not in our list yet - create it from the update
-                logger.info("Creating new session from update: \(sessionId)")
+                LogManager.shared.log("Creating new session from update: \(sessionId)", category: "SessionSync")
                 session = CDBackendSession(context: backgroundContext)
                 session.id = sessionUUID
                 session.backendName = "" // Will be updated on next session_list
@@ -1389,7 +1573,7 @@ class SessionSyncManager {
                     // Log details at debug level for diagnosing message format issues
                     let messageType = messageData["type"] as? String ?? "nil"
                     let hasMessage = messageData["message"] != nil
-                    logger.debug("Skipping message - type: \(messageType, privacy: .public), hasMessage: \(hasMessage, privacy: .public)")
+                    LogManager.shared.log("Skipping message - type: \(messageType), hasMessage: \(hasMessage)", category: "SessionSync")
                     continue
                 }
 
@@ -1398,7 +1582,7 @@ class SessionSyncManager {
                 // - "system" messages are local command notifications
                 // - "queue-operation" messages are priority queue operations (no message content)
                 if role == "summary" || role == "system" || role == "queue-operation" {
-                    logger.debug("Filtering out internal message type: \(role, privacy: .public)")
+                    LogManager.shared.log("Filtering out internal message type: \(role)", category: "SessionSync")
                     continue
                 }
 
@@ -1408,13 +1592,13 @@ class SessionSyncManager {
                 // Try to reconcile optimistic message first
                 let fetchRequest = CDMessage.fetchMessage(sessionId: sessionUUID, role: role, text: text)
 
-                logger.info("🔍 Looking for optimistic message to reconcile: role=\(role) text_length=\(text.count) session=\(sessionId)")
+                LogManager.shared.log("🔍 Looking for optimistic message to reconcile: role=\(role) text_length=\(text.count) session=\(sessionId)", category: "SessionSync")
 
                 let existingMessage = try? backgroundContext.fetch(fetchRequest).first
 
                 if let existingMessage = existingMessage {
                     // Reconcile optimistic message
-                    logger.info("✅ Found optimistic message to reconcile: id=\(existingMessage.id) current_status=\(existingMessage.messageStatus.rawValue)")
+                    LogManager.shared.log("✅ Found optimistic message to reconcile: id=\(existingMessage.id) current_status=\(existingMessage.messageStatus.rawValue)", category: "SessionSync")
                     existingMessage.messageStatus = .confirmed
                     if let serverTimestamp = serverTimestamp {
                         existingMessage.serverTimestamp = serverTimestamp
@@ -1423,10 +1607,10 @@ class SessionSyncManager {
                     if let backendId = self.extractMessageId(from: messageData) {
                         existingMessage.id = backendId
                     }
-                    logger.info("✅ Reconciled optimistic message to confirmed")
+                    LogManager.shared.log("✅ Reconciled optimistic message to confirmed", category: "SessionSync")
                 } else {
                     // Create new message (backend-originated or not found)
-                    logger.info("❌ No optimistic message found - creating new message: role=\(role) text_length=\(text.count)")
+                    LogManager.shared.log("❌ No optimistic message found - creating new message: role=\(role) text_length=\(text.count)", category: "SessionSync")
                     self.createMessage(messageData, sessionId: sessionId, in: backgroundContext, session: session)
                     newMessageCount += 1
 
@@ -1443,20 +1627,20 @@ class SessionSyncManager {
             session.messageCount += Int32(newMessageCount)
 
             // Update unread count and speaking logic
-            logger.info("🔊 Session \(sessionId.prefix(8))... isActive=\(isActiveSession), assistantMessages=\(assistantMessagesToSpeak.count), newMsgCount=\(newMessageCount)")
+            LogManager.shared.log("🔊 Session \(sessionId.prefix(8))... isActive=\(isActiveSession), assistantMessages=\(assistantMessagesToSpeak.count), newMsgCount=\(newMessageCount)", category: "SessionSync")
             if isActiveSession {
                 // Active session: speak assistant messages, don't increment unread count
-                logger.info("Active session: will speak \(assistantMessagesToSpeak.count) assistant messages")
+                LogManager.shared.log("Active session: will speak \(assistantMessagesToSpeak.count) assistant messages", category: "SessionSync")
             } else {
                 // Background session: increment unread count, don't speak, post notification
                 if newMessageCount > 0 {
                     session.unreadCount += Int32(newMessageCount)
-                    logger.info("Background session: incremented unread count to \(session.unreadCount)")
+                    LogManager.shared.log("Background session: incremented unread count to \(session.unreadCount)", category: "SessionSync")
                     
                     // Post notification for assistant messages when app is backgrounded
                     if !assistantMessagesToSpeak.isEmpty {
                         let sessionName = session.displayName(context: backgroundContext)
-                        logger.info("📬 Posting notification for \(assistantMessagesToSpeak.count) assistant messages")
+                        LogManager.shared.log("📬 Posting notification for \(assistantMessagesToSpeak.count) assistant messages", category: "SessionSync")
 
                         // Post notification on main thread
                         // Combine multiple messages into one notification
@@ -1491,14 +1675,14 @@ class SessionSyncManager {
                 if priorityQueueEnabled {
                     // Use the session object we already have in this background context
                     CDBackendSession.addToPriorityQueue(session, context: backgroundContext)
-                    logger.info("📌 Auto-added session to priority queue after assistant response: \(sessionId)")
+                    LogManager.shared.log("📌 Auto-added session to priority queue after assistant response: \(sessionId)", category: "SessionSync")
                 }
             }
 
             do {
                 if backgroundContext.hasChanges {
                     try backgroundContext.save()
-                    logger.info("Updated session: \(sessionId)")
+                    LogManager.shared.log("Updated session: \(sessionId)", category: "SessionSync")
                 }
 
                 // Post notification to trigger UI refresh (same pattern as handleSessionHistory)
@@ -1519,7 +1703,7 @@ class SessionSyncManager {
                     if deletedCount > 0 {
                         session.messageCount -= Int32(deletedCount)
                         try? backgroundContext.save()
-                        logger.info("🧹 Pruned \(deletedCount) old messages from session \(sessionId)")
+                        LogManager.shared.log("🧹 Pruned \(deletedCount) old messages from session \(sessionId)", category: "SessionSync")
                     }
                 }
 
@@ -1529,21 +1713,21 @@ class SessionSyncManager {
                 if isActiveSession && !assistantMessagesToSpeak.isEmpty {
                     let workingDirectory = session.workingDirectory
                     let voiceManager = self.voiceOutputManager  // Capture before dispatching to main queue
-                    logger.info("🔊 Preparing to speak \(assistantMessagesToSpeak.count) messages, voiceOutputManager is \(voiceManager == nil ? "nil" : "set")")
+                    LogManager.shared.log("🔊 Preparing to speak \(assistantMessagesToSpeak.count) messages, voiceOutputManager is \(voiceManager == nil ? "nil" : "set")", category: "SessionSync")
                     DispatchQueue.main.async {
                         if let voiceManager = voiceManager {
                             for text in assistantMessagesToSpeak {
                                 let processedText = TextProcessor.prepareForSpeech(from: text)
-                                logger.info("🔊 Calling speak() with text length: \(processedText.count)")
+                                LogManager.shared.log("🔊 Calling speak() with text length: \(processedText.count)", category: "SessionSync")
                                 voiceManager.speak(processedText, respectSilentMode: true, workingDirectory: workingDirectory, sessionId: sessionUUID)
                             }
                         } else {
-                            logger.warning("⚠️ voiceOutputManager is nil, cannot speak messages")
+                            LogManager.shared.log("⚠️ voiceOutputManager is nil, cannot speak messages", category: "SessionSync")
                         }
                     }
                 }
             } catch {
-                logger.error("Failed to save session_updated: \(error.localizedDescription)")
+                LogManager.shared.log("Failed to save session_updated: \(error.localizedDescription)", category: "SessionSync")
             }
         }
     }
@@ -1600,7 +1784,7 @@ class SessionSyncManager {
         guard let sessionIdString = sessionData["session_id"] as? String else {
             let sessionName = String(describing: sessionData["name"] ?? "unknown")
             let workingDir = String(describing: sessionData["working_directory"] ?? "unknown")
-            logger.warning("Missing session_id in session data - name: \(sessionName, privacy: .public), working_directory: \(workingDir, privacy: .public)")
+            LogManager.shared.log("Missing session_id in session data - name: \(sessionName), working_directory: \(workingDir)", category: "SessionSync")
             return
         }
 
@@ -1608,7 +1792,7 @@ class SessionSyncManager {
         guard let sessionId = UUID(uuidString: sessionIdString) else {
             let sessionName = String(describing: sessionData["name"] ?? "unknown")
             let workingDir = String(describing: sessionData["working_directory"] ?? "unknown")
-            logger.warning("Invalid session_id format (not a UUID) - session_id: \(sessionIdString, privacy: .public), name: \(sessionName, privacy: .public), working_directory: \(workingDir, privacy: .public)")
+            LogManager.shared.log("Invalid session_id format (not a UUID) - session_id: \(sessionIdString), name: \(sessionName), working_directory: \(workingDir)", category: "SessionSync")
             return
         }
         
@@ -1663,13 +1847,13 @@ class SessionSyncManager {
         // Extract fields from raw .jsonl format
         guard let role = extractRole(from: messageData),
               let text = extractText(from: messageData) else {
-            logger.warning("Invalid message data, missing role or text")
+            LogManager.shared.log("Invalid message data, missing role or text", category: "SessionSync")
             return
         }
 
         // Validate UUID format
         guard let sessionUUID = UUID(uuidString: sessionId) else {
-            logger.error("Invalid session ID format in createMessage: \(sessionId)")
+            LogManager.shared.log("Invalid session ID format in createMessage: \(sessionId)", category: "SessionSync")
             return
         }
 
@@ -1699,7 +1883,7 @@ class SessionSyncManager {
     ///   - sessionId: Session UUID
     ///   - name: New name to set
     func updateSessionLocalName(sessionId: UUID, name: String) {
-        logger.info("Updating session custom name: \(sessionId.uuidString.lowercased()) -> \(name)")
+        LogManager.shared.log("Updating session custom name: \(sessionId.uuidString.lowercased()) -> \(name)", category: "SessionSync")
 
         persistenceController.performBackgroundTask { backgroundContext in
             // Fetch or create CDUserSession
@@ -1719,10 +1903,10 @@ class SessionSyncManager {
             do {
                 if backgroundContext.hasChanges {
                     try backgroundContext.save()
-                    logger.info("Updated session custom name: \(sessionId.uuidString.lowercased())")
+                    LogManager.shared.log("Updated session custom name: \(sessionId.uuidString.lowercased())", category: "SessionSync")
                 }
             } catch {
-                logger.error("Failed to update session custom name: \(error.localizedDescription)")
+                LogManager.shared.log("Failed to update session custom name: \(error.localizedDescription)", category: "SessionSync")
             }
         }
     }

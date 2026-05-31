@@ -16,6 +16,8 @@ The voice-code WebSocket protocol enables persistent sessions across reconnectio
 - `0.3.0` — Tmux-untethered provider invocation. Breaking changes: removed `set_directory` (client → backend), removed `session_locked` (backend → client), removed `usage` and `cost` from `response`. Added optional `aborted` field on `turn_complete`. `available_commands` is now pushed on connect and on every session creation/resume rather than in response to `set_directory`.
 - `0.2.0` — Previous protocol (per-session locking, one-shot CLI invocation).
 
+> **Additive changes under `0.4.0` (no version bump):** Some optional request fields and server→client events are purely additive — they do not change the message-stream contract, so they ship under the current version without bumping it and without moving the hello-enforcement threshold (which stays `0.4.0`). The `ghost` prompt field and the `ghost_prompt` event (see **Message Types**) are such additions.
+
 ### `:message-stream-version` Config Flag
 
 The backend reads `:message-stream-version` from `backend/resources/config.edn` at startup. Supported values:
@@ -128,6 +130,18 @@ iOS → Backend: {
 }
 ```
 
+**Prompt Request (Ghost — Resumed Session Only)**
+```json
+{
+  "type": "prompt",
+  "text": "<task X — what the follow-up agent should do>",
+  "resume_session_id": "<uuid>",
+  "ghost": true
+}
+```
+
+When `ghost` is `true`, `text` is treated as a *task description* rather than a literal prompt. The backend forks the resumed session into a throwaway copy, has that fork author the real prompt **P** from the session's existing context, then injects P into the session named by `resume_session_id` as a normal human prompt. The original session acts on P with no trace that it authored it, and the effective prompt P is returned to the client via the `ghost_prompt` event (see **Backend → Client**). See [`docs/plans/2026-05-31-ghost-prompt-design.md`](../plans/2026-05-31-ghost-prompt-design.md) for the full mechanism.
+
 **Fields:**
 - `text` (required): The prompt text to send to Claude
 - `new_session_id` (optional): UUID for a new session. Mutually exclusive with `resume_session_id`.
@@ -135,6 +149,17 @@ iOS → Backend: {
 - `working_directory` (optional): Override session's default working directory
 - `provider` (optional): Provider to use for new session. Values: `"claude"`, `"copilot"`. Only valid with `new_session_id`. Silently ignored for resumed sessions. Defaults to `"claude"` if not specified.
 - `system_prompt` (optional): Custom system prompt to append via `--append-system-prompt`. Empty or whitespace-only values are ignored. Only applies to Claude provider.
+- `ghost` (optional, boolean, default `false`): When `true`, run the prompt as a *ghost prompt* (see above). Requires `resume_session_id` — rejected with `new_session_id` or with neither. Claude provider only — a non-Claude resumed session is rejected. **Additive and non-breaking:** this field requires **no protocol/stream-version bump** (the hello-enforcement threshold stays at `0.4.0`), and omitting it (or sending `false`) preserves existing prompt behavior exactly, so `0.4.0` clients are unaffected.
+
+**Ghost Error Cases** (existing `{type: error}` envelope; no new error codes):
+| Condition | Phase | Message |
+|---|---|---|
+| `ghost: true` with no `resume_session_id` | pre-flight | `ghost prompts require resume_session_id` |
+| Resumed session is not the Claude provider | pre-flight | `ghost prompts are only supported for the claude provider` |
+| Unknown / unregistered session | pre-flight | `Unknown session for ghost prompt` |
+| Fork failed (timeout or no sentinel after one retry) | post-fork | `Ghost prompt generation failed: <reason>` |
+
+The three **pre-flight** rejections are validated before any fork is launched, and the backend emits these exact message strings — they are **not** collapsed into the generic post-fork message — so the client can distinguish "you sent an invalid ghost request" from "generation failed at runtime." The **post-fork** message carries a short `<reason>` token (e.g. `timeout`). On any of these the backend delivers nothing to the resumed session.
 
 **Ping**
 ```json
@@ -288,6 +313,27 @@ Sent when a provider CLI finishes processing a prompt successfully (turn is comp
 **Fields:**
 - `session_id` (required): Provider session ID
 - `aborted` (optional, default `false`, omitted when false): Set to `true` on the synthesized `turn_complete` emitted when the provider window was killed mid-turn (by `kill_session` or compaction). iOS should treat `aborted:true` identically to a normal `turn_complete` for UI-unlock purposes; it is informational so the client may render a distinct badge.
+
+**Ghost Prompt (Effective Prompt for a Ghost Send)**
+```json
+{
+  "type": "ghost_prompt",
+  "session_id": "<claude-session-id>",
+  "text": "<generated prompt P>"
+}
+```
+
+Sent once after a `prompt` with `ghost: true` succeeds (see **Prompt Request (Ghost — Resumed Session Only)**). It carries the prompt **P** that the throwaway fork generated and that was injected into the resumed session.
+
+**Why this event is required (not cosmetic):** P is delivered into the session as a normal human prompt, and the watcher drops human prompts from the normal message stream (`remove claude-human-prompt?`, because iOS already rendered the user's text optimistically on send). So P would otherwise *never* reach the client through `session_history` — `ghost_prompt` is the dedicated channel that carries P to iOS.
+
+**Optimistic-echo reconciliation:** on a ghost send, iOS optimistically renders the *task X* the user typed, but the agent actually acts on *P* (task X → P). On receiving this event the client should replace (or annotate) that optimistic task-X bubble with `text`. The happy-path turn that follows — the session acting on P — then streams to iOS through the normal subscription / `turn_complete` path, unchanged.
+
+**Fields:**
+- `session_id` (required): Claude session ID that P was injected into (the `resume_session_id` from the request).
+- `text` (required): The generated prompt P, exactly as injected into the session.
+
+On failure (model omitted the sentinels, fork never readied, etc.) no `ghost_prompt` is emitted; the backend instead returns `{type: error}` with `Ghost prompt generation failed: <reason>` and delivers nothing to the session (see **Ghost Error Cases**).
 
 **Pong**
 ```json

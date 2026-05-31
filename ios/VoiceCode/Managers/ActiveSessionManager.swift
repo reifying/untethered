@@ -27,7 +27,7 @@ class ActiveSessionManager: ObservableObject {
 
     /// Mark a session as active (user opened it). Call from main thread.
     func setActiveSession(_ sessionId: UUID?) {
-        print("📍 [ActiveSessionManager] Setting active session: \(sessionId?.uuidString.lowercased() ?? "nil")")
+        LogManager.shared.log("📍 [ActiveSessionManager] Setting active session: \(sessionId?.uuidString.lowercased() ?? "nil")", category: "ActiveSession")
         lock.lock()
         lockedId = sessionId
         lock.unlock()
@@ -43,7 +43,7 @@ class ActiveSessionManager: ObservableObject {
 
     /// Clear active session (user closed all sessions). Call from main thread.
     func clearActiveSession() {
-        print("📍 [ActiveSessionManager] Clearing active session")
+        LogManager.shared.log("📍 [ActiveSessionManager] Clearing active session", category: "ActiveSession")
         lock.lock()
         lockedId = nil
         lock.unlock()

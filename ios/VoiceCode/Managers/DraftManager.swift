@@ -14,7 +14,7 @@ class DraftManager: ObservableObject {
 
     init() {
         self.drafts = UserDefaults.standard.dictionary(forKey: "sessionDrafts") as? [String: String] ?? [:]
-        print("📝 [DraftManager] Loaded \(drafts.count) drafts from storage")
+        LogManager.shared.log("📝 [DraftManager] Loaded \(drafts.count) drafts from storage", category: "DraftManager")
     }
 
     /// Save draft text for a session. Removes entry if text is empty.

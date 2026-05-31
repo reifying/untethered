@@ -146,14 +146,20 @@
    Working directory is set via `tmux new-window -c` by the caller; it is not
    part of the shell command string.
 
+   When `:fork?` is true (Claude only) the source session is branched with
+   `--resume <session-uuid> --fork-session`, minting a new session id that
+   copies the source's history and leaves the source untouched; `:session-uuid`
+   is the *source* id in that case. `:fork?` takes precedence over `:resume?`.
+
    `:system-prompt` is appended via `--append-system-prompt` for :claude only,
-   and only for new (non-resume) sessions — it is a startup-only flag and the
-   CLI has already launched by the time a resumed session needs it. Blank or
-   whitespace-only values are dropped silently."
-  [provider {:keys [session-uuid resume? system-prompt model]}]
+   and only for new (non-resume, non-fork) sessions — it is a startup-only flag
+   and the CLI has already launched by the time a resumed/forked session needs
+   it. Blank or whitespace-only values are dropped silently."
+  [provider {:keys [session-uuid resume? fork? system-prompt model]}]
   (let [trimmed-system-prompt (when system-prompt (str/trim system-prompt))
         include-system-prompt? (and (= provider :claude)
                                     (not resume?)
+                                    (not fork?)
                                     trimmed-system-prompt
                                     (not (str/blank? trimmed-system-prompt)))]
     (case provider
@@ -161,9 +167,10 @@
       (str "unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT && "
            (providers/cli-path :claude) " "
            "--dangerously-skip-permissions "
-           (if resume?
-             (str "--resume " session-uuid)
-             (str "--session-id " session-uuid))
+           (cond
+             fork? (str "--resume " session-uuid " --fork-session")
+             resume? (str "--resume " session-uuid)
+             :else (str "--session-id " session-uuid))
            (when include-system-prompt?
              (str " --append-system-prompt " (shell-single-quote trimmed-system-prompt)))
            (when model (str " --model " model)))
@@ -498,6 +505,36 @@
                              :tmux-window window
                              :provider provider
                              :resume? (boolean resume?)}))))))))
+
+(def ghost-tmux-session
+  "Dedicated tmux session for ephemeral ghost forks, isolated from per-workdir
+   user sessions so fork windows never count toward window-cap or evict a real
+   session."
+  "vc-ghost")
+
+(defn start-ephemeral-window!
+  "Launch `cmd` in a throwaway tmux window named `window` under ghost-tmux-session,
+   in `workdir`. Waits for provider TUI readiness, then nudges `prompt`. Registers
+   NO live-windows entry and sets NO VC_ env, so the window is invisible to iOS and
+   to eviction (list-agent-windows, evict-if-needed!, and scan-existing-windows! all
+   key off VC_SESSION_UUID_*). The caller is responsible for tearing the window down.
+   Returns {:tmux-session :tmux-window} on success. Throws ex-info
+   {:kind :wait-for-ready-timeout ...} (after killing the window) if the TUI never
+   readies."
+  [{:keys [window provider workdir cmd prompt]}]
+  (ensure-session! ghost-tmux-session workdir)
+  (sh "tmux" "new-window" "-d" "-t" (str "=" ghost-tmux-session ":")
+      "-n" window "-c" workdir cmd)
+  (let [ready (wait-for-ready ghost-tmux-session window provider)]
+    (when (not= :ready ready)
+      (kill-window! ghost-tmux-session window)
+      (throw (ex-info "Ghost fork TUI did not become ready before timeout"
+                      {:kind :wait-for-ready-timeout
+                       :tmux-session ghost-tmux-session
+                       :window window
+                       :provider provider})))
+    (when prompt (nudge! ghost-tmux-session window prompt))
+    {:tmux-session ghost-tmux-session :tmux-window window}))
 
 (defn- respawn-and-deliver!
   "Respawn an evicted session with --resume and deliver the prompt.

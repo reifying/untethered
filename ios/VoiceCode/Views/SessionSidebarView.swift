@@ -4,9 +4,6 @@
 #if os(macOS)
 import SwiftUI
 import CoreData
-import OSLog
-
-private let logger = Logger(subsystem: "com.travisbrown.VoiceCode", category: "SessionSidebar")
 
 // MARK: - SessionSidebarView
 
@@ -173,7 +170,7 @@ struct SessionSidebarView: View {
             loadSessions()
         }
         .onReceive(NotificationCenter.default.publisher(for: .sessionListDidUpdate)) { _ in
-            logger.info("🔄 Session list updated, refreshing sidebar")
+            LogManager.shared.log("🔄 Session list updated, refreshing sidebar", category: "SessionSidebar")
             loadSessions()
         }
         .onReceive(NotificationCenter.default.publisher(for: .sessionHistoryDidUpdate)) { _ in
@@ -222,7 +219,7 @@ struct SessionSidebarView: View {
             cachedRecentSessions = Self.computeRecentSessions(from: sessions)
             cachedSessionsByDirectory = Self.computeSessionsByDirectory(from: sessions)
         } catch {
-            logger.error("❌ Failed to fetch sessions for sidebar: \(error)")
+            LogManager.shared.log("❌ Failed to fetch sessions for sidebar: \(error)", category: "SessionSidebar")
             sessions = []
         }
     }
@@ -255,11 +252,11 @@ struct SessionSidebarView: View {
 
         do {
             try viewContext.save()
-            logger.info("📝 Created new session from sidebar: \(sessionId.uuidString.lowercased())")
+            LogManager.shared.log("📝 Created new session from sidebar: \(sessionId.uuidString.lowercased())", category: "SessionSidebar")
             selectedSessionId = sessionId
             loadSessions()
         } catch {
-            logger.error("❌ Failed to create session: \(error)")
+            LogManager.shared.log("❌ Failed to create session: \(error)", category: "SessionSidebar")
         }
     }
 }
