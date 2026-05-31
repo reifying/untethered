@@ -32,7 +32,10 @@
     "invalid command-id: \"git.\" (missing subcommand)"
 
     (= command-id "bd.")
-    "invalid command-id: \"bd.\" (missing subcommand)"))
+    "invalid command-id: \"bd.\" (missing subcommand)"
+
+    (= command-id "br.")
+    "invalid command-id: \"br.\" (missing subcommand)"))
 
 (defn resolve-command-id
   "Resolve a command_id to a shell command string.
@@ -41,6 +44,7 @@
   - git.status -> git status
   - git.worktree.list -> git worktree list
   - bd.ready -> bd ready
+  - br.ready -> br ready
   - docker.up -> make docker-up
   - build -> make build
 
@@ -58,6 +62,11 @@
                    (str/starts-with? command-id "bd.")
                    (let [subcommand (subs command-id 3)]
                      (str "bd " (str/replace subcommand "." " ")))
+
+                   ;; Beads-rust (br) commands
+                   (str/starts-with? command-id "br.")
+                   (let [subcommand (subs command-id 3)]
+                     (str "br " (str/replace subcommand "." " ")))
 
                    ;; All other commands are Makefile targets
                    :else

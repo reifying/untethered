@@ -916,6 +916,14 @@
    {:id "bd.list"
     :label "Beads List"
     :description "List all beads tasks"
+    :type :command}
+   {:id "br.ready"
+    :label "Beads Ready (br)"
+    :description "Show tasks ready to work on (beads_rust)"
+    :type :command}
+   {:id "br.list"
+    :label "Beads List (br)"
+    :description "List all beads tasks (beads_rust)"
     :type :command}])
 
 (defn send-available-commands!

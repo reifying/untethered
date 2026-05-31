@@ -32,6 +32,12 @@
       (is (string? result))
       (is (re-find #"missing subcommand" result)))))
 
+(deftest validate-command-id-br-missing-subcommand
+  (testing "br. with no subcommand returns error message"
+    (let [result (commands/validate-command-id "br.")]
+      (is (string? result))
+      (is (re-find #"missing subcommand" result)))))
+
 (deftest validate-command-id-valid-inputs
   (testing "valid git command returns nil"
     (is (nil? (commands/validate-command-id "git.status")))
@@ -39,6 +45,9 @@
   (testing "valid bd command returns nil"
     (is (nil? (commands/validate-command-id "bd.ready")))
     (is (nil? (commands/validate-command-id "bd.show"))))
+  (testing "valid br command returns nil"
+    (is (nil? (commands/validate-command-id "br.ready")))
+    (is (nil? (commands/validate-command-id "br.show"))))
   (testing "valid make target returns nil"
     (is (nil? (commands/validate-command-id "build")))
     (is (nil? (commands/validate-command-id "docker.up")))))
@@ -84,10 +93,25 @@
     (is (= "git worktree list" (commands/resolve-command-id "git.worktree.list")))
     (is (= "git log" (commands/resolve-command-id "git.log")))))
 
+(deftest resolve-command-id-throws-on-br-missing-subcommand
+  (testing "br. with no subcommand throws ExceptionInfo"
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"missing subcommand"
+                          (commands/resolve-command-id "br.")))
+    (try
+      (commands/resolve-command-id "br.")
+      (catch clojure.lang.ExceptionInfo e
+        (is (= {:command-id "br."} (ex-data e)))))))
+
 (deftest resolve-command-id-valid-bd-commands
   (testing "bd commands resolve correctly"
     (is (= "bd ready" (commands/resolve-command-id "bd.ready")))
     (is (= "bd show" (commands/resolve-command-id "bd.show")))))
+
+(deftest resolve-command-id-valid-br-commands
+  (testing "br commands resolve to the beads_rust binary"
+    (is (= "br ready" (commands/resolve-command-id "br.ready")))
+    (is (= "br list" (commands/resolve-command-id "br.list")))
+    (is (= "br show" (commands/resolve-command-id "br.show")))))
 
 (deftest resolve-command-id-valid-make-targets
   (testing "make targets resolve correctly"
