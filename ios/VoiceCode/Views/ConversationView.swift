@@ -67,6 +67,10 @@ struct ConversationView: View {
     @State private var showingRecipeMenu = false
     @State private var isRefreshingMessages = false
 
+    // "View Full" sheet presentation. Lives here (above the List) rather than on
+    // CDMessageView so list cell recycling and pruning can't dismiss the open sheet.
+    @State private var fullMessageSnapshot: MessageSnapshot?
+
     // Compaction feedback state
     @State private var wasRecentlyCompacted: Bool = false
     @State private var compactionTimestamps: [UUID: Date] = [:]
@@ -178,7 +182,10 @@ struct ConversationView: View {
                                 CDMessageView(
                                     message: message,
                                     voiceOutput: voiceOutput,
-                                    onInferName: handleInferName
+                                    onInferName: handleInferName,
+                                    onViewFull: { snapshot in
+                                        fullMessageSnapshot = snapshot
+                                    }
                                 )
                                 .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
                                 .listRowSeparator(.hidden)
@@ -635,6 +642,16 @@ struct ConversationView: View {
         }
         .sheet(isPresented: $showingRecipeMenu) {
             RecipeMenuView(client: client, sessionId: session.id.uuidString.lowercased(), workingDirectory: session.workingDirectory, settings: settings)
+        }
+        // "View Full" sheet — presented at ConversationView level (above the List)
+        // so incoming messages, pruning, and List cell recycling can't dismiss it.
+        .sheet(item: $fullMessageSnapshot) { snapshot in
+            MessageDetailView(
+                snapshot: snapshot,
+                voiceOutput: voiceOutput,
+                onInferName: handleInferName
+            )
+            .environment(\.managedObjectContext, viewContext)
         }
         .onAppear {
             // Reset scroll flags when view appears (handles navigation back to session)
@@ -1165,8 +1182,7 @@ struct CDMessageView: View {
     let message: CDMessage
     let voiceOutput: VoiceOutputManager
     let onInferName: (String) -> Void
-
-    @State private var showFullMessage = false
+    let onViewFull: (MessageSnapshot) -> Void
 
     var body: some View {
         let _ = RenderTracker.count(Self.self)
@@ -1191,7 +1207,7 @@ struct CDMessageView: View {
                     .lineLimit(nil)  // displayText is already bounded; no limit needed
 
                 // Show expand button for truncated messages OR for quick actions
-                Button(action: { showFullMessage = true }) {
+                Button(action: { onViewFull(MessageSnapshot(from: message)) }) {
                     HStack(spacing: 4) {
                         if message.isTruncated {
                             Image(systemName: "arrow.up.left.and.arrow.down.right")
@@ -1231,20 +1247,42 @@ struct CDMessageView: View {
         .padding(12)  // Explicit padding value instead of default
         .background(Color(message.role == "user" ? .systemBlue : .systemGreen).opacity(0.1))
         .cornerRadius(12)
-        .sheet(isPresented: $showFullMessage) {
-            MessageDetailView(message: message, voiceOutput: voiceOutput, onInferName: onInferName)
-        }
+        // No .sheet here — lifted to ConversationView so list cell recycling
+        // (and pruning) can't dismiss the open "View Full" sheet.
     }
 }
 
 // MARK: - Message Detail View
 
 struct MessageDetailView: View {
-    @ObservedObject var message: CDMessage
+    let snapshot: MessageSnapshot
     @ObservedObject var voiceOutput: VoiceOutputManager
     let onInferName: (String) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var showCopiedConfirmation = false
+
+    /// Live message lookup — keyed on the snapshot's CoreData message UUID.
+    /// Streaming messages update live; once confirmed the server stops updating
+    /// the row so the text "naturally freezes" at its final value. Returns empty
+    /// if the message is pruned/deleted, in which case we fall back to the snapshot.
+    @FetchRequest private var liveMessages: FetchedResults<CDMessage>
+
+    init(snapshot: MessageSnapshot, voiceOutput: VoiceOutputManager, onInferName: @escaping (String) -> Void) {
+        self.snapshot = snapshot
+        self.voiceOutput = voiceOutput
+        self.onInferName = onInferName
+        _liveMessages = FetchRequest(
+            fetchRequest: CDMessage.fetchMessage(id: snapshot.messageId),
+            animation: nil
+        )
+    }
+
+    /// Freshest available text: live CoreData text while the message exists,
+    /// snapshot text as a value-type fallback after pruning/deletion. All actions
+    /// (display, copy, speech, infer-name) read through this single property.
+    private var currentText: String {
+        liveMessages.first?.text ?? snapshot.text
+    }
 
     var body: some View {
         NavigationController(minWidth: 500, minHeight: 400) {
@@ -1255,7 +1293,7 @@ struct MessageDetailView: View {
     private var messageDetailContent: some View {
         VStack(spacing: 0) {
             ScrollView {
-                SelectableText(text: message.text)
+                SelectableText(text: currentText)
                     .padding()
             }
 
@@ -1264,7 +1302,7 @@ struct MessageDetailView: View {
             // Action buttons at bottom for better accessibility
             HStack(spacing: 20) {
                 Button(action: {
-                    ClipboardUtility.copy(message.text)
+                    ClipboardUtility.copy(currentText)
 
                     // Haptic feedback
                     ClipboardUtility.triggerSuccessHaptic()
@@ -1295,8 +1333,8 @@ struct MessageDetailView: View {
                     if voiceOutput.isSpeaking {
                         voiceOutput.stop()
                     } else {
-                        let processedText = TextProcessor.prepareForSpeech(from: message.text)
-                        voiceOutput.speak(processedText, workingDirectory: message.session?.workingDirectory, sessionId: message.session?.id)
+                        let processedText = TextProcessor.prepareForSpeech(from: currentText)
+                        voiceOutput.speak(processedText, workingDirectory: snapshot.workingDirectory, sessionId: snapshot.sessionId)
                     }
                 }) {
                     VStack(spacing: 4) {
@@ -1309,7 +1347,7 @@ struct MessageDetailView: View {
                 }
 
                 Button(action: {
-                    onInferName(message.text)
+                    onInferName(currentText)
                     dismiss()
                 }) {
                     VStack(spacing: 4) {
