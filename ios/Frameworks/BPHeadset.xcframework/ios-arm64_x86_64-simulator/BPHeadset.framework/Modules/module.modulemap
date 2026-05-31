@@ -1,0 +1,6 @@
+framework module BPHeadset {
+  umbrella header "BPHeadset.h"
+  export *
+
+  module * { export * }
+}

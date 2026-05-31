@@ -2,7 +2,6 @@
 // Debug view for viewing and copying app logs
 
 import SwiftUI
-import OSLog
 #if os(iOS)
 import UIKit
 #elseif os(macOS)
@@ -11,12 +10,10 @@ import AppKit
 
 struct DebugLogsView: View {
     @State private var logs: String = "Loading logs..."
-    @State private var isLoadingSystemLogs = false
     @State private var showingCopyConfirmation = false
-    @State private var logSource: LogSource = .system
+    @State private var logSource: LogSource = .captured
 
     enum LogSource: String, CaseIterable {
-        case system = "System Logs"
         case captured = "Captured Logs"
         case renderStats = "Render Stats"
     }
@@ -120,36 +117,10 @@ struct DebugLogsView: View {
 
     private func loadLogs() {
         switch logSource {
-        case .system:
-            loadSystemLogs()
         case .captured:
             loadCapturedLogs()
         case .renderStats:
             loadRenderStats()
-        }
-    }
-
-    private func loadSystemLogs() {
-        isLoadingSystemLogs = true
-        logs = "Loading system logs..."
-
-        Task {
-            do {
-                let systemLogs = try await LogManager.shared.getSystemLogs(maxBytes: 50_000)
-                await MainActor.run {
-                    if systemLogs.isEmpty {
-                        logs = "No system logs available.\n\nNote: System logs from OSLog may require device connection to Xcode Console."
-                    } else {
-                        logs = systemLogs
-                    }
-                    isLoadingSystemLogs = false
-                }
-            } catch {
-                await MainActor.run {
-                    logs = "Failed to load system logs: \(error.localizedDescription)\n\nTry using Xcode Console instead:\n1. Connect device to Mac\n2. Open Xcode → Window → Devices and Simulators\n3. Select your device → Open Console\n4. Filter by 'VoiceCode' process"
-                    isLoadingSystemLogs = false
-                }
-            }
         }
     }
 
@@ -170,23 +141,6 @@ struct DebugLogsView: View {
         let logsToCopy: String
 
         switch logSource {
-        case .system:
-            // Get last 15KB of system logs
-            Task {
-                do {
-                    let systemLogs = try await LogManager.shared.getSystemLogs(maxBytes: 15_000)
-                    await MainActor.run {
-                        ClipboardUtility.copy(systemLogs)
-                        showCopyConfirmation()
-                    }
-                } catch {
-                    await MainActor.run {
-                        // Fallback to current view content
-                        ClipboardUtility.copy(String(logs.suffix(15_000)))
-                        showCopyConfirmation()
-                    }
-                }
-            }
         case .captured:
             logsToCopy = LogManager.shared.getRecentLogs(maxBytes: 15_000)
             ClipboardUtility.copy(logsToCopy)

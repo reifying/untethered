@@ -289,7 +289,7 @@ struct SessionInfoView: View {
                 exportText += "\(message.text)\n\n"
             }
         } catch {
-            print("❌ Failed to fetch messages for export: \(error)")
+            LogManager.shared.log("❌ Failed to fetch messages for export: \(error)", category: "SessionInfo")
             exportText += "Error: Failed to export messages\n"
         }
 

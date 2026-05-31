@@ -6331,3 +6331,262 @@
                 (str "emission latency " elapsed "ms exceeds 500ms budget"))))
         (.shutdownNow scheduler)
         (is (= session-id (first @calls)))))))
+
+(deftest ghost-fork-guard-refcount-test
+  (testing "workdir stays guarded until the LAST concurrent fork in it unregisters"
+    (reset! repl/ghost-fork-guard {})
+    (repl/register-ghost-fork! "/repo")          ; fork A
+    (repl/register-ghost-fork! "/repo")          ; fork B — concurrent, same repo
+    (is (repl/ghost-guarded? "/repo") "guarded while two forks are in flight")
+    (repl/unregister-ghost-fork! "/repo")        ; A finishes first
+    (is (repl/ghost-guarded? "/repo") "still guarded while B runs")
+    (repl/unregister-ghost-fork! "/repo")        ; B finishes
+    (is (not (repl/ghost-guarded? "/repo")) "unguarded after the last fork finishes")
+    (is (= {} @repl/ghost-fork-guard) "entry is dissociated at zero, not left at 0")
+    (repl/unregister-ghost-fork! "/repo")        ; spurious extra unregister
+    (is (not (repl/ghost-guarded? "/repo")) "spurious unregister is safe")
+    (is (= {} @repl/ghost-fork-guard) "spurious unregister never drives the count negative"))
+  (testing "guards are independent per workdir"
+    (reset! repl/ghost-fork-guard {})
+    (repl/register-ghost-fork! "/repo-a")
+    (is (repl/ghost-guarded? "/repo-a"))
+    (is (not (repl/ghost-guarded? "/repo-b")) "an unrelated workdir is never guarded")
+    (repl/unregister-ghost-fork! "/repo-a")
+    (is (not (repl/ghost-guarded? "/repo-a")))))
+
+(deftest ghost-session?-test
+  (testing "true when the ghost marker rides a LATER human prompt, not the first"
+    ;; A fork copies the source history first, then appends the marked meta-prompt,
+    ;; so the marker lands in a later user line — every human prompt must be scanned.
+    (let [file (create-test-jsonl-file
+                "ghost-fork.jsonl"
+                [(json/generate-string {:type "user" :message {:content "first plain prompt"}})
+                 (json/generate-string {:type "assistant"
+                                        :message {:content [{:type "text" :text "working on it"}]}})
+                 (json/generate-string {:type "user"
+                                        :message {:content [{:type "text"
+                                                             :text (str "[" repl/ghost-fork-marker
+                                                                        " gp-abc123abc123] do X")}]}})])]
+      (is (true? (repl/ghost-session? file)))))
+  (testing "false for a normal session with no marker"
+    (let [file (create-test-jsonl-file
+                "ghost-normal.jsonl"
+                [(json/generate-string {:type "user" :message {:content "hello"}})
+                 (json/generate-string {:type "assistant"
+                                        :message {:content [{:type "text" :text "hi there"}]}})])]
+      (is (false? (repl/ghost-session? file)))))
+  (testing "marker carried as plain string content is also detected"
+    (let [file (create-test-jsonl-file
+                "ghost-string.jsonl"
+                [(json/generate-string {:type "user"
+                                        :message {:content (str "[" repl/ghost-fork-marker
+                                                                " gp-deadbeef0001] do Y")}})])]
+      (is (true? (repl/ghost-session? file)))))
+  (testing "marker leaking into a tool_result-only user message does NOT count (not a human prompt)"
+    (let [file (create-test-jsonl-file
+                "ghost-toolresult.jsonl"
+                [(json/generate-string {:type "user"
+                                        :message {:content [{:type "tool_result"
+                                                             :content (str repl/ghost-fork-marker
+                                                                           " in a tool result")}]}})])]
+      (is (false? (repl/ghost-session? file))))))
+
+(deftest claude-assistant-text-test
+  (testing "concatenates assistant text blocks (skipping tool_use and non-assistant), joined by newlines"
+    (let [file (create-test-jsonl-file
+                "assistant-text.jsonl"
+                [(json/generate-string {:type "user" :message {:content "the task"}})
+                 (json/generate-string {:type "assistant"
+                                        :message {:content [{:type "text" :text "Let me write a prompt."}
+                                                            {:type "tool_use" :id "t1" :name "Read"}]}})
+                 (json/generate-string {:type "assistant"
+                                        :message {:content [{:type "text" :text "===GHOST-BEGIN:gp-abc==="}
+                                                            {:type "text" :text "the body"}]}})])]
+      (is (= "Let me write a prompt.\n===GHOST-BEGIN:gp-abc===\nthe body"
+             (repl/claude-assistant-text (.getPath file))))))
+  (testing "handles string-content assistant messages"
+    (let [file (create-test-jsonl-file
+                "assistant-string.jsonl"
+                [(json/generate-string {:type "assistant" :message {:content "plain string answer"}})])]
+      (is (= "plain string answer" (repl/claude-assistant-text (.getPath file))))))
+  (testing "empty string when the transcript has no assistant messages"
+    (let [file (create-test-jsonl-file
+                "assistant-none.jsonl"
+                [(json/generate-string {:type "user" :message {:content "only a user message"}})])]
+      (is (= "" (repl/claude-assistant-text (.getPath file)))))))
+
+;; ============================================================================
+;; Ghost suppression wire-up (tmux-untethered-5hw.5)
+;; build-claude-sessions-index skip, both session_created sites, list exclusion
+;; ============================================================================
+
+(deftest get-all-sessions-excludes-ghost-test
+  (testing "get-all-sessions and get-recent-sessions exclude entries tagged :ghost"
+    (reset! repl/session-index
+            {"550e8400-e29b-41d4-a716-446655440100"
+             {:session-id "550e8400-e29b-41d4-a716-446655440100"
+              :name "normal" :working-directory "/repo"
+              :message-count 3 :last-modified 100}
+             "550e8400-e29b-41d4-a716-446655440101"
+             {:session-id "550e8400-e29b-41d4-a716-446655440101"
+              :name "ghost fork" :working-directory "/repo"
+              :message-count 2 :last-modified 200 :ghost true}})
+    (let [ids (set (map :session-id (repl/get-all-sessions)))]
+      (is (contains? ids "550e8400-e29b-41d4-a716-446655440100") "normal session is present")
+      (is (not (contains? ids "550e8400-e29b-41d4-a716-446655440101")) "ghost fork is excluded"))
+    (let [recent-ids (set (map :session-id (repl/get-recent-sessions 10)))]
+      (is (contains? recent-ids "550e8400-e29b-41d4-a716-446655440100"))
+      (is (not (contains? recent-ids "550e8400-e29b-41d4-a716-446655440101"))
+          "get-recent-sessions also excludes ghost (it delegates to get-all-sessions)"))))
+
+(deftest build-claude-sessions-index-skips-ghost-test
+  (testing "startup index skips ghost fork transcripts (marker) but keeps normal ones"
+    (let [normal-id "550e8400-e29b-41d4-a716-446655440110"
+          ghost-id  "550e8400-e29b-41d4-a716-446655440111"
+          normal-file (create-test-jsonl-file
+                       (str normal-id ".jsonl")
+                       [(json/generate-string {:type "user" :message {:content "real work"}})])
+          ghost-file (create-test-jsonl-file
+                      (str ghost-id ".jsonl")
+                      [(json/generate-string {:type "user" :message {:content "first plain prompt"}})
+                       (json/generate-string {:type "user"
+                                              :message {:content [{:type "text"
+                                                                   :text (str "[" repl/ghost-fork-marker
+                                                                              " gp-aaaa1111bbbb] do X")}]}})])]
+      (with-redefs [repl/find-jsonl-files (constantly [normal-file ghost-file])]
+        (let [index (#'repl/build-claude-sessions-index)]
+          (is (contains? index normal-id) "normal session is indexed at startup")
+          (is (not (contains? index ghost-id)) "ghost fork is skipped at startup"))))))
+
+(deftest handle-file-created-ghost-marker-suppressed-test
+  (testing "a marker-bearing new session is tagged :ghost and not pushed"
+    (let [notifications (atom [])
+          session-id "550e8400-e29b-41d4-a716-446655440120"
+          file (create-test-jsonl-file
+                (str session-id ".jsonl")
+                [(json/generate-string {:type "user" :message {:content "plain first"}})
+                 (json/generate-string {:type "user"
+                                        :message {:content [{:type "text"
+                                                             :text (str "[" repl/ghost-fork-marker
+                                                                        " gp-cccc2222dddd] do X")}]}})])]
+      (reset! repl/session-index {})
+      (reset! repl/ghost-fork-guard {})
+      (reset! repl/watcher-state
+              {:on-session-created (fn [md] (swap! notifications conj md))
+               :max-retries 3 :debounce-ms 200})
+      (repl/handle-file-created file)
+      (is (true? (:ghost (get @repl/session-index session-id))) "entry is tagged :ghost durably")
+      (is (empty? @notifications) "no session_created pushed for a ghost fork")
+      (is (not (:ios-notified (get @repl/session-index session-id)))
+          "ghost fork is not marked ios-notified"))))
+
+(deftest handle-file-created-ghost-guard-suppressed-test
+  (testing "a session in a workdir with a ghost fork in flight is push-deferred but not :ghost-tagged"
+    (let [notifications (atom [])
+          session-id "550e8400-e29b-41d4-a716-446655440121"
+          file (create-test-jsonl-file
+                (str session-id ".jsonl")
+                [(json/generate-string {:type "user" :message {:content "ordinary prompt"}})])
+          workdir (:working-directory (repl/build-session-metadata file))]
+      (reset! repl/session-index {})
+      (reset! repl/ghost-fork-guard {})
+      (reset! repl/watcher-state
+              {:on-session-created (fn [md] (swap! notifications conj md))
+               :max-retries 3 :debounce-ms 200})
+      (repl/register-ghost-fork! workdir)
+      (try
+        (repl/handle-file-created file)
+        (is (empty? @notifications) "push deferred while a ghost fork is in flight in this workdir")
+        (is (nil? (:ghost (get @repl/session-index session-id)))
+            "guard never sets the durable :ghost tag (a genuine session is not mis-hidden)")
+        (is (contains? (set (map :session-id (repl/get-all-sessions))) session-id)
+            "the genuine session still appears in get-all-sessions")
+        (finally (repl/unregister-ghost-fork! workdir))))))
+
+(deftest handle-file-created-normal-pushed-test
+  (testing "an unguarded, unmarked new session with messages is pushed normally"
+    (let [notifications (atom [])
+          session-id "550e8400-e29b-41d4-a716-446655440122"
+          file (create-test-jsonl-file
+                (str session-id ".jsonl")
+                [(json/generate-string {:type "user" :message {:content "hello"}})])]
+      (reset! repl/session-index {})
+      (reset! repl/ghost-fork-guard {})
+      (reset! repl/watcher-state
+              {:on-session-created (fn [md] (swap! notifications conj md))
+               :max-retries 3 :debounce-ms 200})
+      (repl/handle-file-created file)
+      (is (= 1 (count @notifications)) "normal session is pushed")
+      (is (nil? (:ghost (get @repl/session-index session-id))) "normal session is not :ghost")
+      (is (true? (:ios-notified (get @repl/session-index session-id)))))))
+
+(deftest handle-file-modified-ghost-marker-0toN-suppressed-test
+  (testing "a 0->N transition whose new content carries the ghost marker is tagged :ghost and not pushed"
+    (let [created (atom [])
+          session-id "550e8400-e29b-41d4-a716-446655440130"
+          initial [(claude-jsonl {:type "user" :text "warmup" :sidechain? true})]
+          file (create-test-jsonl-file (str session-id ".jsonl") initial)
+          file-path (.getAbsolutePath file)]
+      (reset! repl/session-index {})
+      (reset! repl/ghost-fork-guard {})
+      (repl/reset-file-position! file-path)
+      (reset! repl/watcher-state
+              {:on-session-created (fn [md] (swap! created conj md))
+               :subscribed-sessions #{} :event-queue (atom {})
+               :max-retries 3 :debounce-ms 200})
+      (repl/handle-file-created file)
+      (is (empty? @created) "no push at create (0 messages, no marker yet)")
+      (is (nil? (:ghost (get @repl/session-index session-id))) "not yet :ghost at create")
+      ;; Append the marked meta-prompt (the fork's first real human prompt)
+      (spit file (str (claude-jsonl {:type "user"
+                                     :text (str "[" repl/ghost-fork-marker " gp-eeee3333ffff] do X")})
+                      "\n")
+            :append true)
+      (repl/handle-file-modified file)
+      (is (true? (:ghost (get @repl/session-index session-id))) "tagged :ghost at the 0->N site")
+      (is (empty? @created) "ghost fork is not pushed at the delayed-notification site"))))
+
+(deftest handle-file-modified-ghost-guard-0toN-suppressed-test
+  (testing "a 0->N transition in a guarded workdir is push-deferred and not :ghost-tagged"
+    (let [created (atom [])
+          session-id "550e8400-e29b-41d4-a716-446655440131"
+          initial [(claude-jsonl {:type "user" :text "warmup" :sidechain? true})]
+          file (create-test-jsonl-file (str session-id ".jsonl") initial)
+          file-path (.getAbsolutePath file)
+          workdir (:working-directory (repl/build-session-metadata file))]
+      (reset! repl/session-index {})
+      (reset! repl/ghost-fork-guard {})
+      (repl/reset-file-position! file-path)
+      (reset! repl/watcher-state
+              {:on-session-created (fn [md] (swap! created conj md))
+               :subscribed-sessions #{} :event-queue (atom {})
+               :max-retries 3 :debounce-ms 200})
+      (repl/handle-file-created file)
+      (repl/register-ghost-fork! workdir)
+      (try
+        (spit file (str (claude-jsonl {:type "user" :text "ordinary follow-up"}) "\n") :append true)
+        (repl/handle-file-modified file)
+        (is (empty? @created) "push deferred while a ghost fork is in flight in this workdir")
+        (is (nil? (:ghost (get @repl/session-index session-id)))
+            "guard never sets the durable :ghost tag")
+        (finally (repl/unregister-ghost-fork! workdir))))))
+
+(deftest handle-file-modified-normal-0toN-pushed-test
+  (testing "an unguarded, unmarked 0->N transition is pushed normally (control)"
+    (let [created (atom [])
+          session-id "550e8400-e29b-41d4-a716-446655440132"
+          initial [(claude-jsonl {:type "user" :text "warmup" :sidechain? true})]
+          file (create-test-jsonl-file (str session-id ".jsonl") initial)
+          file-path (.getAbsolutePath file)]
+      (reset! repl/session-index {})
+      (reset! repl/ghost-fork-guard {})
+      (repl/reset-file-position! file-path)
+      (reset! repl/watcher-state
+              {:on-session-created (fn [md] (swap! created conj md))
+               :subscribed-sessions #{} :event-queue (atom {})
+               :max-retries 3 :debounce-ms 200})
+      (repl/handle-file-created file)
+      (spit file (str (claude-jsonl {:type "user" :text "real first message"}) "\n") :append true)
+      (repl/handle-file-modified file)
+      (is (= 1 (count @created)) "normal session is pushed at the 0->N site")
+      (is (nil? (:ghost (get @repl/session-index session-id))) "normal session is not :ghost"))))

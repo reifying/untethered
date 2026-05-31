@@ -519,19 +519,23 @@ final class SessionSyncManagerPrunedGapTests: XCTestCase {
 
     // MARK: - ConversationView banner-dismissal lifecycle (tmux-untethered-9t9)
 
-    /// Seeds 50 messages (seqs 1..50) for a session, lands a pruned gap (so the
-    /// banner shows for the user), dismisses, then injects a new push at
+    /// Seeds `maxMessagesPerSession` messages for a session, lands a pruned gap
+    /// (so the banner shows for the user), dismisses, then injects a new push at
     /// seq 205. Asserts the data the rendered list reads from:
     ///
-    /// - The seq discontinuity (1..50 → 205) is preserved verbatim in CoreData.
-    ///   The new message is NOT auto-filled with synthesized 51..204 rows;
+    /// - The seq discontinuity (1..max → 205) is preserved verbatim in CoreData.
+    ///   The new message is NOT auto-filled with synthesized rows;
     ///   ConversationView's `List(messages)` will render the gap as a visible
-    ///   jump between 50 and 205.
+    ///   jump.
     /// - Dismissing the banner clears `prunedGaps[sessionId]` and the manager
     ///   flag so the next push merges normally.
     /// - The post-dismiss push at seq 205 must NOT re-introduce a `prunedGaps`
     ///   entry — i.e. dismissing the banner does not silently re-show it for
     ///   any subsequent non-gap window.
+    ///
+    /// Seed count is maxMessagesPerSession so that after adding one post-dismiss
+    /// push the total (max+1) remains below the prune trigger (max+threshold),
+    /// preserving all seeded rows in the assertion.
     ///
     /// Note: the actual scroll position after `messages.count` change is owned
     /// by `ScrollViewProxy` inside ConversationView and can only be observed
@@ -551,11 +555,12 @@ final class SessionSyncManagerPrunedGapTests: XCTestCase {
         let lowerKey = sessionId.lowercased()
         let viewContext = persistenceController.container.viewContext
 
-        // 1. Seed seqs 1..50 directly so the conversation has a substantial
-        //    history before the gap arrives. Mirrors the production state
-        //    where a user has been chatting and then the server prunes
-        //    older history out from under them.
-        for i: Int64 in 1...50 {
+        // 1. Seed exactly maxMessagesPerSession seqs directly so the conversation
+        //    has a substantial history before the gap arrives. Using max (not more)
+        //    ensures the post-dismiss push (which adds one row) stays below the
+        //    prune trigger (max+threshold), preserving all seeded rows.
+        let seedCount = Int64(CDMessage.maxMessagesPerSession)
+        for i: Int64 in 1...seedCount {
             let m = CDMessage(context: viewContext)
             m.id = UUID()
             m.sessionId = sessionUUID
@@ -566,26 +571,26 @@ final class SessionSyncManagerPrunedGapTests: XCTestCase {
             m.seq = i
         }
         try viewContext.save()
-        XCTAssertEqual(messagesForSession(sessionUUID, in: viewContext).count, 50,
-                       "seeding precondition: 50 rows in store")
+        XCTAssertEqual(messagesForSession(sessionUUID, in: viewContext).count, Int(seedCount),
+                       "seeding precondition: \(seedCount) rows in store")
 
         // 2. Pruned gap arrives. min_available_seq=200 means the server has
         //    forgotten everything up to and including seq 199; the user's
-        //    requested cursor (last_seq=51) is far below the retained range.
+        //    requested cursor (seedCount+1) is far below the retained range.
         //    Banner state must publish for the UI; no rows must merge.
         let pruned = prunedPayload(sessionId: sessionId,
-                                   requested: 51,
+                                   requested: seedCount + 1,
                                    minAvailable: 200)
         manager.handleSessionHistoryPayload(pruned)
 
         waitForMainQueue(timeout: 2.0) { client.prunedGaps[lowerKey] != nil }
         XCTAssertEqual(client.prunedGaps[lowerKey]?.minAvailableSeq, 200,
                        "banner data is the gap object the view binds to")
-        XCTAssertEqual(client.prunedGaps[lowerKey]?.requestedLastSeq, 51)
+        XCTAssertEqual(client.prunedGaps[lowerKey]?.requestedLastSeq, seedCount + 1)
 
         // Sanity: the pruned payload itself must not have written rows.
         drainMainQueue(for: 0.2)
-        XCTAssertEqual(messagesForSession(sessionUUID, in: viewContext).count, 50,
+        XCTAssertEqual(messagesForSession(sessionUUID, in: viewContext).count, Int(seedCount),
                        "pruned payload must not merge anything; seeded rows untouched")
 
         // 3. User taps the banner's dismiss button. In production this maps
@@ -604,7 +609,7 @@ final class SessionSyncManagerPrunedGapTests: XCTestCase {
         //    server's retained range. This is the moment ConversationView's
         //    `onChange(of: messages.count)` fires and triggers the auto-scroll
         //    to the new last message. We assert the underlying data so the
-        //    list renders the gap visibly between seq 50 and seq 205.
+        //    list renders the gap visibly between seq seedCount and seq 205.
         let postDismissPush = SessionHistoryPayload(
             sessionId: sessionId,
             messages: [
@@ -631,13 +636,13 @@ final class SessionSyncManagerPrunedGapTests: XCTestCase {
         wait(for: [merged], timeout: 2.0)
         drainMainQueue(for: 0.2)
 
-        // 5a. Discontinuity preserved in the data. Seqs 51..204 are NOT
-        //     auto-filled; the list reads exactly [1..50, 205].
+        // 5a. Discontinuity preserved in the data. Seqs (seedCount+1)..204 are NOT
+        //     auto-filled; the list reads exactly [1..seedCount, 205].
         let rows = messagesForSession(sessionUUID, in: viewContext)
         let observedSeqs = rows.map(\.seq)
-        let expectedSeqs: [Int64] = Array(Int64(1)...Int64(50)) + [205]
+        let expectedSeqs: [Int64] = Array(Int64(1)...seedCount) + [205]
         XCTAssertEqual(observedSeqs, expectedSeqs,
-                       "store must contain seqs [1..50, 205] only — no auto-fill of the pruned range")
+                       "store must contain seqs [1..\(seedCount), 205] only — no auto-fill of the pruned range")
         XCTAssertEqual(rows.last?.text, "post-dismiss-205",
                        "newest row is the post-dismiss push at seq 205")
         XCTAssertEqual(rows.last?.seq, 205,

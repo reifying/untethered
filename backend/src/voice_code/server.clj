@@ -21,7 +21,8 @@
             [voice-code.env :as env]
             [voice-code.providers :as providers]
             [voice-code.tmux :as tmux]
-            [voice-code.agent-api :as agent-api])
+            [voice-code.agent-api :as agent-api]
+            [voice-code.ghost :as ghost])
   (:import [java.util.concurrent Executors TimeUnit])
   (:gen-class))
 
@@ -2388,6 +2389,15 @@
                              {:type :error
                               :message "Cannot specify both new_session_id and resume_session_id"}))
 
+                ;; Ghost prompts fork an EXISTING session, so they require a
+                ;; resume_session_id. Reject ghost + new_session_id (or neither)
+                ;; up front — there is no source session to fork.
+                (and (:ghost data) (not resume-session-id))
+                (http/send! channel
+                            (generate-json
+                             {:type :error
+                              :message "ghost prompts require resume_session_id"}))
+
                 ;; Reject prompts for sessions whose JSONL is being rewritten by
                 ;; `claude --compact`. The compaction handler kills the live
                 ;; tmux window before compacting, so without this guard a fresh
@@ -2478,40 +2488,80 @@
                                               (:working-directory session-metadata))]
                         (send-available-commands! channel session-workdir))
 
-                      ;; Dispatch to tmux. start-window! can block up to the
-                      ;; wait-for-ready timeout (20s by default) for TUI readiness,
-                      ;; so run off-thread to keep the ack fast and avoid blocking
-                      ;; other messages on this channel.
-                      ;;
-                      ;; The dispatch is serialized against compact_session via
-                      ;; repl/compaction-dispatch-lock so a compaction arriving
-                      ;; between this handler's is-compaction-locked? check and
-                      ;; the tmux call cannot cause the provider to be respawned
-                      ;; while `claude --compact` is rewriting the JSONL (see
-                      ;; tmux-untethered-22g). The re-check inside the lock is
-                      ;; the one that actually matters: by holding the lock we
-                      ;; know @compaction-locks cannot flip under us.
+                      ;; Dispatch to tmux. start-window! / a ghost fork can block
+                      ;; for tens of seconds, so run off-thread to keep the ack fast
+                      ;; and avoid blocking other messages on this channel. The two
+                      ;; branches below differ in how they serialize against
+                      ;; compact_session (tmux-untethered-22g): the non-ghost path
+                      ;; holds repl/compaction-dispatch-lock across its tmux call;
+                      ;; the ghost path runs its long fork unlocked and lets
+                      ;; ghost-prompt! take the lock only for the final write into S.
                       (future
                         (try
-                          (locking repl/compaction-dispatch-lock
-                            (if (repl/is-compaction-locked? claude-session-id)
-                              (do
-                                (log/info "Prompt dispatch aborted: compaction started after ack"
-                                          {:session-id claude-session-id})
+                          (if (:ghost data)
+                            ;; Ghost dispatch runs OUTSIDE compaction-dispatch-lock.
+                            ;; The fork can take tens of seconds but touches only the
+                            ;; throwaway fork session — never S — so holding the
+                            ;; global lock here would needlessly serialize every
+                            ;; other session's prompt/compaction for the fork's
+                            ;; lifetime. ghost-prompt! takes the lock itself for the
+                            ;; brief final write into S (with a fresh compaction
+                            ;; re-check), preserving the tmux-untethered-22g
+                            ;; invariant for that one S-write. We pass the raw
+                            ;; prompt-text (the task X), NOT final-prompt-text — a
+                            ;; ghost prompt deliberately ignores recipe step
+                            ;; injection (v1: ghost and recipe steps are mutually
+                            ;; exclusive). On success emit ghost_prompt carrying P
+                            ;; (the watcher drops human prompts from the stream, so
+                            ;; this is the only channel that delivers P to iOS); on
+                            ;; failure surface an error and deliver NOTHING to S.
+                            (let [{:keys [ok text reason]}
+                                  (ghost/ghost-prompt! resume-session-id prompt-text)]
+                              (if ok
+                                (send-to-client! channel
+                                                 {:type :ghost-prompt
+                                                  :session-id resume-session-id
+                                                  :text text})
                                 (send-to-client! channel
                                                  {:type :error
-                                                  :session-id claude-session-id
-                                                  :message "Compaction in progress for this session; retry once it completes"}))
-                              (if new-session-id
-                                (tmux/start-window!
-                                 {:session-uuid new-session-id
-                                  :session-name (:name session-metadata)
-                                  :provider provider
-                                  :workdir working-dir
-                                  :initial-prompt final-prompt-text
-                                  :resume? false
-                                  :system-prompt system-prompt})
-                                (tmux/deliver! resume-session-id final-prompt-text))))
+                                                  :session-id resume-session-id
+                                                  :message (case reason
+                                                             :unsupported-provider
+                                                             "ghost prompts are only supported for the claude provider"
+                                                             :unknown-session
+                                                             "Unknown session for ghost prompt"
+                                                             :compacting
+                                                             "Compaction in progress for this session; retry once it completes"
+                                                             (str "Ghost prompt generation failed: "
+                                                                  (name reason)))})))
+                            ;; Non-ghost dispatch is serialized against
+                            ;; compact_session via repl/compaction-dispatch-lock so a
+                            ;; compaction arriving between this handler's
+                            ;; is-compaction-locked? check and the tmux call cannot
+                            ;; cause the provider to be respawned while
+                            ;; `claude --compact` is rewriting the JSONL (see
+                            ;; tmux-untethered-22g). The re-check inside the lock is
+                            ;; the one that actually matters: by holding the lock we
+                            ;; know @compaction-locks cannot flip under us.
+                            (locking repl/compaction-dispatch-lock
+                              (if (repl/is-compaction-locked? claude-session-id)
+                                (do
+                                  (log/info "Prompt dispatch aborted: compaction started after ack"
+                                            {:session-id claude-session-id})
+                                  (send-to-client! channel
+                                                   {:type :error
+                                                    :session-id claude-session-id
+                                                    :message "Compaction in progress for this session; retry once it completes"}))
+                                (if new-session-id
+                                  (tmux/start-window!
+                                   {:session-uuid new-session-id
+                                    :session-name (:name session-metadata)
+                                    :provider provider
+                                    :workdir working-dir
+                                    :initial-prompt final-prompt-text
+                                    :resume? false
+                                    :system-prompt system-prompt})
+                                  (tmux/deliver! resume-session-id final-prompt-text)))))
                           (catch Exception e
                             (log/error e "Failed to dispatch prompt via tmux"
                                        {:session-id claude-session-id

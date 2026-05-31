@@ -8,9 +8,6 @@
 // /Users/travisbrown/assist/notes/voice-code-sync-kafka-redesign-2026-05-10.md §3.5.
 
 import Foundation
-import os.log
-
-private let logger = Logger(subsystem: "dev.910labs.voice-code", category: "MessageStreamTypes")
 
 /// Decoded shape of a single message in a `session_history.messages` array.
 /// Replaces ad-hoc dictionary access in SessionSyncManager with a typed struct
@@ -144,7 +141,7 @@ struct SessionHistoryPayload: Codable, Equatable {
             // mid-init (which would be a mutating-self capture error).
             let sid = sessionId
             let reason = firstFailureReason ?? "unknown"
-            logger.warning("session_history for \(sid, privacy: .public): skipped \(skipCount, privacy: .public) malformed message(s); first reason: \(reason, privacy: .public)")
+            LogManager.shared.log("session_history for \(sid): skipped \(skipCount) malformed message(s); first reason: \(reason)", category: "MessageStreamTypes")
         }
     }
 
@@ -314,7 +311,7 @@ struct SessionHistoryPayloadV5: Codable, Equatable {
         if skipCount > 0 {
             let sid = sessionId
             let reason = firstFailureReason ?? "unknown"
-            logger.warning("session_history v5 for \(sid, privacy: .public): skipped \(skipCount, privacy: .public) malformed message(s); first reason: \(reason, privacy: .public)")
+            LogManager.shared.log("session_history v5 for \(sid): skipped \(skipCount) malformed message(s); first reason: \(reason)", category: "MessageStreamTypes")
         }
     }
 }

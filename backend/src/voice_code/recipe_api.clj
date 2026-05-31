@@ -53,7 +53,6 @@
      provider           (default \"claude\"; inherited from session metadata on resume)
      context            (optional) text prepended to the first step's prompt"
   [req channel]
-  (log/info "Recipe start request received")
   (try
     (let [body (agent-api/parse-json (slurp (:body req)))
           recipe-id-str (:recipe-id body)

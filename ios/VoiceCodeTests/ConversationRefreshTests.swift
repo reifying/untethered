@@ -2,7 +2,7 @@
 //
 // Regression coverage for tmux-untethered-bae.3. Verifies that:
 //   - CDMessage.pruneOldMessages does not fire when count == maxMessagesPerSession (Fix 2, AC4)
-//   - handleSessionHistoryPayload (v0.5.0 path) still prunes when count exceeds 60 (Fix 2, AC4)
+//   - handleSessionHistoryPayload (v0.5.0 path) still prunes when count exceeds the threshold (Fix 2, AC4)
 //
 // ScenePhaseSubscriptionGuardTests (Fix 1, AC1/AC6/AC7) live in
 // ScenePhaseSubscriptionGuardTests.swift, created as part of tmux-untethered-bae.1.
@@ -32,11 +32,13 @@ final class PruneOnOpenRegressionTests: XCTestCase {
     // MARK: - Fix 2: prune threshold boundary
 
     func testPruneOldMessagesOnlyFiresAboveThreshold() {
-        // 50 messages — pruneOldMessages must not delete any (50 > 50 is false).
+        // maxMessagesPerSession messages — pruneOldMessages must not delete any
+        // because count == keepCount (not strictly greater).
         let sessionId = UUID()
+        let max = CDMessage.maxMessagesPerSession
         let bgCtx = persistenceController.container.newBackgroundContext()
         bgCtx.performAndWait {
-            for i in 0..<50 {
+            for i in 0..<max {
                 let msg = CDMessage(context: bgCtx)
                 msg.id = UUID()
                 msg.sessionId = sessionId
@@ -49,17 +51,27 @@ final class PruneOnOpenRegressionTests: XCTestCase {
 
             let deleted = CDMessage.pruneOldMessages(sessionId: sessionId, in: bgCtx)
             XCTAssertEqual(deleted, 0,
-                "pruneOldMessages must not fire when count == keepCount (50)")
+                "pruneOldMessages must not fire when count == keepCount (\(max))")
 
             let count = try! bgCtx.count(for: CDMessage.fetchMessages(sessionId: sessionId))
-            XCTAssertEqual(count, 50)
+            XCTAssertEqual(count, max)
         }
     }
 
     // MARK: - Fix 2: handleSessionHistoryPayload still prunes
 
     func testHandleSessionHistoryStillPrunesAfterNewData() {
-        // Arrange: 55 existing messages; payload adds 10 more → 65 total → prune to 50.
+        // Arrange: seed maxMessagesPerSession + pruneThreshold - 1 existing messages
+        // (just below the prune trigger). Payload adds pruneThreshold + 1 new messages
+        // so the total crosses the threshold and pruning fires, reducing to maxMessagesPerSession.
+        let max = CDMessage.maxMessagesPerSession
+        let threshold = CDMessage.pruneThreshold
+        let seedCount = max + threshold - 1   // just below trigger
+        let newCount = threshold + 1          // enough to cross trigger
+        let totalBefore = seedCount + newCount
+        // sanity: totalBefore > max + threshold (prune fires)
+        // and totalBefore > max (there is something to delete)
+
         let sessionId = UUID()
         let sessionIdString = sessionId.uuidString.lowercased()
 
@@ -68,13 +80,13 @@ final class PruneOnOpenRegressionTests: XCTestCase {
         backendSession.backendName = "test"
         backendSession.workingDirectory = "/tmp"
         backendSession.lastModified = Date()
-        backendSession.messageCount = 55
+        backendSession.messageCount = Int32(seedCount)
         backendSession.preview = ""
         backendSession.provider = "claude"
         backendSession.lastOffsetMerged = 0
         backendSession.liveFromOffset = 0
 
-        for i in 0..<55 {
+        for i in 0..<seedCount {
             let msg = CDMessage(context: context)
             msg.id = UUID()
             msg.sessionId = sessionId
@@ -85,10 +97,10 @@ final class PruneOnOpenRegressionTests: XCTestCase {
         }
         try! context.save()
 
-        // Act: deliver a payload carrying 10 new messages (offsets 55–64).
+        // Act: deliver a payload carrying newCount new messages.
         let payload = SessionHistoryPayloadV5(
             sessionId: sessionIdString,
-            messages: (55..<65).map { i in
+            messages: (seedCount..<(seedCount + newCount)).map { i in
                 WireMessageV5(
                     sessionId: sessionIdString,
                     offset: Int64(i),
@@ -98,14 +110,14 @@ final class PruneOnOpenRegressionTests: XCTestCase {
                     timestamp: Date()
                 )
             },
-            nextOffset: 65,
+            nextOffset: Int64(totalBefore),
             endOfFile: true,
             fileReplaced: false,
             fileSignature: "sig1"
         )
         manager.handleSessionHistoryPayload(payload)
 
-        // Assert: count reduced to 50 (oldest 15 deleted).
+        // Assert: count reduced to maxMessagesPerSession.
         // handleSessionHistoryPayload runs on a serial background queue;
         // allow it to drain before checking the persistent store.
         let expectation = XCTestExpectation(description: "prune completes")
@@ -113,8 +125,8 @@ final class PruneOnOpenRegressionTests: XCTestCase {
             let verifyCtx = self.persistenceController.container.newBackgroundContext()
             verifyCtx.performAndWait {
                 let count = try! verifyCtx.count(for: CDMessage.fetchMessages(sessionId: sessionId))
-                XCTAssertEqual(count, 50,
-                    "session_history prune must fire when count (65) exceeds needsPruning threshold (60)")
+                XCTAssertEqual(count, max,
+                    "session_history prune must fire when count (\(totalBefore)) exceeds needsPruning threshold (\(max + threshold))")
             }
             expectation.fulfill()
         }
