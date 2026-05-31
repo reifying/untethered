@@ -3,7 +3,6 @@
 
 import Foundation
 import CoreData
-import OSLog
 
 extension CDBackendSession {
 
@@ -20,7 +19,7 @@ extension CDBackendSession {
 
         // Skip if already at end (no change needed)
         if wasAlreadyInQueue && session.priorityOrder == newOrder {
-            Logger.priorityQueue.debug("⏭️ [PriorityQueue] Session already at end of priority level: \(session.id.uuidString.lowercased())")
+            LogManager.shared.log("⏭️ [PriorityQueue] Session already at end of priority level: \(session.id.uuidString.lowercased())", category: "PriorityQueue")
             return
         }
 
@@ -35,9 +34,9 @@ extension CDBackendSession {
         do {
             try context.save()
             if wasAlreadyInQueue {
-                Logger.priorityQueue.info("🔄 [PriorityQueue] Moved session to end of priority level: \(session.id.uuidString.lowercased()), priority=\(session.priority), order=\(session.priorityOrder)")
+                LogManager.shared.log("🔄 [PriorityQueue] Moved session to end of priority level: \(session.id.uuidString.lowercased()), priority=\(session.priority), order=\(session.priorityOrder)", category: "PriorityQueue")
             } else {
-                Logger.priorityQueue.info("✅ [PriorityQueue] Added session to priority queue: \(session.id.uuidString.lowercased()), priority=\(session.priority), order=\(session.priorityOrder)")
+                LogManager.shared.log("✅ [PriorityQueue] Added session to priority queue: \(session.id.uuidString.lowercased()), priority=\(session.priority), order=\(session.priorityOrder)", category: "PriorityQueue")
             }
 
             // Post notification for cross-view synchronization
@@ -47,14 +46,14 @@ extension CDBackendSession {
                 userInfo: ["sessionId": session.id.uuidString.lowercased()]
             )
         } catch {
-            Logger.priorityQueue.error("❌ [PriorityQueue] Failed to add/move session in queue: \(error.localizedDescription)")
+            LogManager.shared.log("❌ [PriorityQueue] Failed to add/move session in queue: \(error.localizedDescription)", category: "PriorityQueue")
         }
     }
 
     /// Remove session from priority queue and reset properties
     static func removeFromPriorityQueue(_ session: CDBackendSession, context: NSManagedObjectContext) {
         guard session.isInPriorityQueue else {
-            Logger.priorityQueue.info("⚠️ [PriorityQueue] Session not in queue: \(session.id.uuidString.lowercased())")
+            LogManager.shared.log("⚠️ [PriorityQueue] Session not in queue: \(session.id.uuidString.lowercased())", category: "PriorityQueue")
             return
         }
 
@@ -71,7 +70,7 @@ extension CDBackendSession {
 
         do {
             try context.save()
-            Logger.priorityQueue.info("✅ [PriorityQueue] Removed session from priority queue: \(session.id.uuidString.lowercased())")
+            LogManager.shared.log("✅ [PriorityQueue] Removed session from priority queue: \(session.id.uuidString.lowercased())", category: "PriorityQueue")
 
             // Post notification for cross-view synchronization
             NotificationCenter.default.post(
@@ -85,20 +84,20 @@ extension CDBackendSession {
             session.priority = oldPriority
             session.priorityOrder = oldOrder
             session.priorityQueuedAt = oldQueuedAt
-            Logger.priorityQueue.error("❌ [PriorityQueue] Failed to remove session from queue: \(error.localizedDescription)")
+            LogManager.shared.log("❌ [PriorityQueue] Failed to remove session from queue: \(error.localizedDescription)", category: "PriorityQueue")
         }
     }
 
     /// Change session priority and reorder within new priority level
     static func changePriority(_ session: CDBackendSession, newPriority: Int32, context: NSManagedObjectContext) {
         guard session.isInPriorityQueue else {
-            Logger.priorityQueue.warning("⚠️ [PriorityQueue] Cannot change priority - session not in queue: \(session.id.uuidString.lowercased())")
+            LogManager.shared.log("⚠️ [PriorityQueue] Cannot change priority - session not in queue: \(session.id.uuidString.lowercased())", category: "PriorityQueue")
             return
         }
 
         let oldPriority = session.priority
         guard oldPriority != newPriority else {
-            Logger.priorityQueue.info("🔄 [PriorityQueue] Priority unchanged: \(newPriority)")
+            LogManager.shared.log("🔄 [PriorityQueue] Priority unchanged: \(newPriority)", category: "PriorityQueue")
             return
         }
 
@@ -115,7 +114,7 @@ extension CDBackendSession {
 
         do {
             try context.save()
-            Logger.priorityQueue.info("✅ [PriorityQueue] Changed priority: \(oldPriority) → \(newPriority), order=\(session.priorityOrder)")
+            LogManager.shared.log("✅ [PriorityQueue] Changed priority: \(oldPriority) → \(newPriority), order=\(session.priorityOrder)", category: "PriorityQueue")
 
             // Post notification for cross-view synchronization
             NotificationCenter.default.post(
@@ -127,7 +126,7 @@ extension CDBackendSession {
             // Rollback on failure
             session.priority = oldPriority
             session.priorityOrder = oldOrder
-            Logger.priorityQueue.error("❌ [PriorityQueue] Failed to change priority: \(error.localizedDescription)")
+            LogManager.shared.log("❌ [PriorityQueue] Failed to change priority: \(error.localizedDescription)", category: "PriorityQueue")
         }
     }
 
@@ -140,7 +139,7 @@ extension CDBackendSession {
     ///   - context: NSManagedObjectContext for the save
     static func reorderSession(_ session: CDBackendSession, between above: CDBackendSession?, and below: CDBackendSession?, context: NSManagedObjectContext) {
         guard session.isInPriorityQueue else {
-            Logger.priorityQueue.warning("⚠️ [PriorityQueue] Cannot reorder - session not in queue: \(session.id.uuidString.lowercased())")
+            LogManager.shared.log("⚠️ [PriorityQueue] Cannot reorder - session not in queue: \(session.id.uuidString.lowercased())", category: "PriorityQueue")
             return
         }
 
@@ -153,33 +152,33 @@ extension CDBackendSession {
                 // Same priority: calculate midpoint for priorityOrder
                 session.priority = above.priority
                 session.priorityOrder = (above.priorityOrder + below.priorityOrder) / 2.0
-                Logger.priorityQueue.debug("📍 [Reorder] Same priority - midpoint: \(session.priorityOrder)")
+                LogManager.shared.log("📍 [Reorder] Same priority - midpoint: \(session.priorityOrder)", category: "PriorityQueue")
             } else {
                 // Different priorities: adopt BELOW session's priority, position at end
                 session.priority = below.priority
                 let maxOrder = fetchMaxPriorityOrder(priority: below.priority, context: context, excluding: session)
                 session.priorityOrder = maxOrder + 1.0
-                Logger.priorityQueue.debug("📍 [Reorder] Different priorities - adopting P\(below.priority), order: \(session.priorityOrder)")
+                LogManager.shared.log("📍 [Reorder] Different priorities - adopting P\(below.priority), order: \(session.priorityOrder)", category: "PriorityQueue")
             }
         } else if let above = above {
             // Dropped at bottom: same priority as above, order = above + 1
             session.priority = above.priority
             session.priorityOrder = above.priorityOrder + 1.0
-            Logger.priorityQueue.debug("📍 [Reorder] Dropped at bottom - P\(above.priority), order: \(session.priorityOrder)")
+            LogManager.shared.log("📍 [Reorder] Dropped at bottom - P\(above.priority), order: \(session.priorityOrder)", category: "PriorityQueue")
         } else if let below = below {
             // Dropped at top: same priority as below, order = below - 1
             session.priority = below.priority
             session.priorityOrder = below.priorityOrder - 1.0
-            Logger.priorityQueue.debug("📍 [Reorder] Dropped at top - P\(below.priority), order: \(session.priorityOrder)")
+            LogManager.shared.log("📍 [Reorder] Dropped at top - P\(below.priority), order: \(session.priorityOrder)", category: "PriorityQueue")
         } else {
             // No neighbors (single item in queue) - nothing to do
-            Logger.priorityQueue.debug("📍 [Reorder] Single item in queue - no change needed")
+            LogManager.shared.log("📍 [Reorder] Single item in queue - no change needed", category: "PriorityQueue")
             return
         }
 
         do {
             try context.save()
-            Logger.priorityQueue.info("✅ [PriorityQueue] Reordered session: P\(oldPriority)/\(oldOrder) → P\(session.priority)/\(session.priorityOrder)")
+            LogManager.shared.log("✅ [PriorityQueue] Reordered session: P\(oldPriority)/\(oldOrder) → P\(session.priority)/\(session.priorityOrder)", category: "PriorityQueue")
 
             // Post notification for cross-view synchronization
             NotificationCenter.default.post(
@@ -191,7 +190,7 @@ extension CDBackendSession {
             // Rollback on failure
             session.priority = oldPriority
             session.priorityOrder = oldOrder
-            Logger.priorityQueue.error("❌ [PriorityQueue] Failed to reorder session: \(error.localizedDescription)")
+            LogManager.shared.log("❌ [PriorityQueue] Failed to reorder session: \(error.localizedDescription)", category: "PriorityQueue")
         }
     }
 
@@ -218,10 +217,10 @@ extension CDBackendSession {
         do {
             let sessions = try context.fetch(request)
             let maxOrder = sessions.map { $0.priorityOrder }.max() ?? 0.0
-            Logger.priorityQueue.debug("📊 [PriorityQueue] Max order for priority \(priority): \(maxOrder) (from \(sessions.count) sessions\(excluding != nil ? ", excluding current session" : ""))")
+            LogManager.shared.log("📊 [PriorityQueue] Max order for priority \(priority): \(maxOrder) (from \(sessions.count) sessions\(excluding != nil ? ", excluding current session" : ""))", category: "PriorityQueue")
             return maxOrder
         } catch {
-            Logger.priorityQueue.error("❌ [PriorityQueue] Failed to fetch max priority order: \(error.localizedDescription), priority=\(priority)")
+            LogManager.shared.log("❌ [PriorityQueue] Failed to fetch max priority order: \(error.localizedDescription), priority=\(priority)", category: "PriorityQueue")
             return 0.0
         }
     }
@@ -231,12 +230,4 @@ extension CDBackendSession {
 
 extension Notification.Name {
     static let priorityQueueChanged = Notification.Name("priorityQueueChanged")
-}
-
-// MARK: - OSLog Logger
-
-extension Logger {
-    private static var subsystem = Bundle.main.bundleIdentifier!
-
-    static let priorityQueue = Logger(subsystem: subsystem, category: "PriorityQueue")
 }

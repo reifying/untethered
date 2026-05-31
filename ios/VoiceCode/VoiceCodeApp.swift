@@ -2,15 +2,12 @@
 // Main app entry point for voice-code iOS and macOS app
 
 import SwiftUI
-import OSLog
 import UserNotifications
 #if os(iOS)
 import UIKit
 #elseif os(macOS)
 import AppKit
 #endif
-
-private let logger = Logger(subsystem: "com.travisbrown.VoiceCode", category: "RootView")
 
 // MARK: - Navigation Targets
 
@@ -202,7 +199,7 @@ struct RootView: View {
     var body: some View {
         navigationContent
             .onAppear {
-                logger.info("🔵 RootView appeared, setting up recent sessions callback")
+                LogManager.shared.log("🔵 RootView appeared, setting up recent sessions callback", category: "RootView")
 
                 // Set up NotificationManager with VoiceOutputManager
                 NotificationManager.shared.setVoiceOutputManager(voiceOutput)
@@ -211,7 +208,7 @@ struct RootView: View {
                 Task {
                     let authorized = await NotificationManager.shared.requestAuthorization()
                     if authorized {
-                        logger.info("✅ Notifications enabled for 'Read Aloud' feature")
+                        LogManager.shared.log("✅ Notifications enabled for 'Read Aloud' feature", category: "RootView")
                     }
                 }
 
@@ -220,34 +217,34 @@ struct RootView: View {
 
                 // Set up callback for recent_sessions before connecting
                 client.onRecentSessionsReceived = { sessions in
-                    logger.info("📥 Received \(sessions.count) recent sessions from backend")
+                    LogManager.shared.log("📥 Received \(sessions.count) recent sessions from backend", category: "RootView")
 
                     // Debug: log first session JSON keys
                     if let firstSession = sessions.first {
-                        logger.info("🔍 First session keys: \(firstSession.keys.sorted())")
-                        logger.info("🔍 First session JSON: \(firstSession)")
+                        LogManager.shared.log("🔍 First session keys: \(firstSession.keys.sorted())", category: "RootView")
+                        LogManager.shared.log("🔍 First session JSON: \(firstSession)", category: "RootView")
                     }
 
                     // Backend provides session names directly - no CoreData lookup needed
                     let parsed = RecentSession.parseRecentSessions(sessions)
-                    logger.info("✅ Successfully parsed \(parsed.count) of \(sessions.count) sessions from backend")
+                    LogManager.shared.log("✅ Successfully parsed \(parsed.count) of \(sessions.count) sessions from backend", category: "RootView")
 
                     // Defer state update to avoid SwiftUI update conflicts
                     DispatchQueue.main.async {
                         self.recentSessions = parsed
-                        logger.info("🔄 Updated recentSessions state array, count: \(self.recentSessions.count)")
+                        LogManager.shared.log("🔄 Updated recentSessions state array, count: \(self.recentSessions.count)", category: "RootView")
                     }
                 }
-                logger.info("🔌 Connecting to backend...")
+                LogManager.shared.log("🔌 Connecting to backend...", category: "RootView")
                 client.connect()
 
                 // Process pending uploads after connection
-                logger.info("📂 Checking for pending resource uploads...")
+                LogManager.shared.log("📂 Checking for pending resource uploads...", category: "RootView")
                 resourcesManager.updatePendingCount()
             }
             #if os(iOS)
             .onReceive(NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)) { _ in
-                logger.info("🔄 App entering foreground, checking for pending uploads...")
+                LogManager.shared.log("🔄 App entering foreground, checking for pending uploads...", category: "RootView")
                 resourcesManager.updatePendingCount()
                 if client.isConnected {
                     resourcesManager.processPendingUploads()
@@ -256,7 +253,7 @@ struct RootView: View {
             }
             #elseif os(macOS)
             .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-                logger.info("🔄 App became active, checking for pending uploads...")
+                LogManager.shared.log("🔄 App became active, checking for pending uploads...", category: "RootView")
                 resourcesManager.updatePendingCount()
                 if client.isConnected {
                     resourcesManager.processPendingUploads()
@@ -402,7 +399,7 @@ struct RootView: View {
         do {
             sessions = try CDBackendSession.fetchActiveSessions(context: viewContext)
         } catch {
-            logger.error("Failed to load sessions for navigation: \(error)")
+            LogManager.shared.log("Failed to load sessions for navigation: \(error)", category: "RootView")
         }
     }
 
@@ -427,7 +424,7 @@ struct RootView: View {
 
         switch deepLink {
         case .session(let sessionId):
-            logger.info("Deep link: navigating to session \(sessionId)")
+            LogManager.shared.log("Deep link: navigating to session \(sessionId)", category: "RootView")
             do {
                 // First try direct UUID match (CDBackendSession.id)
                 let request = CDBackendSession.fetchBackendSession(id: sessionId)
@@ -443,9 +440,9 @@ struct RootView: View {
                     NSApp.activate(ignoringOtherApps: true)
                     return
                 }
-                logger.warning("Deep link: session \(sessionId) not found in CoreData")
+                LogManager.shared.log("Deep link: session \(sessionId) not found in CoreData", category: "RootView")
             } catch {
-                logger.error("Deep link: CoreData fetch failed for session \(sessionId): \(error.localizedDescription)")
+                LogManager.shared.log("Deep link: CoreData fetch failed for session \(sessionId): \(error.localizedDescription)", category: "RootView")
             }
         }
     }
@@ -486,20 +483,20 @@ enum DeepLinkURL {
     /// Returns nil if the URL is not a valid voicecode deep link.
     static func parse(_ url: URL) -> DeepLinkURL? {
         guard url.scheme == "voicecode" else {
-            logger.warning("Deep link ignored: unexpected scheme '\(url.scheme ?? "nil")' in URL: \(url)")
+            LogManager.shared.log("Deep link ignored: unexpected scheme '\(url.scheme ?? "nil")' in URL: \(url)", category: "RootView")
             return nil
         }
         guard url.host == "session" else {
-            logger.warning("Deep link ignored: unknown host '\(url.host ?? "nil")' in URL: \(url)")
+            LogManager.shared.log("Deep link ignored: unknown host '\(url.host ?? "nil")' in URL: \(url)", category: "RootView")
             return nil
         }
         let pathComponent = url.lastPathComponent
         guard !pathComponent.isEmpty, pathComponent != "/" else {
-            logger.warning("Deep link ignored: missing session ID in URL: \(url)")
+            LogManager.shared.log("Deep link ignored: missing session ID in URL: \(url)", category: "RootView")
             return nil
         }
         guard let uuid = UUID(uuidString: pathComponent) else {
-            logger.warning("Deep link ignored: invalid UUID '\(pathComponent)' in URL: \(url)")
+            LogManager.shared.log("Deep link ignored: invalid UUID '\(pathComponent)' in URL: \(url)", category: "RootView")
             return nil
         }
         return .session(uuid)

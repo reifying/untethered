@@ -3,9 +3,6 @@
 
 import SwiftUI
 import CoreData
-import OSLog
-
-private let logger = Logger(subsystem: "com.travisbrown.VoiceCode", category: "DirectoryList")
 
 struct DirectoryListView: View {
     @ObservedObject var client: VoiceCodeClient
@@ -249,7 +246,7 @@ struct DirectoryListView: View {
                     }
                 }
                 .refreshable {
-                    logger.info("Pull-to-refresh triggered - requesting session list")
+                    LogManager.shared.log("Pull-to-refresh triggered - requesting session list", category: "DirectoryList")
                     await client.requestSessionList()
                 }
             }
@@ -260,7 +257,7 @@ struct DirectoryListView: View {
             do {
                 sessions = try CDBackendSession.fetchActiveSessions(context: viewContext)
             } catch {
-                logger.error("❌ Failed to fetch active sessions: \(error)")
+                LogManager.shared.log("❌ Failed to fetch active sessions: \(error)", category: "DirectoryList")
                 sessions = []
             }
         }
@@ -306,7 +303,7 @@ struct DirectoryListView: View {
                     }
 
                     Button(action: {
-                        logger.info("🔄 Refresh button tapped - requesting session list from backend")
+                        LogManager.shared.log("🔄 Refresh button tapped - requesting session list from backend", category: "DirectoryList")
                         isRefreshing = true
                         Task {
                             await client.requestSessionList()
@@ -363,7 +360,7 @@ struct DirectoryListView: View {
                     }
 
                     Button(action: {
-                        logger.info("🔄 Refresh button tapped - requesting session list from backend")
+                        LogManager.shared.log("🔄 Refresh button tapped - requesting session list from backend", category: "DirectoryList")
                         Task {
                             await client.requestSessionList()
                         }
@@ -417,7 +414,7 @@ struct DirectoryListView: View {
             )
         }
         .onAppear {
-            logger.info("🔧 [DirectoryList] onAppear - priorityQueueEnabled=\(settings.priorityQueueEnabled)")
+            LogManager.shared.log("🔧 [DirectoryList] onAppear - priorityQueueEnabled=\(settings.priorityQueueEnabled)", category: "DirectoryList")
             updateCachedDirectories()
             updateCachedQueuedSessions()
             updateCachedPriorityQueueSessions()
@@ -432,12 +429,12 @@ struct DirectoryListView: View {
             isAppActive = (newPhase == .active)
 
             if newPhase == .active && oldPhase == .background {
-                logger.info("📱 App returned to foreground, refreshing caches")
+                LogManager.shared.log("📱 App returned to foreground, refreshing caches", category: "DirectoryList")
                 updateCachedDirectories()
                 updateCachedQueuedSessions()
                 updateCachedPriorityQueueSessions()
             } else if newPhase == .background {
-                logger.info("📱 App entering background, suspending cache updates")
+                LogManager.shared.log("📱 App entering background, suspending cache updates", category: "DirectoryList")
                 // Cancel any pending debounced updates
                 queueUpdateWorkItem?.cancel()
                 priorityQueueUpdateWorkItem?.cancel()
@@ -446,21 +443,21 @@ struct DirectoryListView: View {
         .onReceive(NotificationCenter.default.publisher(for: .sessionListDidUpdate)) { _ in
             // Refetch sessions when backend sends updated session list
             // This handles initial connection, server URL changes, and refresh requests
-            logger.info("🔄 Session list updated notification received, refetching sessions")
+            LogManager.shared.log("🔄 Session list updated notification received, refetching sessions", category: "DirectoryList")
             do {
                 sessions = try CDBackendSession.fetchActiveSessions(context: viewContext)
                 updateCachedDirectories()
                 updateCachedQueuedSessions()
                 updateCachedPriorityQueueSessions()
             } catch {
-                logger.error("❌ Failed to refetch sessions after update: \(error)")
+                LogManager.shared.log("❌ Failed to refetch sessions after update: \(error)", category: "DirectoryList")
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .priorityQueueChanged)) { notification in
             // Update priority queue cache when changes occur in other views
-            logger.info("🔄 Priority queue changed notification received")
+            LogManager.shared.log("🔄 Priority queue changed notification received", category: "DirectoryList")
             if let sessionId = notification.userInfo?["sessionId"] as? String {
-                logger.debug("   Session: \(sessionId)")
+                LogManager.shared.log("   Session: \(sessionId)", category: "DirectoryList")
             }
             updateCachedPriorityQueueSessions()
         }
@@ -471,7 +468,7 @@ struct DirectoryListView: View {
     private func updateCachedDirectories() {
         // Skip updates when app is in background to prevent watchdog kills
         guard isAppActive else {
-            logger.debug("⏸️ Skipping directory cache update (app in background)")
+            LogManager.shared.log("⏸️ Skipping directory cache update (app in background)", category: "DirectoryList")
             return
         }
 
@@ -497,7 +494,7 @@ struct DirectoryListView: View {
     private func updateCachedQueuedSessions() {
         // Skip updates when app is in background to prevent watchdog kills
         guard isAppActive else {
-            logger.debug("⏸️ Skipping queue cache update (app in background)")
+            LogManager.shared.log("⏸️ Skipping queue cache update (app in background)", category: "DirectoryList")
             return
         }
 
@@ -512,7 +509,7 @@ struct DirectoryListView: View {
             // Update on main thread
             DispatchQueue.main.async {
                 self.cachedQueuedSessions = updatedSessions
-                logger.debug("🔄 Updated queue cache: \(updatedSessions.count) sessions")
+                LogManager.shared.log("🔄 Updated queue cache: \(updatedSessions.count) sessions", category: "DirectoryList")
             }
         }
 
@@ -525,7 +522,7 @@ struct DirectoryListView: View {
     private func updateCachedPriorityQueueSessions() {
         // Skip updates when app is in background to prevent watchdog kills
         guard isAppActive else {
-            logger.debug("⏸️ Skipping priority queue cache update (app in background)")
+            LogManager.shared.log("⏸️ Skipping priority queue cache update (app in background)", category: "DirectoryList")
             return
         }
 
@@ -552,7 +549,7 @@ struct DirectoryListView: View {
             // Update on main thread
             DispatchQueue.main.async {
                 self.cachedPriorityQueueSessions = updatedSessions
-                logger.info("🔄 [PriorityQueueCache] Updated: \(updatedSessions.count) sessions (from \(sessions.filter { $0.isInPriorityQueue }.count) in queue)")
+                LogManager.shared.log("🔄 [PriorityQueueCache] Updated: \(updatedSessions.count) sessions (from \(sessions.filter { $0.isInPriorityQueue }.count) in queue)", category: "DirectoryList")
             }
         }
 
@@ -585,9 +582,9 @@ struct DirectoryListView: View {
         do {
             try viewContext.save()
             updateCachedQueuedSessions()
-            logger.info("✅ [Queue] Removed session from queue, reordered sessions")
+            LogManager.shared.log("✅ [Queue] Removed session from queue, reordered sessions", category: "DirectoryList")
         } catch {
-            logger.error("❌ [Queue] Failed to remove session from queue: \(error)")
+            LogManager.shared.log("❌ [Queue] Failed to remove session from queue: \(error)", category: "DirectoryList")
         }
     }
 
@@ -598,7 +595,7 @@ struct DirectoryListView: View {
         do {
             try viewContext.save()
         } catch {
-            logger.error("❌ [PriorityQueue] CoreData save failed: \(error.localizedDescription)")
+            LogManager.shared.log("❌ [PriorityQueue] CoreData save failed: \(error.localizedDescription)", category: "DirectoryList")
         }
     }
 
@@ -665,7 +662,7 @@ struct DirectoryListView: View {
         let finalAbove = above?.id == movingSession.id ? nil : above
         let finalBelow = below?.id == movingSession.id ? nil : below
 
-        logger.info("🔄 [PriorityQueue] Reordering: source=\(sourceIndex) dest=\(destination) above=\(finalAbove?.id.uuidString.prefix(8) ?? "nil") below=\(finalBelow?.id.uuidString.prefix(8) ?? "nil")")
+        LogManager.shared.log("🔄 [PriorityQueue] Reordering: source=\(sourceIndex) dest=\(destination) above=\(finalAbove?.id.uuidString.prefix(8) ?? "nil") below=\(finalBelow?.id.uuidString.prefix(8) ?? "nil")", category: "DirectoryList")
 
         CDBackendSession.reorderSession(movingSession, between: finalAbove, and: finalBelow, context: viewContext)
         updateCachedPriorityQueueSessions()
@@ -691,7 +688,7 @@ struct DirectoryListView: View {
             }
         }
 
-        logger.info("📋 Copied to clipboard: \(text)")
+        LogManager.shared.log("📋 Copied to clipboard: \(text)", category: "DirectoryList")
     }
     
     private func createNewSession(name: String, workingDirectory: String?) {
@@ -724,33 +721,33 @@ struct DirectoryListView: View {
         // Save to CoreData
         do {
             try viewContext.save()
-            logger.info("📝 Created new session: \(sessionId.uuidString.lowercased())")
+            LogManager.shared.log("📝 Created new session: \(sessionId.uuidString.lowercased())", category: "DirectoryList")
 
             // Auto-add to priority queue if enabled
             if settings.priorityQueueEnabled {
                 addToPriorityQueue(session)
-                logger.info("📌 Auto-added new session to priority queue: \(sessionId.uuidString.lowercased())")
+                LogManager.shared.log("📌 Auto-added new session to priority queue: \(sessionId.uuidString.lowercased())", category: "DirectoryList")
             }
 
             // Navigate to the new session
             navigationPath.append(sessionId)
-            logger.info("🔄 Navigating to new session: \(sessionId.uuidString.lowercased())")
+            LogManager.shared.log("🔄 Navigating to new session: \(sessionId.uuidString.lowercased())", category: "DirectoryList")
 
             // Note: ConversationView will handle subscription when it appears (lazy loading)
 
         } catch {
-            logger.error("❌ Failed to create session: \(error)")
+            LogManager.shared.log("❌ Failed to create session: \(error)", category: "DirectoryList")
         }
     }
 
     private func createWorktreeSession(name: String, parentDirectory: String) {
         // Validate inputs
         guard !name.isEmpty, !parentDirectory.isEmpty else {
-            logger.error("❌ Invalid worktree session parameters: name or parent directory empty")
+            LogManager.shared.log("❌ Invalid worktree session parameters: name or parent directory empty", category: "DirectoryList")
             return
         }
 
-        logger.info("📝 Creating worktree session: \(name) in \(parentDirectory)")
+        LogManager.shared.log("📝 Creating worktree session: \(name) in \(parentDirectory)", category: "DirectoryList")
 
         // Send WebSocket message to backend
         let message: [String: Any] = [

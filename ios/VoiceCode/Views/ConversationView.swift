@@ -3,14 +3,11 @@
 
 import SwiftUI
 import CoreData
-import os.log
 #if os(iOS)
 import UIKit
 #elseif os(macOS)
 import AppKit
 #endif
-
-private let logger = Logger(subsystem: "dev.910labs.voice-code", category: "ConversationView")
 
 // Render loop detector - tracks renders per second
 private class RenderLoopDetector {
@@ -25,7 +22,7 @@ private class RenderLoopDetector {
         if now.timeIntervalSince(windowStart) > windowSize {
             // Check if we exceeded threshold in the last window
             if renderCount > threshold {
-                logger.error("🚨 RENDER LOOP DETECTED: \(self.renderCount) renders in 1 second!")
+                LogManager.shared.log("🚨 RENDER LOOP DETECTED: \(self.renderCount) renders in 1 second!", category: "ConversationView")
             }
             // Reset window
             renderCount = 1
@@ -34,7 +31,7 @@ private class RenderLoopDetector {
             renderCount += 1
             // Log warning at multiples of threshold while in same window
             if renderCount == threshold || renderCount == threshold * 2 {
-                logger.warning("⚠️ High render rate: \(self.renderCount) renders in <1s")
+                LogManager.shared.log("⚠️ High render rate: \(self.renderCount) renders in <1s", category: "ConversationView")
             }
         }
     }
@@ -201,7 +198,7 @@ struct ConversationView: View {
                             if !hasPerformedInitialScroll && !messages.isEmpty {
                                 hasPerformedInitialScroll = true
                                 if let lastMessage = messages.last {
-                                    logger.debug("📨 Initial scroll on ScrollViewReader appear")
+                                    LogManager.shared.log("📨 Initial scroll on ScrollViewReader appear", category: "ConversationView")
                                     proxy.scrollTo(lastMessage.id, anchor: .bottom)
                                 }
                             }
@@ -209,7 +206,7 @@ struct ConversationView: View {
                         .onChange(of: messages.count) { oldCount, newCount in
                             // Hide loading indicator when messages arrive
                             if isLoading && newCount > 0 {
-                                logger.info("⏱️ Messages arrived (\(newCount)), hiding loading indicator")
+                                LogManager.shared.log("⏱️ Messages arrived (\(newCount)), hiding loading indicator", category: "ConversationView")
                                 isLoading = false
                             }
 
@@ -220,11 +217,11 @@ struct ConversationView: View {
                             // resubscribe never arrives (mirrors loadSessionIfNeeded's timeout, which
                             // was already scheduled before this isLoading=true transition happened).
                             if !isLoading && newCount == 0 && oldCount > 0 && hasSubscribedThisAppear {
-                                logger.info("⏱️ Messages purged (\(oldCount) → 0) while subscribed, showing loading indicator")
+                                LogManager.shared.log("⏱️ Messages purged (\(oldCount) → 0) while subscribed, showing loading indicator", category: "ConversationView")
                                 isLoading = true
                                 DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) {
                                     if self.isLoading {
-                                        logger.info("⏱️ Purge-recovery loading indicator hidden (5s timeout fallback)")
+                                        LogManager.shared.log("⏱️ Purge-recovery loading indicator hidden (5s timeout fallback)", category: "ConversationView")
                                         self.isLoading = false
                                     }
                                 }
@@ -233,18 +230,18 @@ struct ConversationView: View {
                             // Auto-scroll to new messages if enabled
                             guard newCount > oldCount else { return }
 
-                            logger.debug("📨 New messages: \(oldCount) -> \(newCount), auto-scroll: \(self.autoScrollEnabled ? "enabled" : "disabled")")
+                            LogManager.shared.log("📨 New messages: \(oldCount) -> \(newCount), auto-scroll: \(self.autoScrollEnabled ? "enabled" : "disabled")", category: "ConversationView")
 
                             // Debounce scroll to avoid triggering during layout calculations
                             if autoScrollEnabled {
                                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                                     // Re-check autoScrollEnabled after delay in case user disabled it
                                     guard self.autoScrollEnabled, let lastMessage = self.messages.last else { return }
-                                    logger.debug("📨 Scrolling to last message (debounced)")
+                                    LogManager.shared.log("📨 Scrolling to last message (debounced)", category: "ConversationView")
                                     proxy.scrollTo(lastMessage.id, anchor: .bottom)
                                 }
                             } else {
-                                logger.debug("📨 Skipping auto-scroll (disabled)")
+                                LogManager.shared.log("📨 Skipping auto-scroll (disabled)", category: "ConversationView")
                             }
                         }
                         .onChange(of: isLoading) { wasLoading, nowLoading in
@@ -578,7 +575,7 @@ struct ConversationView: View {
         // for the full 5-second timeout. See tmux-untethered-cho.
         .onChange(of: messages.count) { _, newCount in
             if isLoading && newCount > 0 {
-                logger.info("⏱️ [ConversationView] Messages arrived (\(newCount)) while loading, hiding spinner")
+                LogManager.shared.log("⏱️ [ConversationView] Messages arrived (\(newCount)) while loading, hiding spinner", category: "ConversationView")
                 isLoading = false
             }
         }
@@ -646,10 +643,10 @@ struct ConversationView: View {
         }
         .onAppear {
             // Reset scroll flags when view appears (handles navigation back to session)
-            print("👁️ [AutoScroll] View appeared, resetting state")
+            LogManager.shared.log("👁️ [AutoScroll] View appeared, resetting state", category: "ConversationView")
             hasPerformedInitialScroll = false
             autoScrollEnabled = true  // Re-enable auto-scroll on view appear
-            print("👁️ [AutoScroll] Auto-scroll enabled on view appear")
+            LogManager.shared.log("👁️ [AutoScroll] Auto-scroll enabled on view appear", category: "ConversationView")
 
             loadSessionIfNeeded()
             setupVoiceInput()
@@ -697,7 +694,7 @@ struct ConversationView: View {
             // This ensures UI updates even when @FetchRequest doesn't auto-refresh
             if let notificationSessionId = notification.userInfo?["sessionId"] as? String,
                notificationSessionId == session.id.uuidString.lowercased() {
-                logger.info("📚 [ConversationView] Received sessionHistoryDidUpdate for current session, refreshing context")
+                LogManager.shared.log("📚 [ConversationView] Received sessionHistoryDidUpdate for current session, refreshing context", category: "ConversationView")
                 viewContext.refresh(session, mergeChanges: true)
             }
         }
@@ -733,7 +730,7 @@ struct ConversationView: View {
     private func setupVoiceInput() {
         voiceInput.requestAuthorization { authorized in
             if !authorized {
-                print("Speech recognition not authorized")
+                LogManager.shared.log("Speech recognition not authorized", category: "ConversationView")
             }
         }
     }
@@ -742,13 +739,13 @@ struct ConversationView: View {
         // Guard against redundant subscribes within the same onAppear cycle
         // This prevents duplicate subscriptions when SwiftUI re-renders
         guard !hasSubscribedThisAppear else {
-            logger.debug("⏱️ loadSessionIfNeeded SKIPPED - already subscribed this appear cycle")
+            LogManager.shared.log("⏱️ loadSessionIfNeeded SKIPPED - already subscribed this appear cycle", category: "ConversationView")
             return
         }
 
         let loadStart = Date()
 
-        logger.info("⏱️ loadSessionIfNeeded START - session: \(self.session.id.uuidString.lowercased().prefix(8))... (existing messages: \(self.messages.count))")
+        LogManager.shared.log("⏱️ loadSessionIfNeeded START - session: \(self.session.id.uuidString.lowercased().prefix(8))... (existing messages: \(self.messages.count))", category: "ConversationView")
 
         hasSubscribedThisAppear = true
 
@@ -756,7 +753,7 @@ struct ConversationView: View {
         // Initial scroll is handled by ScrollViewReader's .onAppear handler
         if !messages.isEmpty {
             let elapsedMs = Int(Date().timeIntervalSince(loadStart) * 1000)
-            logger.info("⏱️ +\(elapsedMs)ms - messages already cached (\(self.messages.count)), skipping loading indicator")
+            LogManager.shared.log("⏱️ +\(elapsedMs)ms - messages already cached (\(self.messages.count)), skipping loading indicator", category: "ConversationView")
             isLoading = false
         } else {
             isLoading = true
@@ -765,13 +762,13 @@ struct ConversationView: View {
         // Mark session as active for smart speaking
         ActiveSessionManager.shared.setActiveSession(session.id)
         let activeSessionMs = Int(Date().timeIntervalSince(loadStart) * 1000)
-        logger.info("⏱️ +\(activeSessionMs)ms - setActiveSession complete")
+        LogManager.shared.log("⏱️ +\(activeSessionMs)ms - setActiveSession complete", category: "ConversationView")
 
         // Clear unread count when opening session
         session.unreadCount = 0
         try? viewContext.save()
         let clearedUnreadMs = Int(Date().timeIntervalSince(loadStart) * 1000)
-        logger.info("⏱️ +\(clearedUnreadMs)ms - cleared unread count")
+        LogManager.shared.log("⏱️ +\(clearedUnreadMs)ms - cleared unread count", category: "ConversationView")
 
         // Subscribe unless this is a brand-new locally-created session that
         // hasn't been pushed to backend yet. The "Session not found" branch
@@ -785,10 +782,10 @@ struct ConversationView: View {
         let subscribeMs = Int(Date().timeIntervalSince(loadStart) * 1000)
         let skipSubscribe = session.isLocallyCreated && session.messageCount == 0
         if !skipSubscribe {
-            logger.info("⏱️ +\(subscribeMs)ms - subscribing (messageCount=\(self.session.messageCount), locallyCreated=\(self.session.isLocallyCreated))")
+            LogManager.shared.log("⏱️ +\(subscribeMs)ms - subscribing (messageCount=\(self.session.messageCount), locallyCreated=\(self.session.isLocallyCreated))", category: "ConversationView")
             client.subscribe(sessionId: session.id.uuidString.lowercased())
         } else {
-            logger.info("⏱️ +\(subscribeMs)ms - skipping subscribe (locally-created new session, no backend file yet)")
+            LogManager.shared.log("⏱️ +\(subscribeMs)ms - skipping subscribe (locally-created new session, no backend file yet)", category: "ConversationView")
         }
 
         // Fallback timeout to hide loading indicator if messages don't arrive
@@ -797,7 +794,7 @@ struct ConversationView: View {
             DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) {
                 if self.isLoading {
                     let timeoutMs = Int(Date().timeIntervalSince(loadStart) * 1000)
-                    logger.info("⏱️ +\(timeoutMs)ms - loading indicator hidden (5s timeout fallback)")
+                    LogManager.shared.log("⏱️ +\(timeoutMs)ms - loading indicator hidden (5s timeout fallback)", category: "ConversationView")
                     self.isLoading = false
                 }
             }
@@ -823,9 +820,9 @@ struct ConversationView: View {
         // Save to CoreData
         do {
             try viewContext.save()
-            print("📝 [ConversationView] Renamed session to: \(trimmedName)")
+            LogManager.shared.log("📝 [ConversationView] Renamed session to: \(trimmedName)", category: "ConversationView")
         } catch {
-            print("❌ [ConversationView] Failed to rename session: \(error)")
+            LogManager.shared.log("❌ [ConversationView] Failed to rename session: \(error)", category: "ConversationView")
         }
     }
 
@@ -851,7 +848,7 @@ struct ConversationView: View {
 
         // Create optimistic message
         client.sessionSyncManager.createOptimisticMessage(sessionId: session.id, text: trimmedText) { messageId in
-            print("Created optimistic message: \(messageId)")
+            LogManager.shared.log("Created optimistic message: \(messageId)", category: "ConversationView")
         }
 
         // Determine if this is a new session (no messages yet) or existing session
@@ -869,21 +866,21 @@ struct ConversationView: View {
         if isNewSession {
             message["new_session_id"] = sessionId
             message["provider"] = selectedProvider
-            print("📤 [ConversationView] Sending prompt with new_session_id: \(sessionId), provider: \(selectedProvider)")
+            LogManager.shared.log("📤 [ConversationView] Sending prompt with new_session_id: \(sessionId), provider: \(selectedProvider)", category: "ConversationView")
             // Note: Subscribe will happen when we receive turn_complete (after backend creates session)
         } else {
             message["resume_session_id"] = sessionId
-            print("📤 [ConversationView] Sending prompt with resume_session_id: \(sessionId)")
+            LogManager.shared.log("📤 [ConversationView] Sending prompt with resume_session_id: \(sessionId)", category: "ConversationView")
         }
 
         // Include system prompt if configured and non-empty
-        print("🔍 [ConversationView] System prompt value: '\(settings.systemPrompt)'")
-        print("🔍 [ConversationView] System prompt isEmpty: \(settings.systemPrompt.isEmpty)")
+        LogManager.shared.log("🔍 [ConversationView] System prompt value: '\(settings.systemPrompt)'", category: "ConversationView")
+        LogManager.shared.log("🔍 [ConversationView] System prompt isEmpty: \(settings.systemPrompt.isEmpty)", category: "ConversationView")
         if !settings.systemPrompt.isEmpty {
             message["system_prompt"] = settings.systemPrompt
-            print("✅ [ConversationView] Including system_prompt in message")
+            LogManager.shared.log("✅ [ConversationView] Including system_prompt in message", category: "ConversationView")
         } else {
-            print("⚠️ [ConversationView] NOT including system_prompt (empty)")
+            LogManager.shared.log("⚠️ [ConversationView] NOT including system_prompt (empty)", category: "ConversationView")
         }
 
         client.sendMessage(message)
@@ -938,7 +935,7 @@ struct ConversationView: View {
                 exportText += "\(message.text)\n\n"
             }
         } catch {
-            print("❌ Failed to fetch messages for export: \(error)")
+            LogManager.shared.log("❌ Failed to fetch messages for export: \(error)", category: "ConversationView")
             exportText += "Error: Failed to export messages\n"
         }
 
@@ -981,7 +978,7 @@ struct ConversationView: View {
 
     private func killSession() {
         let sessionId = session.id.uuidString.lowercased()
-        print("🛑 [ConversationView] Killing session: \(sessionId)")
+        LogManager.shared.log("🛑 [ConversationView] Killing session: \(sessionId)", category: "ConversationView")
 
         // Trigger haptic feedback (warning uses success haptic as fallback on macOS)
         ClipboardUtility.triggerSuccessHaptic()
@@ -1040,7 +1037,7 @@ struct ConversationView: View {
             } catch {
                 await MainActor.run {
                     isCompacting = false
-                    print("❌ [ConversationView] Compaction failed: \(error.localizedDescription)")
+                    LogManager.shared.log("❌ [ConversationView] Compaction failed: \(error.localizedDescription)", category: "ConversationView")
                     // Could show error alert here
                 }
             }
@@ -1048,22 +1045,22 @@ struct ConversationView: View {
     }
 
     private func toggleAutoScroll() {
-        print("🔘 [AutoScroll] Toggle button tapped, current state: \(autoScrollEnabled ? "enabled" : "disabled")")
+        LogManager.shared.log("🔘 [AutoScroll] Toggle button tapped, current state: \(autoScrollEnabled ? "enabled" : "disabled")", category: "ConversationView")
         if autoScrollEnabled {
             // Disable auto-scroll
-            print("🔘 [AutoScroll] Disabling via manual toggle")
+            LogManager.shared.log("🔘 [AutoScroll] Disabling via manual toggle", category: "ConversationView")
             autoScrollEnabled = false
         } else {
             // Re-enable auto-scroll and jump to bottom
-            print("🔘 [AutoScroll] Re-enabling via manual toggle and jumping to bottom")
+            LogManager.shared.log("🔘 [AutoScroll] Re-enabling via manual toggle and jumping to bottom", category: "ConversationView")
             autoScrollEnabled = true
 
             if let proxy = scrollProxy, let lastMessage = messages.last {
-                print("🔘 [AutoScroll] Scrolling to last message")
+                LogManager.shared.log("🔘 [AutoScroll] Scrolling to last message", category: "ConversationView")
                 // Note: Removed withAnimation wrapper to prevent multiple layout passes
                 proxy.scrollTo(lastMessage.id, anchor: .bottom)
             } else {
-                print("🔘 [AutoScroll] No scroll proxy or messages available")
+                LogManager.shared.log("🔘 [AutoScroll] No scroll proxy or messages available", category: "ConversationView")
             }
         }
     }
@@ -1132,9 +1129,9 @@ struct ConversationView: View {
 
         do {
             try viewContext.save()
-            print("✅ [Queue] Added session to queue at position \(session.queuePosition)")
+            LogManager.shared.log("✅ [Queue] Added session to queue at position \(session.queuePosition)", category: "ConversationView")
         } catch {
-            print("❌ [Queue] Failed to add session to queue: \(error)")
+            LogManager.shared.log("❌ [Queue] Failed to add session to queue: \(error)", category: "ConversationView")
         }
     }
 
@@ -1157,9 +1154,9 @@ struct ConversationView: View {
 
         do {
             try viewContext.save()
-            print("✅ [Queue] Removed session from queue, reordered \(sessionsToReorder.count) sessions")
+            LogManager.shared.log("✅ [Queue] Removed session from queue, reordered \(sessionsToReorder.count) sessions", category: "ConversationView")
         } catch {
-            print("❌ [Queue] Failed to remove session from queue: \(error)")
+            LogManager.shared.log("❌ [Queue] Failed to remove session from queue: \(error)", category: "ConversationView")
         }
     }
 }
