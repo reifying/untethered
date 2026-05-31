@@ -14,7 +14,7 @@
 (defn- generate-json [data]
   (json/generate-string data {:key-fn #(str/replace (name %) \- \_)}))
 
-(defn- parse-json [s]
+(defn parse-json [s]
   (json/parse-string s (fn [k] (keyword (str/replace k #"_" "-")))))
 
 ;; ============================================================================
@@ -51,7 +51,7 @@
 ;; Response helper
 ;; ============================================================================
 
-(defn- json-response [channel status data]
+(defn json-response [channel status data]
   (http/send! channel
               {:status status
                :headers {"Content-Type" "application/json"}

@@ -51,6 +51,29 @@
     (f)))
 
 ;; ============================================================================
+;; Public JSON helpers (parse-json, json-response)
+;; recipe_api.clj reuses these directly, so they must stay public (defn).
+;; ============================================================================
+
+(deftest json-helpers-public-test
+  (testing "parse-json is public and converts underscore keys to kebab keywords"
+    (is (not (:private (meta #'api/parse-json)))
+        "parse-json must be public so recipe_api.clj can reuse it")
+    (is (= {:session-id "abc" :recipe-id "x"}
+           (api/parse-json "{\"session_id\":\"abc\",\"recipe_id\":\"x\"}"))))
+
+  (testing "json-response is public and sends status, JSON body, and content-type"
+    (is (not (:private (meta #'api/json-response)))
+        "json-response must be public so recipe_api.clj can reuse it")
+    (with-fake-send [ch]
+      (api/json-response ch 201 {:session-id "abc"})
+      (let [resp (last-response ch)]
+        (is (= 201 (:status resp)))
+        (is (= "application/json" (get-in resp [:headers "Content-Type"])))
+        ;; generate-json maps kebab keywords back to snake_case
+        (is (= {:session_id "abc"} (parse-body resp)))))))
+
+;; ============================================================================
 ;; with-bearer-auth
 ;; ============================================================================
 
