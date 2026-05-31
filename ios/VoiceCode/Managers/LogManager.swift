@@ -7,7 +7,7 @@ import OSLog
 class LogManager {
     static let shared = LogManager()
 
-    private let maxLogLines = 1000 // Keep last 1000 lines in memory
+    private let maxLogLines = 5000 // Keep last 5000 lines in memory
     private var logLines: [String] = []
     private let queue = DispatchQueue(label: "com.travisbrown.VoiceCode.LogManager")
 
@@ -37,8 +37,8 @@ class LogManager {
         }
     }
 
-    /// Get the last N lines of logs (default 15KB worth, complete lines only)
-    func getRecentLogs(maxBytes: Int = 15_000) -> String {
+    /// Get the last N lines of logs (default 100KB worth, complete lines only)
+    func getRecentLogs(maxBytes: Int = 100_000) -> String {
         return queue.sync {
             // Join all lines
             let allLogs = logLines.joined(separator: "\n")
