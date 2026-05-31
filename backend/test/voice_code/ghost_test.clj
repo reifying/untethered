@@ -1,10 +1,16 @@
 (ns voice-code.ghost-test
-  "Unit tests for the pure helpers in voice-code.ghost.
-   No tmux server or filesystem required — every tested function is pure."
+  "Tests for voice-code.ghost. The pure helpers (gen-nonce, markers,
+   build-meta-prompt, extract-prompt) need no tmux server or filesystem. The
+   one-shot-fork! lifecycle tests mock tmux (start-ephemeral-window!,
+   kill-window!) and the fork-file resolution so no real fork is spawned, and
+   use a temp .jsonl to prove the fork transcript is left intact (AC8)."
   (:require [clojure.test :refer [deftest is testing]]
+            [clojure.java.io :as io]
             [clojure.string :as str]
+            [cheshire.core :as json]
             [voice-code.ghost :as ghost]
-            [voice-code.replication :as repl]))
+            [voice-code.replication :as repl]
+            [voice-code.tmux :as tmux]))
 
 ;; ============================================================================
 ;; gen-nonce
@@ -110,3 +116,153 @@
                      "Refactor the auth module.\n"
                      (ghost/end-marker n))]
       (is (= "Refactor the auth module." (ghost/extract-prompt reply n))))))
+
+;; ============================================================================
+;; find-fork-file (private — newest-first content-addressed resolution)
+;; ============================================================================
+
+(deftest find-fork-file-test
+  (testing "returns the NEWEST .jsonl whose contents include the nonce, skipping non-matching files"
+    (let [n "gp-findforknonce"
+          dir (java.io.File/createTempFile "ghost-find" "")
+          _ (.delete dir)
+          _ (.mkdirs dir)
+          older (io/file dir "older.jsonl")
+          newer (io/file dir "newer.jsonl")
+          other (io/file dir "other.jsonl")]
+      (try
+        (spit older (str "contains " n "\n"))
+        (spit newer (str "also contains " n "\n"))
+        (spit other "no nonce in this one\n")
+        ;; `other` is the newest, but carries no nonce; it must be scanned and skipped.
+        (.setLastModified older 1000000)
+        (.setLastModified newer 2000000)
+        (.setLastModified other 3000000)
+        (with-redefs [repl/find-jsonl-files (fn [] [older newer other])]
+          (is (= (.getPath newer) (.getPath (#'ghost/find-fork-file n)))
+              "newest file containing the nonce wins (non-matching newer file skipped)")
+          (is (nil? (#'ghost/find-fork-file "gp-absent000000"))
+              "nil when no transcript carries the nonce"))
+        (finally
+          (.delete older) (.delete newer) (.delete other) (.delete dir))))))
+
+;; ============================================================================
+;; one-shot-fork! — fork lifecycle (mocked tmux + temp fs)
+;; ============================================================================
+
+(defn- write-fork-transcript!
+  "Write a minimal Claude fork .jsonl: a normal first user line, the marked
+   meta-prompt as a later human line, and the assistant's reply wrapping the
+   generated prompt in the nonce sentinels. Returns the temp File."
+  [nonce]
+  (let [f (java.io.File/createTempFile "ghost-fork" ".jsonl")
+        lines [(json/generate-string {:type "user" :message {:content "hi there"}})
+               (json/generate-string {:type "user"
+                                      :message {:content (ghost/build-meta-prompt "do X" nonce)}})
+               (json/generate-string {:type "assistant"
+                                      :message {:content [{:type "text"
+                                                           :text (str "Sure, here it is.\n"
+                                                                      (ghost/begin-marker nonce) "\n"
+                                                                      "Refactor the auth module.\n"
+                                                                      (ghost/end-marker nonce))}]}})]]
+    (spit f (str (str/join "\n" lines) "\n"))
+    f))
+
+(deftest one-shot-fork!-success-leaves-jsonl-intact-test
+  (testing "extracts P via the real claude-assistant-text path and leaves the .jsonl intact (AC8)"
+    (let [n "gp-deadbeef0001"
+          f (write-fork-transcript! n)
+          size-before (.length f)]
+      (try
+        (with-redefs [ghost/poll-interval-ms 1
+                      ghost/gen-nonce (constantly n)
+                      tmux/start-ephemeral-window!
+                      (fn [_] {:tmux-session "vc-ghost" :tmux-window (str "ghost-" n)})
+                      tmux/kill-window! (fn [_ _] nil)
+                      ghost/find-fork-file (constantly f)]
+          (let [r (ghost/one-shot-fork! "S-1" "do X" :workdir "/repo" :timeout-ms 5000)]
+            (is (true? (:ok r)))
+            (is (= "Refactor the auth module." (:text r)))
+            (is (= n (:nonce r)))
+            (is (.exists f) "fork transcript still exists after teardown (window killed, file untouched)")
+            (is (= size-before (.length f)) "fork transcript bytes unchanged — no mutation (AC8)")))
+        (finally (.delete f))))))
+
+(deftest one-shot-fork!-resolves-file-once-then-polls-test
+  (testing "fork file resolved exactly once; only that file is re-polled until the sentinel appears"
+    (let [n "gp-resolveonce1"
+          fork-calls (atom 0)
+          text-calls (atom 0)
+          file (io/file "/tmp/ghost-resolved.jsonl")]
+      (with-redefs [ghost/poll-interval-ms 1
+                    ghost/gen-nonce (constantly n)
+                    tmux/start-ephemeral-window!
+                    (fn [_] {:tmux-session "vc-ghost" :tmux-window (str "ghost-" n)})
+                    tmux/kill-window! (fn [_ _] nil)
+                    ghost/find-fork-file (fn [_] (swap! fork-calls inc) file)
+                    repl/claude-assistant-text
+                    (fn [_]
+                      (swap! text-calls inc)
+                      ;; sentinel only appears on the third poll
+                      (when (>= @text-calls 3)
+                        (str (ghost/begin-marker n) "\nDo X.\n" (ghost/end-marker n))))]
+        (let [r (ghost/one-shot-fork! "S-1" "do X" :workdir "/repo" :timeout-ms 5000)]
+          (is (true? (:ok r)))
+          (is (= "Do X." (:text r)))
+          (is (= 1 @fork-calls) "fork file resolved exactly once (no per-tick dir re-scan)")
+          (is (= 3 @text-calls) "only the resolved file is re-polled until the sentinel appears"))))))
+
+(deftest one-shot-fork!-tears-down-window-on-timeout-test
+  (testing "window is killed even when the fork transcript never appears (timeout)"
+    (let [killed (atom [])]
+      (with-redefs [ghost/poll-interval-ms 1
+                    tmux/start-ephemeral-window!
+                    (fn [_] {:tmux-session "vc-ghost" :tmux-window "ghost-x"})
+                    tmux/kill-window! (fn [s w] (swap! killed conj [s w]))
+                    ghost/find-fork-file (constantly nil)]
+        (let [r (ghost/one-shot-fork! "S-1" "do X" :workdir "/repo" :timeout-ms 5)]
+          (is (false? (:ok r)))
+          (is (= :timeout (:reason r)))
+          (is (= 1 (count @killed)) "ephemeral window killed in finally on timeout")
+          (is (= "vc-ghost" (ffirst @killed)) "killed under the dedicated ghost tmux session"))))))
+
+(deftest one-shot-fork!-timeout-when-sentinel-never-appears-test
+  (testing "resolved file but closing sentinel never appears -> :timeout, window killed"
+    (let [killed (atom [])]
+      (with-redefs [ghost/poll-interval-ms 1
+                    tmux/start-ephemeral-window!
+                    (fn [_] {:tmux-session "vc-ghost" :tmux-window "ghost-x"})
+                    tmux/kill-window! (fn [s w] (swap! killed conj [s w]))
+                    ghost/find-fork-file (constantly (io/file "/tmp/ghost-no-sentinel.jsonl"))
+                    repl/claude-assistant-text (constantly "preamble but no closing sentinel")]
+        (let [r (ghost/one-shot-fork! "S-1" "do X" :workdir "/repo" :timeout-ms 5)]
+          (is (= :timeout (:reason r)))
+          (is (= 1 (count @killed))))))))
+
+(deftest one-shot-fork!-tears-down-window-on-throw-test
+  (testing "window killed and guard cleared even when start-ephemeral-window! throws"
+    (reset! repl/ghost-fork-guard {})
+    (let [killed (atom [])]
+      (with-redefs [tmux/start-ephemeral-window! (fn [_] (throw (ex-info "boom" {})))
+                    tmux/kill-window! (fn [s w] (swap! killed conj [s w]))
+                    ghost/find-fork-file (constantly nil)]
+        (let [r (ghost/one-shot-fork! "S-1" "do X" :workdir "/repo" :timeout-ms 5)]
+          (is (false? (:ok r)))
+          (is (= :error (:reason r)))
+          (is (= 1 (count @killed)) "window killed in finally despite the throw")
+          (is (not (repl/ghost-guarded? "/repo")) "guard cleared despite the throw"))))))
+
+(deftest one-shot-fork!-registers-guard-before-launch-and-clears-after-test
+  (testing "workdir guard is registered BEFORE launch and cleared in finally"
+    (reset! repl/ghost-fork-guard {})
+    (let [guarded-at-launch (atom nil)]
+      (with-redefs [ghost/poll-interval-ms 1
+                    tmux/start-ephemeral-window!
+                    (fn [_]
+                      (reset! guarded-at-launch (repl/ghost-guarded? "/repo"))
+                      {:tmux-session "vc-ghost" :tmux-window "ghost-x"})
+                    tmux/kill-window! (fn [_ _] nil)
+                    ghost/find-fork-file (constantly nil)]
+        (ghost/one-shot-fork! "S-1" "do X" :workdir "/repo" :timeout-ms 5)
+        (is (true? @guarded-at-launch) "guard already registered when start-ephemeral-window! runs")
+        (is (not (repl/ghost-guarded? "/repo")) "guard cleared after one-shot-fork! returns")))))

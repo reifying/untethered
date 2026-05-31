@@ -3,12 +3,17 @@
    throwaway fork, then inject that prompt into the original session so the agent
    acts on it with no awareness it authored it. Claude-only.
 
-   This namespace currently holds the pure building blocks of the primitive: the
+   This namespace holds the pure building blocks of the primitive (the
    per-invocation nonce, the extraction sentinels, the one-line meta-prompt
-   template, and prompt extraction. The fork lifecycle (one-shot-fork!,
-   ghost-prompt!) is layered on top of these in a later step."
+   template, prompt extraction) plus the reusable `one-shot-fork!` lifecycle:
+   fork a session, run ONE prompt on the throwaway fork, capture its output, and
+   tear the fork window down — leaving the fork transcript intact. The
+   end-to-end `ghost-prompt!` orchestration is layered on top of this in a later
+   step."
   (:require [clojure.string :as str]
-            [voice-code.replication :as repl]))
+            [clojure.tools.logging :as log]
+            [voice-code.replication :as repl]
+            [voice-code.tmux :as tmux]))
 
 (defn gen-nonce
   "Mint a per-invocation ghost nonce: \"gp-\" followed by 12 hex digits. The
@@ -58,3 +63,80 @@
       (when (and bi ei)
         (let [p (str/trim (subs assistant-text (+ bi (count b)) ei))]
           (when-not (str/blank? p) p))))))
+
+(def default-timeout-ms
+  "Default ceiling for one-shot-fork! to wait for the fork's closing sentinel."
+  120000)
+
+(def poll-interval-ms
+  "How long to sleep between polls while waiting for the fork transcript / sentinel."
+  1000)
+
+(defn- find-fork-file
+  "The single .jsonl whose contents include `nonce` — only the fork received the
+   marked meta-prompt, so the nonce is content-addressable to exactly one file.
+   Scans newest-first (by last-modified) so the just-created fork is found
+   quickly, terminating on the first match. Returns the File or nil when no
+   transcript carries the nonce yet."
+  [nonce]
+  (->> (repl/find-jsonl-files)
+       (sort-by #(- (.lastModified ^java.io.File %)))
+       (some (fn [^java.io.File f]
+               (when (try (str/includes? (slurp f) nonce)
+                          (catch Exception _ false))
+                 f)))))
+
+(defn one-shot-fork!
+  "Fork `source-id` into a throwaway tmux window, deliver the ghost meta-prompt
+   for `task`, wait for the closing sentinel, and return the extracted prompt.
+   ALWAYS tears down the fork window and clears the in-flight workdir guard in a
+   `finally`; the fork's .jsonl is left intact (only the tmux window is killed —
+   the transcript is never deleted or mutated).
+
+   Resolves the fork transcript ONCE by nonce (it appears when the meta-prompt
+   lands), then polls only that file for the closing sentinel — never re-scanning
+   the whole projects dir per tick.
+
+   Options:
+   - :workdir     directory to launch the fork in (also the guard key)
+   - :timeout-ms  ceiling before giving up (default default-timeout-ms)
+
+   Returns {:ok true :text P :nonce n} on success, or
+   {:ok false :reason :timeout|:error :nonce n} on failure."
+  [source-id task & {:keys [workdir timeout-ms] :or {timeout-ms default-timeout-ms}}]
+  (let [nonce (gen-nonce)
+        window (str "ghost-" nonce)
+        cmd (tmux/build-provider-command :claude {:session-uuid source-id :fork? true})]
+    ;; Register the workdir BEFORE launch so the watcher defers the fork's
+    ;; session_created during the brief window before the marker is readable.
+    (repl/register-ghost-fork! workdir)
+    (try
+      (tmux/start-ephemeral-window! {:window window :provider :claude
+                                     :workdir workdir :cmd cmd
+                                     :prompt (build-meta-prompt task nonce)})
+      (let [deadline (+ (System/currentTimeMillis) timeout-ms)]
+        ;; Outer loop: resolve the fork file once by nonce. Inner loop: poll only
+        ;; that resolved file for the closing sentinel.
+        (loop []
+          (if-let [file (find-fork-file nonce)]
+            (let [path (.getPath ^java.io.File file)]
+              (loop []
+                (let [p (extract-prompt (repl/claude-assistant-text path) nonce)]
+                  (cond
+                    p {:ok true :text p :nonce nonce}
+                    (>= (System/currentTimeMillis) deadline)
+                    (do (log/warn "Ghost fork timed out before closing sentinel"
+                                  {:source-id source-id :nonce nonce})
+                        {:ok false :reason :timeout :nonce nonce})
+                    :else (do (Thread/sleep poll-interval-ms) (recur))))))
+            (if (>= (System/currentTimeMillis) deadline)
+              (do (log/warn "Ghost fork transcript never appeared"
+                            {:source-id source-id :nonce nonce})
+                  {:ok false :reason :timeout :nonce nonce})
+              (do (Thread/sleep poll-interval-ms) (recur))))))
+      (catch Exception e
+        (log/error e "Ghost fork failed" {:source-id source-id :nonce nonce})
+        {:ok false :reason :error :nonce nonce})
+      (finally
+        (tmux/kill-window! tmux/ghost-tmux-session window)
+        (repl/unregister-ghost-fork! workdir)))))
