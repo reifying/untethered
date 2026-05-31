@@ -207,11 +207,56 @@
     (let [invalid-recipe (update-in (recipes/implement-and-review-recipe)
                                     [:steps :implement :on-outcome :complete :next-step]
                                     (constantly :nonexistent-step))]
-      (is (some? (recipes/validate-recipe invalid-recipe))))))
+      (is (some? (recipes/validate-recipe invalid-recipe)))))
+
+  (testing "missing :session-mode returns error"
+    (let [invalid-recipe (dissoc (recipes/implement-and-review-recipe) :session-mode)
+          result (recipes/validate-recipe invalid-recipe)]
+      (is (some? result))
+      (is (re-find #":session-mode" (:error result)))))
+
+  (testing "invalid :session-mode value returns error"
+    (let [invalid-recipe (assoc (recipes/implement-and-review-recipe) :session-mode :bogus)
+          result (recipes/validate-recipe invalid-recipe)]
+      (is (some? result))
+      (is (re-find #"Invalid :session-mode" (:error result)))))
+
+  (testing "valid :session-mode passes validation"
+    (let [fresh-recipe (assoc (recipes/implement-and-review-recipe) :session-mode :fresh)
+          accumulating-recipe (assoc (recipes/implement-and-review-recipe) :session-mode :accumulating)]
+      (is (nil? (recipes/validate-recipe fresh-recipe)))
+      (is (nil? (recipes/validate-recipe accumulating-recipe))))))
 
 (deftest valid-models-test
   (testing "valid-models contains expected values"
     (is (= #{"haiku" "sonnet" "opus"} recipes/valid-models))))
+
+(deftest valid-session-modes-test
+  (testing "valid-session-modes contains expected values"
+    (is (= #{:fresh :accumulating} recipes/valid-session-modes))))
+
+(deftest recipe-session-modes-test
+  (testing "every recipe in the registry declares a valid :session-mode"
+    (doseq [[recipe-id recipe] recipes/all-recipes]
+      (is (contains? recipes/valid-session-modes (:session-mode recipe))
+          (str recipe-id " must declare a valid :session-mode"))))
+
+  (testing "session-mode assignment matches the design doc"
+    (let [expected {:implement-and-review :fresh
+                    :implement-and-review-all :fresh
+                    :review-and-commit :fresh
+                    :rebase :fresh
+                    :retrospective :fresh
+                    :document-design :accumulating
+                    :break-down-tasks :accumulating
+                    :refine-design :accumulating
+                    :design-break-impl-all :accumulating}]
+      (doseq [[recipe-id mode] expected]
+        (is (= mode (:session-mode (recipes/get-recipe recipe-id)))
+            (str recipe-id " should be " mode)))))
+
+  (testing "all nine recipes are covered by the assignment table"
+    (is (= 9 (count recipes/all-recipes)))))
 
 (deftest model-validation-test
   (testing "valid recipe-level model passes validation"

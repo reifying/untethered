@@ -5,6 +5,14 @@
   "Valid model values for recipe steps"
   #{"haiku" "sonnet" "opus"})
 
+(def valid-session-modes
+  "Valid :session-mode values for recipes.
+   :fresh        — endpoint generates a new session UUID per invocation; the
+                   recipe handles its own session restarts internally.
+   :accumulating — reuse the caller's session-id if provided (resume into an
+                   existing session), otherwise generate a new one."
+  #{:fresh :accumulating})
+
 (def review-commit-steps
   "Shared steps for the review → fix → commit loop.
    Used by both review-and-commit and implement-and-review recipes."
@@ -98,6 +106,7 @@ If working on a beads task, update its status first:
    This recipe reviews existing changes, fixes issues, and commits."
   []
   {:id :review-and-commit
+   :session-mode :fresh
    :label "Review & Commit"
    :description "Review existing changes, fix issues, and commit"
    :initial-step :code-review
@@ -109,6 +118,7 @@ If working on a beads task, update its status first:
    This recipe creates a detailed design document with code examples and verification steps."
   []
   {:id :document-design
+   :session-mode :accumulating
    :label "Document Design"
    :description "Create a detailed design document with examples and verification"
    :model "opus"
@@ -248,6 +258,7 @@ Report any gaps or issues found. Do not make changes yet."
    This recipe creates implementation tasks from a design document using beads."
   []
   {:id :break-down-tasks
+   :session-mode :accumulating
    :label "Break Down Tasks"
    :description "Create implementation tasks from design document using beads"
    :model "opus"
@@ -539,6 +550,7 @@ If working on a beads task, update its status first:
    This recipe implements a task, reviews the code, iteratively fixes issues, and commits."
   []
   {:id :implement-and-review
+   :session-mode :fresh
    :label "Implement & Review"
    :description "Implement task, review code, fix issues, and commit"
    :initial-step :implement
@@ -551,6 +563,7 @@ If working on a beads task, update its status first:
    to pick up the next task. Continues until no tasks remain."
   []
   {:id :implement-and-review-all
+   :session-mode :fresh
    :label "Implement & Review All"
    :description "Implement all tasks, restarting in new sessions after each commit"
    :initial-step :implement
@@ -564,6 +577,7 @@ If working on a beads task, update its status first:
    This recipe rebases the current branch on local main with careful conflict resolution."
   []
   {:id :rebase
+   :session-mode :fresh
    :label "Rebase"
    :description "Rebase current branch on local main with conflict resolution"
    :initial-step :rebase
@@ -663,6 +677,7 @@ The branch is now rebased on main and ready for further work or pushing."
    A simple prompt asking the agent to reflect on the session and identify friction points."
   []
   {:id :retrospective
+   :session-mode :fresh
    :label "Retrospective"
    :description "Reflect on the session and identify areas for improvement"
    :initial-step :reflect
@@ -714,6 +729,7 @@ The branch is now rebased on main and ready for further work or pushing."
    completeness → breadth → simplicity → polish."
   []
   {:id :refine-design
+   :session-mode :accumulating
    :label "Refine Design"
    :description "Iteratively improve an existing design document through focused review passes"
    :initial-step :locate-design
@@ -1098,6 +1114,7 @@ Example: 'Add implementation tasks for user authentication (epic-abc123)'"
    task breakdown. Phase 3 starts fresh sessions per task, same as implement-and-review-all."
   []
   {:id :design-break-impl-all
+   :session-mode :accumulating
    :label "Design → Break Down → Implement All"
    :description "Full pipeline: design document, break into tasks, then implement all tasks"
    :model "opus"
@@ -1466,13 +1483,20 @@ Use `bd dep rm <blocked> <blocking>` to remove incorrect dependencies."
   [recipe]
   (let [step-names (set (keys (:steps recipe)))
         initial-step (:initial-step recipe)
-        recipe-model (:model recipe)]
+        recipe-model (:model recipe)
+        session-mode (:session-mode recipe)]
     (cond
       (nil? initial-step)
       {:error "Recipe must have :initial-step"}
 
       (not (contains? step-names initial-step))
       {:error (str "Initial step not found in steps: " initial-step)}
+
+      (nil? session-mode)
+      {:error "Recipe must have :session-mode (:fresh or :accumulating)"}
+
+      (not (contains? valid-session-modes session-mode))
+      {:error (str "Invalid :session-mode '" session-mode "'. Valid modes: " valid-session-modes)}
 
       (and recipe-model (not (contains? valid-models recipe-model)))
       {:error (str "Invalid recipe-level model '" recipe-model "'. Valid models: " valid-models)}
@@ -1526,6 +1550,7 @@ Use `bd dep rm <blocked> <blocking>` to remove incorrect dependencies."
   (s/map-of keyword? ::transition))
 
 (s/def ::model valid-models)
+(s/def ::session-mode valid-session-modes)
 (s/def ::env (s/map-of string? string?))
 
 (s/def ::step-def
@@ -1539,5 +1564,5 @@ Use `bd dep rm <blocked> <blocking>` to remove incorrect dependencies."
   (s/keys :req-un [::max-iterations]))
 
 (s/def ::recipe
-  (s/keys :req-un [::id ::description ::initial-step ::steps]
+  (s/keys :req-un [::id ::description ::initial-step ::steps ::session-mode]
           :opt-un [::guardrails ::model ::env]))
