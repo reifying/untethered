@@ -3,6 +3,7 @@
 
 import SwiftUI
 import CoreData
+import Combine
 #if os(iOS)
 import UIKit
 #elseif os(macOS)
@@ -67,6 +68,10 @@ struct ConversationView: View {
     @State private var showingSessionInfo = false
     @State private var showingRecipeMenu = false
     @State private var isRefreshingMessages = false
+
+    // Share-logs-with-agent state
+    @State private var isSharingLogs = false
+    @State private var pendingLogFilename: String?  // non-nil while waiting for the upload response
 
     // Compaction feedback state
     @State private var wasRecentlyCompacted: Bool = false
@@ -436,6 +441,18 @@ struct ConversationView: View {
                     }
                     .disabled(isRefreshingMessages)
 
+                    // Share logs with agent button
+                    Button(action: {
+                        shareLogsWithAgent()
+                    }) {
+                        if isSharingLogs {
+                            ProgressView()
+                        } else {
+                            Image(systemName: "doc.text.magnifyingglass")
+                        }
+                    }
+                    .disabled(isSharingLogs || !client.isConnected)
+
                     // Queue remove button
                     if settings.queueEnabled && session.isInQueue {
                         Button(action: {
@@ -551,6 +568,19 @@ struct ConversationView: View {
                     .disabled(isRefreshingMessages)
                     .help("Refresh session (Cmd+R)")
                     .keyboardShortcut("r", modifiers: [.command])
+
+                    // Share logs with agent button
+                    Button(action: {
+                        shareLogsWithAgent()
+                    }) {
+                        if isSharingLogs {
+                            ProgressView()
+                        } else {
+                            Image(systemName: "doc.text.magnifyingglass")
+                        }
+                    }
+                    .disabled(isSharingLogs || !client.isConnected)
+                    .help("Share logs with agent")
 
                     // Queue remove button
                     if settings.queueEnabled && session.isInQueue {
@@ -689,6 +719,13 @@ struct ConversationView: View {
             // This ensures messages are refreshed when navigating back to session
             hasSubscribedThisAppear = false
         }
+        // Listen for the file-uploaded response to our log share. Filtered by
+        // pendingLogFilename + the "logs-" prefix inside handleLogUploadResponse
+        // so we never grab a response intended for a concurrent ResourcesManager
+        // upload. SwiftUI manages the subscription lifecycle (no AnyCancellable).
+        .onReceive(client.$fileUploadResponse.compactMap { $0 }) { response in
+            handleLogUploadResponse(response)
+        }
         .onReceive(NotificationCenter.default.publisher(for: .sessionHistoryDidUpdate)) { notification in
             // Refresh view when session_history adds new messages (e.g., after backend reconnection)
             // This ensures UI updates even when @FetchRequest doesn't auto-refresh
@@ -719,6 +756,11 @@ struct ConversationView: View {
         .onChange(of: session.id) { oldId, newId in
             client.unsubscribe(sessionId: oldId.uuidString.lowercased())
             hasSubscribedThisAppear = false
+            // Reset in-flight share-logs state so a late upload response for the
+            // previous session can't send its review prompt to the new one.
+            // (macOS reuses this view instance across sidebar switches.)
+            isSharingLogs = false
+            pendingLogFilename = nil
             loadSessionIfNeeded()
         }
         .swipeToBack()
@@ -885,7 +927,125 @@ struct ConversationView: View {
 
         client.sendMessage(message)
     }
-    
+
+    // MARK: - Share Logs With Agent
+
+    /// Capture recent logs, upload them as a resource to the session's working
+    /// directory, then (on the file-uploaded response) prompt the agent to read
+    /// them. See `handleLogUploadResponse` for the second half of the flow.
+    private func shareLogsWithAgent() {
+        isSharingLogs = true
+        LogManager.shared.log("Share logs initiated for session \(session.id)", category: "ShareLogs")
+
+        let logs = LogManager.shared.getRecentLogs(maxBytes: 100_000)
+
+        guard !logs.isEmpty else {
+            LogManager.shared.log("No logs available to share", category: "ShareLogs")
+            copyConfirmationMessage = "No logs available"
+            withAnimation { showingCopyConfirmation = true }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                withAnimation { showingCopyConfirmation = false }
+            }
+            isSharingLogs = false
+            return
+        }
+
+        guard let logData = logs.data(using: .utf8) else {
+            LogManager.shared.log("Failed to encode logs", category: "ShareLogs")
+            isSharingLogs = false
+            return
+        }
+
+        let base64Content = logData.base64EncodedString()
+        let timestamp = DateFormatter.logFileTimestamp.string(from: Date())
+        let filename = "\(ShareLogsMessageBuilder.logFilenamePrefix)\(timestamp).txt"
+
+        // Store the expected filename so the .onReceive handler can match it.
+        pendingLogFilename = filename
+
+        let uploadMessage = ShareLogsMessageBuilder.uploadMessage(
+            filename: filename,
+            base64Content: base64Content,
+            storageLocation: session.workingDirectory
+        )
+
+        LogManager.shared.log("Uploading logs: \(filename) (\(logData.count) bytes) to \(session.workingDirectory)", category: "ShareLogs")
+        client.sendMessage(uploadMessage)
+
+        // Timeout: if no response in 30s, reset state.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 30.0) {
+            if isSharingLogs {
+                pendingLogFilename = nil
+                isSharingLogs = false
+                LogManager.shared.log("Share logs timed out", category: "ShareLogs")
+                copyConfirmationMessage = "Log sharing timed out"
+                withAnimation { showingCopyConfirmation = true }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                    withAnimation { showingCopyConfirmation = false }
+                }
+            }
+        }
+    }
+
+    /// Called by `.onReceive` when `fileUploadResponse` fires. Filters to only
+    /// handle responses for our log upload (not ResourcesManager uploads), then
+    /// sends the review prompt using the actual filename from the response.
+    private func handleLogUploadResponse(_ response: (filename: String, success: Bool)) {
+        guard ShareLogsMessageBuilder.isLogUploadResponse(filename: response.filename, pendingFilename: pendingLogFilename),
+              let expected = pendingLogFilename else { return }
+        pendingLogFilename = nil
+
+        let actualFilename = response.filename
+
+        // Defensive: the backend currently only emits file-uploaded with
+        // success=true, but if a failure path is ever added, surface it instead
+        // of sending a prompt that references a file that wasn't written.
+        guard response.success else {
+            LogManager.shared.log("Log upload failed: \(actualFilename) (requested: \(expected))", category: "ShareLogs")
+            isSharingLogs = false
+            copyConfirmationMessage = ShareLogsMessageBuilder.confirmationMessage(success: false)
+            withAnimation { showingCopyConfirmation = true }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                withAnimation { showingCopyConfirmation = false }
+            }
+            return
+        }
+
+        LogManager.shared.log("Upload confirmed: \(actualFilename) (requested: \(expected))", category: "ShareLogs")
+
+        // Build the prompt following the same wire format as sendPromptText().
+        let sessionId = session.id.uuidString.lowercased()
+        let promptText = ShareLogsMessageBuilder.promptText(forFilename: actualFilename)
+        let isNewSession = session.messageCount == 0
+
+        // Create optimistic message so the user sees the prompt immediately.
+        client.sessionSyncManager.createOptimisticMessage(sessionId: session.id, text: promptText) { _ in }
+
+        // Add to queue if enabled (matches sendPromptText()).
+        if settings.queueEnabled {
+            addToQueue(session)
+        }
+
+        let promptMessage = ShareLogsMessageBuilder.promptMessage(
+            actualFilename: actualFilename,
+            sessionId: sessionId,
+            workingDirectory: session.workingDirectory,
+            isNewSession: isNewSession,
+            provider: selectedProvider,
+            systemPrompt: settings.systemPrompt
+        )
+
+        client.sendMessage(promptMessage)
+
+        isSharingLogs = false
+        copyConfirmationMessage = ShareLogsMessageBuilder.confirmationMessage(success: true)
+        withAnimation { showingCopyConfirmation = true }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+            withAnimation { showingCopyConfirmation = false }
+        }
+        LogManager.shared.log("Logs shared successfully: \(actualFilename)", category: "ShareLogs")
+    }
+
     private func copySessionID() {
         // Copy session ID to clipboard
         ClipboardUtility.copy(session.id.uuidString.lowercased())
@@ -1163,6 +1323,88 @@ struct ConversationView: View {
 
 
 // Note: Date.relativeFormatted() is defined in Utils/RelativeTimeText.swift
+
+// MARK: - Share Logs Message Building
+
+/// Pure, testable builders for the share-logs-with-agent WebSocket messages.
+/// Extracted from `ConversationView` so the wire format can be unit-tested
+/// without instantiating a SwiftUI view. The View's `shareLogsWithAgent` /
+/// `handleLogUploadResponse` delegate to these.
+enum ShareLogsMessageBuilder {
+    /// Filename prefix shared by the upload (`shareLogsWithAgent`), the response
+    /// filter (`isLogUploadResponse`), and `ResourcesManager`'s foreign-response
+    /// guard. Single source of truth so those sites can't drift apart.
+    static let logFilenamePrefix = "logs-"
+
+    /// Prompt text sent to the agent after the log file is uploaded.
+    static func promptText(forFilename filename: String) -> String {
+        "I've shared app logs at .untethered/resources/\(filename) — please read and review them for issues."
+    }
+
+    /// `upload_file` message shipping the base64-encoded logs to the session's
+    /// working directory (NOT the global resourceStorageLocation setting).
+    static func uploadMessage(filename: String, base64Content: String, storageLocation: String) -> [String: Any] {
+        [
+            "type": "upload_file",
+            "filename": filename,
+            "content": base64Content,
+            "storage_location": storageLocation
+        ]
+    }
+
+    /// `prompt` message telling the agent to read the uploaded log file. Matches
+    /// the wire format of `sendPromptText()`: `resume_session_id` for existing
+    /// sessions, `new_session_id` + `provider` for new ones, plus
+    /// `working_directory` and an optional non-empty `system_prompt`.
+    static func promptMessage(actualFilename: String,
+                              sessionId: String,
+                              workingDirectory: String,
+                              isNewSession: Bool,
+                              provider: String,
+                              systemPrompt: String) -> [String: Any] {
+        var message: [String: Any] = [
+            "type": "prompt",
+            "text": promptText(forFilename: actualFilename),
+            "working_directory": workingDirectory
+        ]
+
+        if isNewSession {
+            message["new_session_id"] = sessionId
+            message["provider"] = provider
+        } else {
+            message["resume_session_id"] = sessionId
+        }
+
+        if !systemPrompt.isEmpty {
+            message["system_prompt"] = systemPrompt
+        }
+
+        return message
+    }
+
+    /// Whether a `file-uploaded` response belongs to our log share (vs a
+    /// concurrent ResourcesManager upload). Requires a pending log filename and
+    /// the `"logs-"` prefix the share flow always uses.
+    static func isLogUploadResponse(filename: String, pendingFilename: String?) -> Bool {
+        pendingFilename != nil && filename.hasPrefix(logFilenamePrefix)
+    }
+
+    /// Confirmation-banner text shown once the upload response is handled.
+    static func confirmationMessage(success: Bool) -> String {
+        success ? "Logs shared with agent" : "Log sharing failed"
+    }
+}
+
+// MARK: - Date Formatter Extension
+
+extension DateFormatter {
+    /// Timestamp used to make uploaded log filenames unique: `yyyyMMdd-HHmmss`.
+    static let logFileTimestamp: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        return formatter
+    }()
+}
 
 // MARK: - CoreData Message View
 

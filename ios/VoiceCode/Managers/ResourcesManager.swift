@@ -282,9 +282,34 @@ class ResourcesManager: ObservableObject {
 
     // MARK: - Response Handling
 
+    /// Whether a `file-uploaded` response should be ignored by ResourcesManager
+    /// because it belongs to ConversationView's "Share Logs with Agent" flow.
+    /// That flow uploads `"logs-…"` files directly via `VoiceCodeClient.sendMessage`
+    /// (bypassing ResourcesManager), so it never registers a pending
+    /// acknowledgment here. `hasExactPendingMatch` is whether this exact filename
+    /// is one of our own pending uploads — if it is, the file is genuinely ours
+    /// (a user-shared resource that happens to be named `logs-…`) and must NOT be
+    /// ignored. Without this guard the "first pending" fallback below would
+    /// misattribute the log upload's response to an unrelated resource upload
+    /// that is concurrently in flight. See ConversationView.shareLogsWithAgent.
+    ///
+    /// Edge case: if a user uploads a `logs-…` resource here AND the backend
+    /// conflict-renames it (e.g. `logs-x.txt` → `logs-x-{ts}.txt`), the renamed
+    /// response has no exact match and is ignored — that upload then resolves
+    /// `false` via its 30s timeout rather than via the loose `.first` fallback.
+    /// Accepted as a rare tradeoff vs. the misattribution this guard prevents.
+    static func isForeignShareLogsResponse(filename: String, hasExactPendingMatch: Bool) -> Bool {
+        filename.hasPrefix(ShareLogsMessageBuilder.logFilenamePrefix) && !hasExactPendingMatch
+    }
+
     /// Call this when file-uploaded or error response received from backend
     func handleUploadResponse(filename: String, success: Bool) {
         LogManager.shared.log("handleUploadResponse called for \(filename): success=\(success)", category: "ResourcesManager")
+
+        if ResourcesManager.isForeignShareLogsResponse(filename: filename, hasExactPendingMatch: pendingAcknowledgments[filename] != nil) {
+            LogManager.shared.log("Ignoring share-logs upload response for \(filename) (handled by ConversationView)", category: "ResourcesManager")
+            return
+        }
 
         // Backend may return a different filename if there was a conflict (e.g., "file-20251111123456.txt")
         // Since uploads are processed sequentially, match against the original filename or just take the first pending
