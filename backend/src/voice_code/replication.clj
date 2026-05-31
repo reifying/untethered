@@ -557,6 +557,10 @@
                :provider :copilot})
     metadata))
 
+;; ghost-session? is defined later (after parse-jsonl-file / claude-human-prompt?)
+;; but is needed here to skip ghost fork transcripts at startup.
+(declare ghost-session?)
+
 (defn- build-claude-sessions-index
   "Build index entries for all Claude sessions.
    Returns map of session-id -> metadata."
@@ -565,10 +569,11 @@
         _ (log/info "Found Claude session files" {:count (count files)})]
     (reduce (fn [acc file]
               (try
-                ;; Filter out inference sessions
-                (if (is-inference-session? file)
+                ;; Filter out inference sessions and ghost fork transcripts
+                ;; (the latter carry ghost-fork-marker; hidden from the iOS list).
+                (if (or (is-inference-session? file) (ghost-session? file))
                   (do
-                    (log/debug "Skipping inference session" {:file (.getPath file)})
+                    (log/debug "Skipping inference/ghost session" {:file (.getPath file)})
                     acc)
                   (let [metadata (build-session-metadata file)
                         session-id (:session-id metadata)]
@@ -927,9 +932,11 @@
 (defn get-all-sessions
   "Get all session metadata as a vector.
   Filters out sessions with invalid session IDs and logs them.
+  Excludes ghost fork sessions (those tagged :ghost true), which are internal
+  throwaway forks that must never surface in the iOS session list.
   Accepts both UUIDs (Claude, Copilot, Cursor) and OpenCode ses_* IDs."
   []
-  (let [all-sessions (vals @session-index)
+  (let [all-sessions (remove :ghost (vals @session-index))
         valid-sessions (filter #(valid-session-id? (:session-id %)) all-sessions)
         invalid-sessions (remove #(valid-session-id? (:session-id %)) all-sessions)]
     (when (seq invalid-sessions)
@@ -1034,7 +1041,14 @@
 (def ghost-fork-marker
   "Marker carried by every ghost meta-prompt. A fork writes its transcript only on
   the first prompt (the meta-prompt), so the fork file is born containing this
-  marker -- a content scan is the primary hide for ghost fork transcripts."
+  marker -- a content scan is the primary hide for ghost fork transcripts.
+
+  MUST remain escape-free ASCII: `ghost-session?`'s fast path substring-matches the
+  marker against the RAW file bytes (pre-JSON-decode) to skip parsing normal
+  transcripts. A marker containing a JSON-special char (\" \\ control or non-ASCII
+  that serializes as \\uXXXX) would appear differently in raw bytes vs. decoded
+  content, so the fast path could false-negative and leak a real ghost fork into
+  the iOS list."
   "VC-GHOST-FORK")
 
 ;; Belt for the narrow window where the watcher might read the just-created fork
@@ -1086,13 +1100,24 @@
   A fork copies the source history first and appends the marked meta-prompt LAST,
   so the marker is NOT in the first prompt -- every human prompt must be scanned.
   Used at startup (build-claude-sessions-index) and at both session_created sites
-  to hide ghost fork transcripts from the iOS session list."
+  to hide ghost fork transcripts from the iOS session list.
+
+  Cheap gate first: the marker is a fixed ASCII string, so a raw substring scan
+  rules out the common no-marker case (every normal transcript) without parsing
+  each line as JSON -- this keeps the startup index build from paying a second
+  full parse per file on top of build-session-metadata. Only when the literal
+  marker appears anywhere in the file do we run the precise per-human-prompt scan,
+  which is what actually decides ghost status (the marker could ride a tool_result
+  or assistant line without the session being a ghost fork)."
   [file]
-  (boolean
-   (some (fn [m]
-           (and (claude-human-prompt? m)
-                (some-> (raw-user-text m) (str/includes? ghost-fork-marker))))
-         (parse-jsonl-file (.getPath ^java.io.File file)))))
+  (let [path (.getPath ^java.io.File file)]
+    (boolean
+     (and (try (str/includes? (slurp path) ghost-fork-marker)
+               (catch Exception _ false))
+          (some (fn [m]
+                  (and (claude-human-prompt? m)
+                       (some-> (raw-user-text m) (str/includes? ghost-fork-marker))))
+                (parse-jsonl-file path))))))
 
 (defn claude-assistant-text
   "Concatenate the text blocks of every raw assistant message in the Claude .jsonl
@@ -2374,7 +2399,16 @@
         (when session-id
           (let [file-path (.getAbsolutePath file)
                 file-size (.length file)
-                message-count (:message-count metadata)]
+                message-count (:message-count metadata)
+                ;; Ghost fork detection: a marker match tags the entry :ghost
+                ;; durably (so it is excluded from session lists and never
+                ;; re-pushed), and either the marker OR an in-flight ghost fork
+                ;; in this workdir (the guard belt) suppresses the
+                ;; session_created push. The guard covers the brief race where
+                ;; the create event fires before the marker line is on disk.
+                ghost? (ghost-session? file)
+                workdir (:working-directory metadata)
+                guarded? (ghost-guarded? workdir)]
 
             ;; Log file creation details
             (log/info "File created event detected"
@@ -2382,12 +2416,17 @@
                        :file-path file-path
                        :file-size file-size
                        :message-count message-count
+                       :ghost-marker ghost?
+                       :ghost-guarded guarded?
                        :has-preview (boolean (seq (:preview metadata)))
                        :has-first-message (boolean (:first-message metadata))
                        :has-last-message (boolean (:last-message metadata))})
 
             ;; ALWAYS add to index (for backend tracking)
             (swap! session-index assoc session-id metadata)
+            ;; Tag ghost forks durably so they never surface in the iOS list.
+            (when ghost?
+              (swap! session-index assoc-in [session-id :ghost] true))
             (save-index! @session-index)
 
             ;; Initialize byte AND line cursors to the current file state so
@@ -2413,8 +2452,20 @@
               (swap! line-counts assoc file-path seed-lines)
               (swap! file-positions assoc file-path seed-size))
 
-            ;; Only notify iOS if we have real messages
-            (if (pos? message-count)
+            ;; Notify iOS only for a non-ghost, non-guarded session with real
+            ;; messages. A ghost fork (marker) or any session in a workdir with
+            ;; a ghost fork in flight (guard) is suppressed; leaving
+            ;; :ios-notified unset lets a genuine guarded session still get a
+            ;; proper delayed push once the guard clears (handle-file-modified).
+            (cond
+              (or ghost? guarded?)
+              (log/info "Suppressing session_created for ghost fork (marker or workdir guard)"
+                        {:session-id session-id
+                         :ghost-marker ghost?
+                         :ghost-guarded guarded?
+                         :working-directory workdir})
+
+              (pos? message-count)
               (do
                 (log/info "Notifying iOS of new session with messages"
                           {:session-id session-id
@@ -2426,6 +2477,8 @@
                 (swap! session-index assoc-in [session-id :ios-notified] true)
                 (swap! session-index assoc-in [session-id :first-notification] (System/currentTimeMillis))
                 (save-index! @session-index))
+
+              :else
               ;; Log but don't notify yet
               (log/info "Session created with no messages yet, will notify when messages arrive"
                         {:session-id session-id
@@ -2437,7 +2490,8 @@
                         :name (:name metadata)
                         :message-count message-count
                         :initial-file-position file-size
-                        :ios-notified (pos? message-count)}))))
+                        :ghost-marker ghost?
+                        :ios-notified (and (pos? message-count) (not ghost?) (not guarded?))}))))
       (catch Exception e
         (log/error e "Failed to handle file creation" {:file (.getPath file)})))))
 
@@ -2655,20 +2709,37 @@
                            (pos? new-count)
                            (not ios-notified?))
                     ;; DELAYED NOTIFICATION TRIGGER
-                    (do
-                      (log/info "Session now has messages - notifying iOS (delayed notification)"
-                                {:session-id session-id
-                                 :message-count new-count
-                                 :name (:name old-metadata)})
+                    (let [ghost? (ghost-session? file)
+                          workdir (:working-directory old-metadata)
+                          guarded? (ghost-guarded? workdir)]
+                      ;; Tag ghost forks durably so they are excluded from session lists.
+                      (when ghost?
+                        (swap! session-index assoc-in [session-id :ghost] true)
+                        (save-index! @session-index))
+                      (if (or ghost? guarded?)
+                        ;; Suppress the delayed session_created for a ghost fork (marker)
+                        ;; or while a ghost fork is in flight in this workdir (guard belt).
+                        ;; An empty/partial create event defers the notification here, so
+                        ;; this second site must apply the same hide as handle-file-created.
+                        (log/info "Suppressing delayed session_created for ghost fork (marker or workdir guard)"
+                                  {:session-id session-id
+                                   :ghost-marker ghost?
+                                   :ghost-guarded guarded?
+                                   :working-directory workdir})
+                        (do
+                          (log/info "Session now has messages - notifying iOS (delayed notification)"
+                                    {:session-id session-id
+                                     :message-count new-count
+                                     :name (:name old-metadata)})
 
-                      ;; Send session_created NOW
-                      (when-let [callback (:on-session-created @watcher-state)]
-                        (callback (get @session-index session-id)))
+                          ;; Send session_created NOW
+                          (when-let [callback (:on-session-created @watcher-state)]
+                            (callback (get @session-index session-id)))
 
-                      ;; Mark as notified
-                      (swap! session-index assoc-in [session-id :ios-notified] true)
-                      (swap! session-index assoc-in [session-id :first-notification] (System/currentTimeMillis))
-                      (save-index! @session-index))
+                          ;; Mark as notified
+                          (swap! session-index assoc-in [session-id :ios-notified] true)
+                          (swap! session-index assoc-in [session-id :first-notification] (System/currentTimeMillis))
+                          (save-index! @session-index))))
 
                     ;; Send updates to subscribed clients (regardless of ios-notified flag).
                     ;; Canonical wire format with :seq already stamped; human prompts
