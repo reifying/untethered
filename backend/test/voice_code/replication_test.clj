@@ -6353,3 +6353,64 @@
     (is (not (repl/ghost-guarded? "/repo-b")) "an unrelated workdir is never guarded")
     (repl/unregister-ghost-fork! "/repo-a")
     (is (not (repl/ghost-guarded? "/repo-a")))))
+
+(deftest ghost-session?-test
+  (testing "true when the ghost marker rides a LATER human prompt, not the first"
+    ;; A fork copies the source history first, then appends the marked meta-prompt,
+    ;; so the marker lands in a later user line — every human prompt must be scanned.
+    (let [file (create-test-jsonl-file
+                "ghost-fork.jsonl"
+                [(json/generate-string {:type "user" :message {:content "first plain prompt"}})
+                 (json/generate-string {:type "assistant"
+                                        :message {:content [{:type "text" :text "working on it"}]}})
+                 (json/generate-string {:type "user"
+                                        :message {:content [{:type "text"
+                                                             :text (str "[" repl/ghost-fork-marker
+                                                                        " gp-abc123abc123] do X")}]}})])]
+      (is (true? (repl/ghost-session? file)))))
+  (testing "false for a normal session with no marker"
+    (let [file (create-test-jsonl-file
+                "ghost-normal.jsonl"
+                [(json/generate-string {:type "user" :message {:content "hello"}})
+                 (json/generate-string {:type "assistant"
+                                        :message {:content [{:type "text" :text "hi there"}]}})])]
+      (is (false? (repl/ghost-session? file)))))
+  (testing "marker carried as plain string content is also detected"
+    (let [file (create-test-jsonl-file
+                "ghost-string.jsonl"
+                [(json/generate-string {:type "user"
+                                        :message {:content (str "[" repl/ghost-fork-marker
+                                                                " gp-deadbeef0001] do Y")}})])]
+      (is (true? (repl/ghost-session? file)))))
+  (testing "marker leaking into a tool_result-only user message does NOT count (not a human prompt)"
+    (let [file (create-test-jsonl-file
+                "ghost-toolresult.jsonl"
+                [(json/generate-string {:type "user"
+                                        :message {:content [{:type "tool_result"
+                                                             :content (str repl/ghost-fork-marker
+                                                                           " in a tool result")}]}})])]
+      (is (false? (repl/ghost-session? file))))))
+
+(deftest claude-assistant-text-test
+  (testing "concatenates assistant text blocks (skipping tool_use and non-assistant), joined by newlines"
+    (let [file (create-test-jsonl-file
+                "assistant-text.jsonl"
+                [(json/generate-string {:type "user" :message {:content "the task"}})
+                 (json/generate-string {:type "assistant"
+                                        :message {:content [{:type "text" :text "Let me write a prompt."}
+                                                            {:type "tool_use" :id "t1" :name "Read"}]}})
+                 (json/generate-string {:type "assistant"
+                                        :message {:content [{:type "text" :text "===GHOST-BEGIN:gp-abc==="}
+                                                            {:type "text" :text "the body"}]}})])]
+      (is (= "Let me write a prompt.\n===GHOST-BEGIN:gp-abc===\nthe body"
+             (repl/claude-assistant-text (.getPath file))))))
+  (testing "handles string-content assistant messages"
+    (let [file (create-test-jsonl-file
+                "assistant-string.jsonl"
+                [(json/generate-string {:type "assistant" :message {:content "plain string answer"}})])]
+      (is (= "plain string answer" (repl/claude-assistant-text (.getPath file))))))
+  (testing "empty string when the transcript has no assistant messages"
+    (let [file (create-test-jsonl-file
+                "assistant-none.jsonl"
+                [(json/generate-string {:type "user" :message {:content "only a user message"}})])]
+      (is (= "" (repl/claude-assistant-text (.getPath file)))))))

@@ -1067,6 +1067,49 @@
   [working-dir]
   (pos? (get @ghost-fork-guard working-dir 0)))
 
+(defn- raw-user-text
+  "User-typed text from a raw Claude .jsonl user message: the content string, or
+  the concatenated text blocks when content is a block vector. nil for a message
+  with no text content (e.g. a tool_result-only user message)."
+  [raw-msg]
+  (let [content (get-in raw-msg [:message :content])]
+    (cond
+      (string? content) content
+      (sequential? content) (->> content
+                                 (filter #(= "text" (:type %)))
+                                 (map :text)
+                                 (str/join " "))
+      :else nil)))
+
+(defn ghost-session?
+  "True when ANY human prompt in `file` (a java.io.File) carries `ghost-fork-marker`.
+  A fork copies the source history first and appends the marked meta-prompt LAST,
+  so the marker is NOT in the first prompt -- every human prompt must be scanned.
+  Used at startup (build-claude-sessions-index) and at both session_created sites
+  to hide ghost fork transcripts from the iOS session list."
+  [file]
+  (boolean
+   (some (fn [m]
+           (and (claude-human-prompt? m)
+                (some-> (raw-user-text m) (str/includes? ghost-fork-marker))))
+         (parse-jsonl-file (.getPath ^java.io.File file)))))
+
+(defn claude-assistant-text
+  "Concatenate the text blocks of every raw assistant message in the Claude .jsonl
+  at `file-path`, joined by newlines. Used to recover a ghost fork's generated
+  prompt for sentinel extraction."
+  [file-path]
+  (->> (parse-jsonl-file file-path)
+       (filter #(= "assistant" (:type %)))
+       (mapcat (fn [m]
+                 (let [c (get-in m [:message :content])]
+                   (cond
+                     (string? c) [c]
+                     (sequential? c) (->> c (filter #(= "text" (:type %))) (map :text))
+                     :else []))))
+       (remove nil?)
+       (str/join "\n")))
+
 (defn- assemble-opencode-message-text
   "Read all text parts for an OpenCode message and concatenate them.
    Parts are stored under <opencode-storage>/part/<message-id>/."
