@@ -23,6 +23,44 @@ _escape_str() {
   printf '%s' "$1" | sed 's/"/\\"/g'
 }
 
+# --- Recipe REST API helpers ---------------------------------------------
+# The recipe commands curl the running backend (no new JVM). Backend
+# discovery: port from config.edn (or $VC_BACKEND_PORT, or 8080), API key
+# from ~/.untethered/api-key, host always localhost.
+
+_read_backend_port() {
+  local config="$VC_BACKEND_DIR/resources/config.edn"
+  local port=""
+  if [[ -f "$config" ]]; then
+    port=$(grep -o ':port[[:space:]]*[0-9]*' "$config" | head -1 | grep -o '[0-9]*')
+  fi
+  echo "${port:-${VC_BACKEND_PORT:-8080}}"
+}
+
+_read_api_key() {
+  cat "${VC_API_KEY_FILE:-$HOME/.untethered/api-key}"
+}
+
+_recipe_base_url() {
+  echo "http://localhost:$(_read_backend_port)/api/recipes"
+}
+
+# Build the JSON request body for POST /api/recipes/start. python3's
+# json.dumps handles escaping of arbitrary context text safely. Empty
+# string args are omitted so the backend applies its own defaults.
+# Args: recipe_id working_directory session_id provider context
+_recipe_start_body() {
+  python3 -c '
+import json, sys
+d = {"recipe_id": sys.argv[1]}
+if sys.argv[2]: d["working_directory"] = sys.argv[2]
+if sys.argv[3]: d["session_id"] = sys.argv[3]
+if sys.argv[4]: d["provider"] = sys.argv[4]
+if sys.argv[5]: d["context"] = sys.argv[5]
+print(json.dumps(d))
+' "$1" "$2" "$3" "$4" "$5"
+}
+
 usage() {
   cat >&2 <<'EOF'
 Usage: vc-agent <command> [args]
@@ -37,6 +75,27 @@ Commands:
   capture <name> [lines]
   session-id <name>
   attach <name>
+  recipe <command> [args]   (start | list | status; run 'recipe' for details)
+EOF
+  exit 1
+}
+
+recipe_usage() {
+  cat >&2 <<'EOF'
+Usage: vc-agent recipe <command> [args]
+
+Commands:
+  start <recipe-id> [-d dir] [--session-id UUID] [--provider P] [--context TEXT] [--context-file PATH]
+  list
+  status <session-id>
+
+Examples:
+  vc-agent recipe start implement-and-review-all -d /path/to/project
+  vc-agent recipe start document-design -d /path --context "WebSocket rate limiter"
+  vc-agent recipe start document-design -d /path --context-file /tmp/brief.md
+  vc-agent recipe start break-down-tasks --session-id <uuid>
+  vc-agent recipe status <session-id>
+  vc-agent recipe list
 EOF
   exit 1
 }
@@ -141,6 +200,62 @@ cmd_attach() {
   fi
 }
 
+cmd_recipe_start() {
+  local recipe_id="${1:?'recipe_id required'}"; shift
+  local workdir="" session_id="" provider="" context=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -d)             workdir="$2"; shift 2 ;;
+      --session-id)   session_id="$2"; shift 2 ;;
+      --provider)     provider="$2"; shift 2 ;;
+      --context)      context="$2"; shift 2 ;;
+      --context-file) context="$(cat "$2")"; shift 2 ;;
+      *)              shift ;;
+    esac
+  done
+
+  # Default the working directory to $PWD only when starting a NEW session
+  # (no --session-id). When resuming an existing session, leave it blank so
+  # the backend falls back to the session's stored workdir rather than
+  # whatever directory the agent happens to run this command from. An
+  # explicit -d always wins.
+  if [[ -z "$workdir" && -z "$session_id" ]]; then
+    workdir="$(pwd)"
+  fi
+
+  local body
+  body=$(_recipe_start_body "$recipe_id" "$workdir" "$session_id" "$provider" "$context")
+
+  curl -s -X POST "$(_recipe_base_url)/start" \
+    -H "Authorization: Bearer $(_read_api_key)" \
+    -H "Content-Type: application/json" \
+    -d "$body"
+}
+
+cmd_recipe_list() {
+  curl -s "$(_recipe_base_url)" \
+    -H "Authorization: Bearer $(_read_api_key)"
+}
+
+cmd_recipe_status() {
+  local session_id="${1:?'session_id required'}"
+  curl -s "$(_recipe_base_url)/status/$session_id" \
+    -H "Authorization: Bearer $(_read_api_key)"
+}
+
+cmd_recipe() {
+  local sub="${1:-}"
+  [[ -z "$sub" ]] && recipe_usage
+  shift
+  case "$sub" in
+    start)          cmd_recipe_start "$@" ;;
+    list)           cmd_recipe_list ;;
+    status)         cmd_recipe_status "$@" ;;
+    help|--help|-h) recipe_usage ;;
+    *) echo "Unknown recipe command: $sub" >&2; recipe_usage ;;
+  esac
+}
+
 main() {
   local cmd="${1:-}"
   [[ -z "$cmd" ]] && usage
@@ -155,9 +270,13 @@ main() {
     capture)    cmd_capture "$@" ;;
     session-id) cmd_session_id "$@" ;;
     attach)     cmd_attach "$@" ;;
+    recipe)     cmd_recipe "$@" ;;
     help|--help|-h) usage ;;
     *) echo "Unknown command: $cmd" >&2; usage ;;
   esac
 }
 
-main "$@"
+# Run main only when executed directly, not when sourced (e.g. by tests).
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  main "$@"
+fi
