@@ -10,16 +10,18 @@ struct SessionLookupView: View {
     @ObservedObject var client: VoiceCodeClient
     @ObservedObject var voiceOutput: VoiceOutputManager
     @ObservedObject var settings: AppSettings
+    var sharedVoiceInput: VoiceInputManager?
 
     @FetchRequest private var sessions: FetchedResults<CDBackendSession>
-    
+
     @State private var showingCopyConfirmation = false
 
-    init(sessionId: UUID, client: VoiceCodeClient, voiceOutput: VoiceOutputManager, settings: AppSettings) {
+    init(sessionId: UUID, client: VoiceCodeClient, voiceOutput: VoiceOutputManager, settings: AppSettings, sharedVoiceInput: VoiceInputManager? = nil) {
         self.sessionId = sessionId
         self.client = client
         self.voiceOutput = voiceOutput
         self.settings = settings
+        self.sharedVoiceInput = sharedVoiceInput
 
         // Fetch session by ID
         // Note: animation: nil prevents SwiftUI from triggering animated transitions
@@ -34,7 +36,7 @@ struct SessionLookupView: View {
 
     var body: some View {
         if let session = sessions.first {
-            ConversationView(session: session, client: client, voiceOutput: voiceOutput, voiceInput: VoiceInputManager(voiceOutputManager: voiceOutput), settings: settings)
+            ConversationView(session: session, client: client, voiceOutput: voiceOutput, voiceInput: sharedVoiceInput ?? VoiceInputManager(voiceOutputManager: voiceOutput), settings: settings)
         } else {
             // Session not found (possibly deleted)
             VStack(spacing: 16) {

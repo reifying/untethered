@@ -111,7 +111,11 @@
     (or (:uuid (resolve-uuid-from-tmux-env id))
         ;; Fall back: search session-index for most recent session with matching workdir
         (when workdir
+          ;; Exclude :ghost-tagged sessions so an in-flight (or lingering)
+          ;; ghost fork in this workdir never resolves as the resume target,
+          ;; mirroring repl/get-all-sessions.
           (->> (vals @repl/session-index)
+               (remove :ghost)
                (filter #(= workdir (:working-directory %)))
                (sort-by :last-modified-ms >)
                first

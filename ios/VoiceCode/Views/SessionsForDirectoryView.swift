@@ -3,9 +3,6 @@
 
 import SwiftUI
 import CoreData
-import OSLog
-
-private let logger = Logger(subsystem: "com.travisbrown.VoiceCode", category: "SessionsForDirectory")
 
 struct SessionsForDirectoryView: View {
     let workingDirectory: String
@@ -89,7 +86,7 @@ struct SessionsForDirectoryView: View {
                     }
                 }
                 .refreshable {
-                    logger.info("Pull-to-refresh triggered - requesting session list")
+                    LogManager.shared.log("Pull-to-refresh triggered - requesting session list", category: "SessionsForDirectory")
                     await client.requestSessionList()
                 }
             }
@@ -191,7 +188,7 @@ struct SessionsForDirectoryView: View {
                     }
 
                     Button(action: {
-                        logger.info("🔄 Refresh button tapped - requesting session list from backend")
+                        LogManager.shared.log("🔄 Refresh button tapped - requesting session list from backend", category: "SessionsForDirectory")
                         Task {
                             await client.requestSessionList()
                         }
@@ -263,7 +260,7 @@ struct SessionsForDirectoryView: View {
                     }
 
                     Button(action: {
-                        logger.info("🔄 Refresh button tapped - requesting session list from backend")
+                        LogManager.shared.log("🔄 Refresh button tapped - requesting session list from backend", category: "SessionsForDirectory")
                         Task {
                             await client.requestSessionList()
                         }
@@ -360,22 +357,22 @@ struct SessionsForDirectoryView: View {
         // Save to CoreData
         do {
             try viewContext.save()
-            logger.info("📝 Created new session: \(sessionId.uuidString.lowercased()) in \(workingDirectory)")
+            LogManager.shared.log("📝 Created new session: \(sessionId.uuidString.lowercased()) in \(workingDirectory)", category: "SessionsForDirectory")
 
             // Auto-add to priority queue if enabled
             if settings.priorityQueueEnabled {
                 addToPriorityQueue(session)
-                logger.info("📌 Auto-added new session to priority queue: \(sessionId.uuidString.lowercased())")
+                LogManager.shared.log("📌 Auto-added new session to priority queue: \(sessionId.uuidString.lowercased())", category: "SessionsForDirectory")
             }
 
             // Navigate to the new session
             navigationPath.append(sessionId)
-            logger.info("🔄 Navigating to new session: \(sessionId.uuidString.lowercased())")
+            LogManager.shared.log("🔄 Navigating to new session: \(sessionId.uuidString.lowercased())", category: "SessionsForDirectory")
 
             // Note: ConversationView will handle subscription when it appears (lazy loading)
 
         } catch {
-            logger.error("❌ Failed to create session: \(error)")
+            LogManager.shared.log("❌ Failed to create session: \(error)", category: "SessionsForDirectory")
         }
     }
 
@@ -398,7 +395,7 @@ struct SessionsForDirectoryView: View {
             }
         }
 
-        logger.info("📋 Copied directory path to clipboard: \(self.workingDirectory)")
+        LogManager.shared.log("📋 Copied directory path to clipboard: \(self.workingDirectory)", category: "SessionsForDirectory")
     }
 
     private func copySessionID(_ session: CDBackendSession) {
@@ -459,7 +456,7 @@ struct SessionsForDirectoryView: View {
             client.sendMessage(message)
 
         } catch {
-            logger.error("Failed to delete session: \(error)")
+            LogManager.shared.log("Failed to delete session: \(error)", category: "SessionsForDirectory")
         }
     }
 }
