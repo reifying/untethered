@@ -9,6 +9,7 @@
             [voice-code.memory :as memory]
             [cheshire.core :as json]
             [clojure.java.io :as io]
+            [clojure.edn :as edn]
             [clojure.string :as str])
   (:import [java.time Instant]))
 
@@ -229,6 +230,127 @@
           (is (= 3 (count @execution-log)))
           ;; render_ui should be in the results (verify it was called)
           (is (some #(= "render_ui" (:name %)) @execution-log)))))))
+
+;; ---------------------------------------------------------------------------
+;; run_recipe tool handler
+;; ---------------------------------------------------------------------------
+
+(defn- run-recipe-tool
+  "Invoke the registered run_recipe handler via execute-tool and parse the
+   EDN result string into a map."
+  [input]
+  (edn/read-string (supervisor/execute-tool "run_recipe" input identity)))
+
+(defn- reset-recipe-state! []
+  (reset! supervisor/external-tool-handlers {})
+  (server/register-supervisor-tool-handlers!)
+  (reset! server/session-orchestration-state {})
+  (reset! server/completed-recipes {}))
+
+(deftest test-run-recipe-valid-fresh
+  (testing "valid :fresh recipe with working_directory returns started"
+    (reset-recipe-state!)
+    (let [captured (atom nil)]
+      (with-redefs [server/execute-recipe-step (fn [& args] (reset! captured args))]
+        ;; snake_case keys, as delivered by the Anthropic tool-use parse path
+        (let [result (run-recipe-tool {:recipe_id "implement-and-review-all"
+                                       :working_directory "/tmp/proj"})]
+          (Thread/sleep 50)
+          (is (= "started" (:status result)))
+          (is (= "implement-and-review-all" (:recipe-id result)))
+          (is (string? (:session-id result)))
+          ;; orchestration state was registered under the generated session-id
+          (is (contains? @server/session-orchestration-state (:session-id result)))
+          ;; execute-recipe-step was dispatched with the resolved working-dir
+          (is (= "/tmp/proj" (nth @captured 2))))))))
+
+(deftest test-run-recipe-accepts-kebab-input
+  (testing "kebab-case input keys are also accepted (normalization no-op)"
+    (reset-recipe-state!)
+    (with-redefs [server/execute-recipe-step (fn [& _args] nil)]
+      (let [result (run-recipe-tool {:recipe-id "implement-and-review-all"
+                                     :working-directory "/tmp/proj"})]
+        (Thread/sleep 50)
+        (is (= "started" (:status result)))))))
+
+(deftest test-run-recipe-unknown
+  (testing "unknown recipe returns error"
+    (reset-recipe-state!)
+    (let [result (run-recipe-tool {:recipe_id "no-such-recipe"})]
+      (is (= "error" (:status result)))
+      (is (str/includes? (:message result) "Unknown recipe"))
+      (is (str/includes? (:message result) "no-such-recipe")))))
+
+(deftest test-run-recipe-missing-recipe-id
+  (testing "missing recipe_id returns error"
+    (reset-recipe-state!)
+    (let [result (run-recipe-tool {})]
+      (is (= "error" (:status result)))
+      (is (str/includes? (:message result) "recipe_id required")))))
+
+(deftest test-run-recipe-missing-working-directory
+  (testing ":fresh recipe without working_directory returns error"
+    (reset-recipe-state!)
+    (let [result (run-recipe-tool {:recipe_id "implement-and-review-all"})]
+      (is (= "error" (:status result)))
+      (is (str/includes? (:message result) "working_directory required")))))
+
+(deftest test-run-recipe-context-prepended
+  (testing "context is prepended to the first step prompt"
+    (reset-recipe-state!)
+    (let [captured (atom nil)]
+      (with-redefs [server/execute-recipe-step (fn [& args] (reset! captured args))]
+        (let [result (run-recipe-tool {:recipe_id "implement-and-review-all"
+                                       :working_directory "/tmp/proj"
+                                       :context "Build a WebSocket rate limiter"})]
+          (Thread/sleep 50)
+          (is (= "started" (:status result)))
+          (let [first-prompt (nth @captured 5)]
+            (is (string? first-prompt))
+            (is (str/starts-with? first-prompt "## Context"))
+            (is (str/includes? first-prompt "Build a WebSocket rate limiter"))
+            (is (str/includes? first-prompt "---"))))))))
+
+(deftest test-run-recipe-no-context-passes-nil-prompt
+  (testing "without context, first-prompt override is nil (uses default step prompt)"
+    (reset-recipe-state!)
+    (let [captured (atom nil)]
+      (with-redefs [server/execute-recipe-step (fn [& args] (reset! captured args))]
+        (run-recipe-tool {:recipe_id "implement-and-review-all"
+                          :working_directory "/tmp/proj"})
+        (Thread/sleep 50)
+        (is (nil? (nth @captured 5)))))))
+
+(deftest test-run-recipe-conflict
+  (testing "recipe already running on the session returns error"
+    (reset-recipe-state!)
+    ;; :accumulating recipe resumes an existing session that is already running
+    (with-redefs [server/session-exists? (fn [_] true)
+                  voice-code.replication/get-session-metadata
+                  (fn [_] {:working-directory "/tmp/existing" :provider :claude})]
+      (swap! server/session-orchestration-state assoc "existing-session"
+             {:recipe-id :document-design :current-step :design :step-count 2})
+      (let [result (run-recipe-tool {:recipe_id "document-design"
+                                     :session_id "existing-session"})]
+        (is (= "error" (:status result)))
+        (is (str/includes? (:message result) "already running"))
+        (is (= "existing-session" (:session-id result)))))))
+
+(deftest test-run-recipe-accumulating-resume
+  (testing ":accumulating recipe resumes existing session, no working_directory needed"
+    (reset-recipe-state!)
+    (let [captured (atom nil)]
+      (with-redefs [server/execute-recipe-step (fn [& args] (reset! captured args))
+                    server/session-exists? (fn [_] true)
+                    voice-code.replication/get-session-metadata
+                    (fn [_] {:working-directory "/tmp/from-metadata" :provider :claude})]
+        (let [result (run-recipe-tool {:recipe_id "document-design"
+                                       :session_id "design-session-uuid"})]
+          (Thread/sleep 50)
+          (is (= "started" (:status result)))
+          (is (= "design-session-uuid" (:session-id result)))
+          ;; working-dir resolved from session metadata
+          (is (= "/tmp/from-metadata" (nth @captured 2))))))))
 
 (deftest test-supervisor-unauthenticated-rejected
   (testing "supervisor_message before auth is rejected"

@@ -3377,14 +3377,73 @@
   (supervisor/register-tool-handler!
    "run_recipe"
    (fn [input]
-     (let [recipe-id (keyword (:recipe-id input))
-           session-id (:session-id input)]
-       (if-not recipe-id
+     ;; Supervisor tool inputs arrive as snake_case keywords: Anthropic tool-use
+     ;; inputs are parsed with plain keywordization (no snake->kebab), unlike the
+     ;; REST and WebSocket message paths whose JSON is converted to kebab keys.
+     ;; Normalize here so the body can read kebab keys like the WebSocket
+     ;; start_recipe handler. Session-mode resolution and context injection
+     ;; follow the agent recipe invocation design
+     ;; (notes/agent-recipe-invocation.md). See tmux-untethered-q7r.
+     (let [input (into {} (map (fn [[k v]]
+                                 [(keyword (str/replace (name k) "_" "-")) v])
+                               input))
+           recipe-id-str (:recipe-id input)]
+       (if (str/blank? (str recipe-id-str))
          (pr-str {:status "error" :message "recipe_id required"})
-         (pr-str {:status "error"
-                  :message "run_recipe via supervisor not yet implemented"
-                  :recipe-id recipe-id
-                  :session-id session-id})))))
+         (let [recipe-id (keyword recipe-id-str)
+               recipe (recipes/get-recipe recipe-id)]
+           (if (nil? recipe)
+             (pr-str {:status "error" :message (str "Unknown recipe: " recipe-id-str)})
+             (let [session-mode (:session-mode recipe)
+                   caller-session-id (:session-id input)
+                   working-dir (:working-directory input)
+                   context (:context input)
+                   [session-id is-new-session?]
+                   (if (= :fresh session-mode)
+                     [(str (java.util.UUID/randomUUID)) true]
+                     (if (and caller-session-id (session-exists? caller-session-id))
+                       [caller-session-id false]
+                       [(or caller-session-id (str (java.util.UUID/randomUUID))) true]))
+                   ;; Existing-session metadata, fetched once and reused below for
+                   ;; provider inheritance and the working-dir fallback.
+                   session-metadata (when-not is-new-session?
+                                      (repl/get-session-metadata session-id))
+                   provider (or (when-let [p (:provider input)] (keyword p))
+                                (:provider session-metadata)
+                                :claude)]
+               (cond
+                 (and is-new-session? (str/blank? working-dir))
+                 (pr-str {:status "error"
+                          :message "working_directory required for new session"})
+
+                 (get-session-recipe-state session-id)
+                 (pr-str {:status "error"
+                          :message (str "Recipe already running on session " session-id)
+                          :session-id session-id})
+
+                 :else
+                 (if-let [orch-state (start-recipe-for-session
+                                      session-id recipe-id is-new-session?
+                                      :provider provider)]
+                   (let [effective-workdir (or working-dir
+                                               (:working-directory session-metadata))
+                         base-prompt (get-next-step-prompt session-id orch-state recipe)
+                         first-prompt (when (and context (not (str/blank? context)))
+                                        (str "## Context\n\n" context "\n\n---\n\n" base-prompt))]
+                     (log/info "Recipe started via supervisor run_recipe"
+                               {:recipe-id recipe-id-str
+                                :session-id session-id
+                                :session-mode (name session-mode)
+                                :is-new-session is-new-session?
+                                :has-context (boolean (and context (not (str/blank? context))))})
+                     (async/go
+                       (execute-recipe-step nil session-id effective-workdir
+                                            orch-state recipe first-prompt))
+                     (pr-str {:status "started"
+                              :session-id session-id
+                              :recipe-id (name recipe-id)}))
+                   (pr-str {:status "error"
+                            :message (str "Failed to start recipe: " (name recipe-id))}))))))))))
 
   (log/info "Supervisor tool handlers registered"))
 

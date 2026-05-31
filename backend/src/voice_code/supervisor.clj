@@ -89,7 +89,8 @@
     :input_schema {:type "object"
                    :properties {:recipe_id {:type "string"}
                                 :session_id {:type "string" :description "Target session, or nil for new session"}
-                                :working_directory {:type "string"}}
+                                :working_directory {:type "string"}
+                                :context {:type "string" :description "Context prepended to the first step prompt"}}
                    :required ["recipe_id"]}}
 
    {:name "render_ui"
