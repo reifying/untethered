@@ -5,6 +5,7 @@
             [voice-code.replication :as repl]
             [voice-code.recipes :as recipes]
             [voice-code.tmux :as tmux]
+            [voice-code.ghost :as ghost]
             [cheshire.core :as json]
             [clojure.java.io :as io]
             [voice-code.commands :as commands]))
@@ -1065,6 +1066,132 @@
         (server/handle-message :test-ch
                                "{\"type\":\"prompt\",\"text\":\"continue\",\"resume_session_id\":\"resume-456\",\"provider\":\"invalid\"}")
         (is (= "resume-456" (:uuid (await-dispatch dispatched))))))
+    (reset! server/api-key nil)))
+
+;; --- Ghost prompt handler wiring (tmux-untethered-5hw.9) ----------------------
+;; The handler also sends an `ack` and an `available_commands` frame before the
+;; dispatch future, so the send! redefs below deliver the `terminal` promise only
+;; for the terminal ghost_prompt/error frame, and we await it with await-dispatch.
+
+(deftest test-prompt-ghost-resume-routes-to-ghost-prompt!
+  (testing "ghost:true + resume_session_id routes to ghost/ghost-prompt! and emits ghost_prompt on success"
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :authenticated true}})
+    (let [ghost-args (promise)
+          terminal   (promise)]
+      (with-redefs [voice-code.ghost/ghost-prompt!
+                    (fn [source-id task]
+                      (deliver ghost-args {:source-id source-id :task task})
+                      {:ok true :text "Add a /healthz endpoint that returns 200."})
+                    tmux/deliver! (fn [& _] (deliver terminal :unexpected-deliver-call))
+                    tmux/start-window! (fn [& _] (deliver terminal :unexpected-start-window-call))
+                    voice-code.replication/get-session-metadata
+                    (fn [_] {:provider :claude :working-directory "/tmp"})
+                    org.httpkit.server/send!
+                    (fn [_ msg]
+                      (let [m (json/parse-string msg true)]
+                        (when (contains? #{"ghost_prompt" "error"} (:type m))
+                          (deliver terminal m))))]
+        (server/handle-message
+         :test-ch
+         "{\"type\":\"prompt\",\"text\":\"add a /healthz endpoint\",\"resume_session_id\":\"S-1\",\"ghost\":true}")
+        (let [args (await-dispatch ghost-args)
+              msg  (await-dispatch terminal)]
+          (is (map? args) "ghost-prompt! should be invoked")
+          (is (= "S-1" (:source-id args)) "source is the resume_session_id")
+          (is (= "add a /healthz endpoint" (:task args))
+              "ghost-prompt! receives the raw task text (recipe injection ignored for ghost)")
+          (is (map? msg) "a ghost_prompt frame should be emitted")
+          (is (= "ghost_prompt" (:type msg)))
+          (is (= "S-1" (:session_id msg)) "ghost_prompt carries the original session id")
+          (is (= "Add a /healthz endpoint that returns 200." (:text msg))
+              "ghost_prompt carries the generated prompt P"))))
+    (reset! server/api-key nil)))
+
+(deftest test-prompt-ghost-without-resume-rejected
+  (testing "ghost:true with new_session_id is rejected with a clear error and never dispatches"
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :authenticated true}})
+    (let [sent (atom [])
+          dispatched (atom nil)]
+      (with-redefs [voice-code.ghost/ghost-prompt! (fn [& _] (reset! dispatched :ghost) {:ok true :text "x"})
+                    tmux/start-window! (fn [& _] (reset! dispatched :start-window))
+                    tmux/deliver! (fn [& _] (reset! dispatched :deliver))
+                    org.httpkit.server/send! (fn [_ msg] (swap! sent conj (json/parse-string msg true)))]
+        (server/handle-message
+         :test-ch
+         "{\"type\":\"prompt\",\"text\":\"do X\",\"new_session_id\":\"new-1\",\"ghost\":true}")
+        (is (nil? @dispatched) "no ghost/new/resume dispatch for an invalid ghost request")
+        (is (= 1 (count @sent)) "exactly one error frame, no ack")
+        (let [response (first @sent)]
+          (is (= "error" (:type response)))
+          (is (= "ghost prompts require resume_session_id" (:message response))))))
+    (reset! server/api-key nil))
+
+  (testing "ghost:true with neither new_session_id nor resume_session_id is rejected"
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :authenticated true}})
+    (let [sent (atom [])
+          dispatched (atom nil)]
+      (with-redefs [voice-code.ghost/ghost-prompt! (fn [& _] (reset! dispatched :ghost) {:ok true :text "x"})
+                    tmux/start-window! (fn [& _] (reset! dispatched :start-window))
+                    tmux/deliver! (fn [& _] (reset! dispatched :deliver))
+                    org.httpkit.server/send! (fn [_ msg] (swap! sent conj (json/parse-string msg true)))]
+        (server/handle-message
+         :test-ch
+         "{\"type\":\"prompt\",\"text\":\"do X\",\"ghost\":true}")
+        (is (nil? @dispatched))
+        (is (= 1 (count @sent)))
+        (is (= "error" (:type (first @sent))))
+        (is (= "ghost prompts require resume_session_id" (:message (first @sent))))))
+    (reset! server/api-key nil)))
+
+(deftest test-prompt-ghost-failure-surfaced-as-error
+  (testing "an :unsupported-provider ghost failure surfaces the provider-gate error and delivers nothing to S"
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :authenticated true}})
+    (let [terminal (promise)]
+      (with-redefs [voice-code.ghost/ghost-prompt!
+                    (fn [_ _] {:ok false :reason :unsupported-provider})
+                    voice-code.replication/get-session-metadata
+                    (fn [_] {:provider :claude :working-directory "/tmp"})
+                    tmux/deliver! (fn [& _] (deliver terminal :unexpected-deliver-call))
+                    org.httpkit.server/send!
+                    (fn [_ msg]
+                      (let [m (json/parse-string msg true)]
+                        (when (contains? #{"ghost_prompt" "error"} (:type m))
+                          (deliver terminal m))))]
+        (server/handle-message
+         :test-ch
+         "{\"type\":\"prompt\",\"text\":\"do X\",\"resume_session_id\":\"S-2\",\"ghost\":true}")
+        (let [msg (await-dispatch terminal)]
+          (is (map? msg))
+          (is (= "error" (:type msg)))
+          (is (= "S-2" (:session_id msg)))
+          (is (= "ghost prompts are only supported for the claude provider" (:message msg))))))
+    (reset! server/api-key nil))
+
+  (testing "a generic fork failure (:timeout) surfaces a fork-generation error"
+    (reset! server/api-key test-api-key)
+    (reset! server/connected-clients {:test-ch {:deleted-sessions #{} :authenticated true}})
+    (let [terminal (promise)]
+      (with-redefs [voice-code.ghost/ghost-prompt!
+                    (fn [_ _] {:ok false :reason :timeout})
+                    voice-code.replication/get-session-metadata
+                    (fn [_] {:provider :claude :working-directory "/tmp"})
+                    tmux/deliver! (fn [& _] (deliver terminal :unexpected-deliver-call))
+                    org.httpkit.server/send!
+                    (fn [_ msg]
+                      (let [m (json/parse-string msg true)]
+                        (when (contains? #{"ghost_prompt" "error"} (:type m))
+                          (deliver terminal m))))]
+        (server/handle-message
+         :test-ch
+         "{\"type\":\"prompt\",\"text\":\"do X\",\"resume_session_id\":\"S-3\",\"ghost\":true}")
+        (let [msg (await-dispatch terminal)]
+          (is (= "error" (:type msg)))
+          (is (= "S-3" (:session_id msg)))
+          (is (= "Ghost prompt generation failed: timeout" (:message msg))))))
     (reset! server/api-key nil)))
 
 (deftest test-prompt-rejected-during-compaction

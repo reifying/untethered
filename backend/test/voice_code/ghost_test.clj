@@ -379,3 +379,38 @@
           (is (= {:ok false :reason :error} r))
           (is (= :NOT-CALLED @delivered))
           (is (= [[:counter :ghost.failed {:session-id "S-err" :reason :error}]] @metrics)))))))
+
+(deftest ghost-prompt!-delivery-skipped-when-source-compacting-test
+  (testing "fork ok but source compaction-locked at delivery -> :compacting, NOTHING delivered, failed metric"
+    ;; The long fork runs unlocked; if a compact_session for the source started
+    ;; while it ran, delivering P would respawn the provider concurrently with
+    ;; `claude --compact` rewriting S's JSONL (tmux-untethered-22g). ghost-prompt!
+    ;; must re-check compaction under the lock and skip the write.
+    (let [delivered (atom :NOT-CALLED)
+          metrics (atom [])]
+      (with-redefs [repl/get-session-metadata
+                    (constantly {:provider :claude :working-directory "/repo"})
+                    ghost/one-shot-fork! (fn [& _] {:ok true :text "P" :nonce "gp-c"})
+                    repl/is-compaction-locked? (fn [sid] (= sid "S-compacting"))
+                    tmux/deliver! (fn [sid txt] (reset! delivered [sid txt]))
+                    repl/emit-metric! (fn [t n d] (swap! metrics conj [t n d]))]
+        (let [r (ghost/ghost-prompt! "S-compacting" "do X")]
+          (is (= {:ok false :reason :compacting} r))
+          (is (= :NOT-CALLED @delivered)
+              "no delivery into a session whose JSONL is being compacted")
+          (is (= [[:counter :ghost.failed {:session-id "S-compacting" :reason :compacting}]] @metrics)
+              "skipped delivery is counted as a failure with the :compacting reason")))))
+
+  (testing "fork ok and source NOT compacting -> P delivered, success metric (guard is transparent)"
+    (let [delivered (atom nil)
+          metrics (atom [])]
+      (with-redefs [repl/get-session-metadata
+                    (constantly {:provider :claude :working-directory "/repo"})
+                    ghost/one-shot-fork! (fn [& _] {:ok true :text "P-ok" :nonce "gp-d"})
+                    repl/is-compaction-locked? (constantly false)
+                    tmux/deliver! (fn [sid txt] (reset! delivered [sid txt]))
+                    repl/emit-metric! (fn [t n d] (swap! metrics conj [t n d]))]
+        (let [r (ghost/ghost-prompt! "S-live" "do X")]
+          (is (= {:ok true :text "P-ok"} r))
+          (is (= ["S-live" "P-ok"] @delivered) "P delivered when the source is not compacting")
+          (is (= [[:counter :ghost.success {:session-id "S-live"}]] @metrics)))))))

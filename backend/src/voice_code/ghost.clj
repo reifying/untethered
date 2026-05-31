@@ -150,11 +150,20 @@
    fork ONCE on failure. On ANY failure NOTHING is delivered to the source
    session — no garbage prompt reaches the user's real session.
 
+   Lock discipline: the fork itself touches only the throwaway fork transcript,
+   never `source-id`, and can take tens of seconds, so it runs WITHOUT the global
+   `repl/compaction-dispatch-lock` (callers must NOT hold it across this call).
+   Only the final delivery writes to the source session's JSONL, so that one step
+   is taken under the lock with a fresh compaction re-check: if a `claude
+   --compact` of the source started while the fork was running, the delivery is
+   skipped (reason :compacting) rather than respawning the provider concurrently
+   with the rewrite (tmux-untethered-22g).
+
    Emits `:ghost.success` / `:ghost.failed` counters for observability.
 
    Returns {:ok true :text P} on success, or {:ok false :reason kw} where reason
-   is :unknown-session, :unsupported-provider, or the fork failure reason
-   (:timeout / :error)."
+   is :unknown-session, :unsupported-provider, :compacting, or the fork failure
+   reason (:timeout / :error)."
   [source-id task]
   (let [meta (repl/get-session-metadata source-id)
         provider (:provider meta)
@@ -170,9 +179,20 @@
       (loop [attempts 2]
         (let [{:keys [ok text reason]} (one-shot-fork! source-id task :workdir workdir)]
           (cond
-            ok (do (tmux/deliver! source-id text)
-                   (repl/emit-metric! :counter :ghost.success {:session-id source-id})
-                   {:ok true :text text})
+            ok
+            ;; The fork ran unlocked; take the dispatch lock only for the write
+            ;; into the source session, re-checking compaction inside it so a
+            ;; compact that started during the fork cannot race the respawn.
+            (locking repl/compaction-dispatch-lock
+              (if (repl/is-compaction-locked? source-id)
+                (do (log/warn "Ghost delivery skipped: source compaction in progress"
+                              {:source-id source-id})
+                    (repl/emit-metric! :counter :ghost.failed
+                                       {:session-id source-id :reason :compacting})
+                    {:ok false :reason :compacting})
+                (do (tmux/deliver! source-id text)
+                    (repl/emit-metric! :counter :ghost.success {:session-id source-id})
+                    {:ok true :text text})))
             (> attempts 1) (recur (dec attempts))
             :else (do (repl/emit-metric! :counter :ghost.failed
                                          {:session-id source-id :reason reason})
