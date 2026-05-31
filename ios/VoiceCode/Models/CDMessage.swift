@@ -150,19 +150,33 @@ extension CDMessage {
         request.fetchLimit = 1
         return request
     }
+
+    /// Find the most recent optimistic (status == "sending") user message in a
+    /// session. Used to reconcile a ghost send's task-X bubble against the
+    /// effective prompt P delivered out-of-band via the `ghost_prompt` event.
+    /// `status` is the raw stored attribute backing `messageStatus`.
+    static func fetchLatestSendingUserMessage(sessionId: UUID) -> NSFetchRequest<CDMessage> {
+        let request = fetchRequest()
+        request.predicate = NSPredicate(format: "sessionId == %@ AND role == %@ AND status == %@",
+                                       sessionId as CVarArg, "user", MessageStatus.sending.rawValue)
+        request.sortDescriptors = [NSSortDescriptor(keyPath: \CDMessage.timestamp, ascending: false)]
+        request.fetchLimit = 1
+        return request
+    }
 }
 
 extension CDMessage: Identifiable {}
 
 // MARK: - Message Pruning
 extension CDMessage {
-    /// Maximum number of messages to retain per session in iOS CoreData
-    /// Backend retains full history in .jsonl files; iOS is just a "window" into recent messages
-    static let maxMessagesPerSession = 50
+    /// Maximum number of messages to retain per session in iOS CoreData.
+    /// Backend retains full history in .jsonl files; iOS is just a "window" into recent messages.
+    /// Kept small so visiting a long-running session shows only recent context, not hours of history.
+    static let maxMessagesPerSession = 20
 
-    /// Threshold for triggering mid-conversation pruning
-    /// When message count exceeds maxMessagesPerSession + pruneThreshold, prune back to maxMessagesPerSession
-    static let pruneThreshold = 10
+    /// Threshold for triggering mid-conversation pruning.
+    /// When message count exceeds maxMessagesPerSession + pruneThreshold, prune back to maxMessagesPerSession.
+    static let pruneThreshold = 5
 
     /// Delete oldest messages for a session, keeping only the newest `keepCount` messages
     /// - Parameters:

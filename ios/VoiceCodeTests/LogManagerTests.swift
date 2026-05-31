@@ -117,4 +117,41 @@ final class LogManagerTests: XCTestCase {
         XCTAssertTrue(logs.contains("Sending message type: upload_file"), "Should log message type")
         XCTAssertTrue(logs.contains("File uploaded successfully: test.txt"), "Should log upload success")
     }
+
+    func testBufferHoldsUpTo5000Lines() {
+        // Log more than the 5000-line buffer capacity
+        for i in 0..<5500 {
+            LogManager.shared.log("Buffer #\(i)#", category: "Test")
+        }
+
+        // getAllLogs uses queue.sync on the same serial queue as the async log
+        // calls above, so all writes are guaranteed to have drained by now.
+        let logs = LogManager.shared.getAllLogs()
+        let lines = logs.components(separatedBy: "\n")
+
+        // Buffer is capped at 5000 lines
+        XCTAssertEqual(lines.count, 5000, "Buffer should retain exactly 5000 lines")
+
+        // Oldest entries are dropped, newest retained (kept range: 500..<5500)
+        XCTAssertTrue(logs.contains("Buffer #5499#"), "Should retain the newest line")
+        XCTAssertTrue(logs.contains("Buffer #500#"), "Should retain the oldest surviving line")
+        XCTAssertFalse(logs.contains("Buffer #499#"), "Should drop lines beyond the 5000-line window")
+    }
+
+    func testRecentLogsDefaultsTo100KB() {
+        // Each line is well over 100 bytes; log enough to exceed 100KB total
+        let padding = String(repeating: "x", count: 200)
+        for i in 0..<2000 {
+            LogManager.shared.log("Pad \(i) \(padding)", category: "Test")
+        }
+
+        // Default call (no maxBytes argument) should cap at the new 100KB limit
+        let recent = LogManager.shared.getRecentLogs()
+
+        XCTAssertLessThanOrEqual(recent.utf8.count, 100_000, "Default getRecentLogs should cap at 100KB")
+        // Should return substantially more than the old 15KB default
+        XCTAssertGreaterThan(recent.utf8.count, 15_000, "Default should now exceed the old 15KB limit")
+        // Trimming keeps the newest lines
+        XCTAssertTrue(recent.contains("Pad 1999 "), "Should include the most recent line")
+    }
 }

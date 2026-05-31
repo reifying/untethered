@@ -146,7 +146,7 @@ struct CommandMenuView: View {
     }
 
     private func executeCommand(commandId: String) {
-        print("📤 [CommandMenuView] Executing command: \(commandId)")
+        LogManager.shared.log("📤 [CommandMenuView] Executing command: \(commandId)", category: "CommandMenu")
         sorter.markCommandUsed(commandId: commandId)
 
         // Execute command asynchronously and navigate to the correct session.
@@ -155,7 +155,7 @@ struct CommandMenuView: View {
         // CommandExecutionView with no session to follow.
         Task {
             guard let commandSessionId = await client.executeCommand(commandId: commandId, workingDirectory: workingDirectory) else {
-                print("⚠️ [CommandMenuView] Command \(commandId) failed to start; skipping navigation")
+                LogManager.shared.log("⚠️ [CommandMenuView] Command \(commandId) failed to start; skipping navigation", category: "CommandMenu")
                 return
             }
             await MainActor.run {

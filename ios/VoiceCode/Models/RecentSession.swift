@@ -19,11 +19,11 @@ struct RecentSession: Identifiable, Equatable {
               let name = json["name"] as? String,
               let workingDirectory = json["working_directory"] as? String,
               let lastModifiedString = json["last_modified"] as? String else {
-            print("❌ RecentSession parse failed - missing fields. Keys: \(json.keys.sorted())")
-            print("   session_id: \(json["session_id"] as? String ?? "MISSING")")
-            print("   name: \(json["name"] as? String ?? "MISSING")")
-            print("   working_directory: \(json["working_directory"] as? String ?? "MISSING")")
-            print("   last_modified: \(json["last_modified"] as? String ?? "MISSING")")
+            LogManager.shared.log("❌ RecentSession parse failed - missing fields. Keys: \(json.keys.sorted())", category: "RecentSession")
+            LogManager.shared.log("   session_id: \(json["session_id"] as? String ?? "MISSING")", category: "RecentSession")
+            LogManager.shared.log("   name: \(json["name"] as? String ?? "MISSING")", category: "RecentSession")
+            LogManager.shared.log("   working_directory: \(json["working_directory"] as? String ?? "MISSING")", category: "RecentSession")
+            LogManager.shared.log("   last_modified: \(json["last_modified"] as? String ?? "MISSING")", category: "RecentSession")
             return nil
         }
 
@@ -31,7 +31,7 @@ struct RecentSession: Identifiable, Equatable {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         guard let lastModified = formatter.date(from: lastModifiedString) else {
-            print("❌ RecentSession parse failed - invalid ISO-8601 date: '\(lastModifiedString)'")
+            LogManager.shared.log("❌ RecentSession parse failed - invalid ISO-8601 date: '\(lastModifiedString)'", category: "RecentSession")
             return nil
         }
 

@@ -164,12 +164,12 @@ struct RecipeMenuView: View {
         let targetSessionId: String
         if useNewSession {
             targetSessionId = UUID().uuidString.lowercased()
-            print("📤 [RecipeMenuView] Starting recipe in NEW session: \(targetSessionId)")
+            LogManager.shared.log("📤 [RecipeMenuView] Starting recipe in NEW session: \(targetSessionId)", category: "RecipeMenu")
         } else {
             targetSessionId = sessionId
         }
 
-        print("📤 [RecipeMenuView] Selected recipe: \(recipeId) for session \(targetSessionId) in \(workingDirectory)")
+        LogManager.shared.log("📤 [RecipeMenuView] Selected recipe: \(recipeId) for session \(targetSessionId) in \(workingDirectory)", category: "RecipeMenu")
         isLoading = true
         errorMessage = nil
 

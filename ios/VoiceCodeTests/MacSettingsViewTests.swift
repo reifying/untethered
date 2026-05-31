@@ -42,21 +42,35 @@ final class MacSettingsViewTests: XCTestCase {
         let settings = AppSettings()
         let voiceOutput = VoiceOutputManager()
         let client = VoiceCodeClient(serverURL: "ws://localhost:8080", setupObservers: false)
+        let voiceInput = VoiceInputManager(voiceOutputManager: voiceOutput)
+        let headsetManager = HeadsetRemoteCommandManager(
+            voiceInput: voiceInput,
+            voiceOutput: voiceOutput,
+            client: client,
+            settings: settings
+        )
 
         struct TestWrapper: View {
             let settings: AppSettings
             let voiceOutput: VoiceOutputManager
             let client: VoiceCodeClient
+            let headsetManager: HeadsetRemoteCommandManager
 
             var body: some View {
                 MacSettingsView()
                     .environmentObject(settings)
                     .environmentObject(voiceOutput)
                     .environmentObject(client)
+                    .environmentObject(headsetManager)
             }
         }
 
-        let wrapper = TestWrapper(settings: settings, voiceOutput: voiceOutput, client: client)
+        let wrapper = TestWrapper(
+            settings: settings,
+            voiceOutput: voiceOutput,
+            client: client,
+            headsetManager: headsetManager
+        )
         XCTAssertNotNil(wrapper)
     }
 
@@ -215,6 +229,85 @@ final class MacSettingsViewTests: XCTestCase {
         XCTAssertEqual(settings.systemPrompt, "Test custom prompt")
 
         settings.systemPrompt = ""
+    }
+
+    func testHeadsetSettingsTabCompiles() {
+        let settings = AppSettings()
+        let voiceOutput = VoiceOutputManager()
+        let client = VoiceCodeClient(serverURL: "ws://localhost:8080", setupObservers: false)
+        let voiceInput = VoiceInputManager(voiceOutputManager: voiceOutput)
+        let headsetManager = HeadsetRemoteCommandManager(
+            voiceInput: voiceInput,
+            voiceOutput: voiceOutput,
+            client: client,
+            settings: settings
+        )
+
+        struct TestWrapper: View {
+            let settings: AppSettings
+            let voiceOutput: VoiceOutputManager
+            let headsetManager: HeadsetRemoteCommandManager
+
+            var body: some View {
+                HeadsetSettingsTab()
+                    .environmentObject(settings)
+                    .environmentObject(voiceOutput)
+                    .environmentObject(headsetManager)
+            }
+        }
+
+        let wrapper = TestWrapper(settings: settings, voiceOutput: voiceOutput, headsetManager: headsetManager)
+        XCTAssertNotNil(wrapper)
+    }
+
+    func testHeadsetTabBindsToHeadsetModeEnabled() {
+        UserDefaults.standard.removeObject(forKey: "headsetModeEnabled")
+        defer { UserDefaults.standard.removeObject(forKey: "headsetModeEnabled") }
+        let settings = AppSettings()
+
+        XCTAssertFalse(settings.headsetModeEnabled)
+        settings.headsetModeEnabled = true
+        XCTAssertTrue(settings.headsetModeEnabled)
+        settings.headsetModeEnabled = false
+        XCTAssertFalse(settings.headsetModeEnabled)
+    }
+
+    func testHeadsetTabBindsToAutoSend() {
+        UserDefaults.standard.removeObject(forKey: "headsetAutoSend")
+        defer { UserDefaults.standard.removeObject(forKey: "headsetAutoSend") }
+        let settings = AppSettings()
+
+        settings.headsetAutoSend = false
+        XCTAssertFalse(settings.headsetAutoSend)
+        settings.headsetAutoSend = true
+        XCTAssertTrue(settings.headsetAutoSend)
+    }
+
+    func testHeadsetTabBindsToPTTEnabled() {
+        UserDefaults.standard.removeObject(forKey: "headsetPTTEnabled")
+        defer { UserDefaults.standard.removeObject(forKey: "headsetPTTEnabled") }
+        let settings = AppSettings()
+
+        settings.headsetPTTEnabled = false
+        XCTAssertFalse(settings.headsetPTTEnabled)
+        settings.headsetPTTEnabled = true
+        XCTAssertTrue(settings.headsetPTTEnabled)
+    }
+
+    func testHeadsetManagerStateDescriptions() {
+        let settings = AppSettings()
+        let voiceOutput = VoiceOutputManager()
+        let client = VoiceCodeClient(serverURL: "ws://localhost:8080", setupObservers: false)
+        let voiceInput = VoiceInputManager(voiceOutputManager: voiceOutput)
+        let manager = HeadsetRemoteCommandManager(
+            voiceInput: voiceInput,
+            voiceOutput: voiceOutput,
+            client: client,
+            settings: settings
+        )
+
+        XCTAssertEqual(manager.state.description, "Ready")
+        XCTAssertFalse(manager.isActive)
     }
     #endif
 }

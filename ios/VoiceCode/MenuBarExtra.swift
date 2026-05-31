@@ -8,10 +8,11 @@ struct VoiceCodeMenuBarExtra: Scene {
     @ObservedObject var client: VoiceCodeClient
     @ObservedObject var settings: AppSettings
     @ObservedObject var voiceOutput: VoiceOutputManager
+    @ObservedObject var voiceInput: VoiceInputManager
 
     var body: some Scene {
         MenuBarExtra {
-            MenuBarContentView(client: client, settings: settings, voiceOutput: voiceOutput)
+            MenuBarContentView(client: client, settings: settings, voiceOutput: voiceOutput, voiceInput: voiceInput)
         } label: {
             Image(systemName: client.isConnected ? "waveform.circle.fill" : "waveform.circle")
                 .symbolRenderingMode(.hierarchical)
@@ -25,18 +26,18 @@ struct MenuBarContentView: View {
     @ObservedObject var client: VoiceCodeClient
     @ObservedObject var settings: AppSettings
     @ObservedObject var voiceOutput: VoiceOutputManager
-    @StateObject private var voiceInput: VoiceInputManager
+    @ObservedObject var voiceInput: VoiceInputManager
 
     @State private var selectedDirectory: String
     @State private var transcription: String = ""
     @State private var response: String?
     @State private var isProcessing = false
 
-    init(client: VoiceCodeClient, settings: AppSettings, voiceOutput: VoiceOutputManager) {
+    init(client: VoiceCodeClient, settings: AppSettings, voiceOutput: VoiceOutputManager, voiceInput: VoiceInputManager) {
         self.client = client
         self.settings = settings
         self.voiceOutput = voiceOutput
-        self._voiceInput = StateObject(wrappedValue: VoiceInputManager(voiceOutputManager: voiceOutput))
+        self.voiceInput = voiceInput
         self._selectedDirectory = State(initialValue: settings.lastUsedDirectory ?? NSHomeDirectory())
     }
 

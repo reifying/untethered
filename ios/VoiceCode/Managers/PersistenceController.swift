@@ -2,9 +2,6 @@
 // CoreData persistence stack management
 
 import CoreData
-import os.log
-
-private let logger = Logger(subsystem: "dev.910labs.voice-code", category: "Persistence")
 
 class PersistenceController {
     static let shared = PersistenceController()
@@ -61,7 +58,7 @@ class PersistenceController {
         do {
             try viewContext.save()
         } catch {
-            logger.error("Preview data creation failed: \(error.localizedDescription)")
+            LogManager.shared.log("Preview data creation failed: \(error.localizedDescription)", category: "Persistence")
         }
 
         return controller
@@ -84,38 +81,38 @@ class PersistenceController {
 
         container.loadPersistentStores { description, error in
             if let error = error {
-                logger.error("CoreData failed to load: \(error.localizedDescription)")
+                LogManager.shared.log("CoreData failed to load: \(error.localizedDescription)", category: "Persistence")
 
                 // Attempt recovery by deleting and recreating the store
                 if let storeURL = self.container.persistentStoreDescriptions.first?.url {
-                    logger.warning("Attempting to recover by deleting corrupt store...")
+                    LogManager.shared.log("Attempting to recover by deleting corrupt store...", category: "Persistence")
 
                     do {
                         try FileManager.default.removeItem(at: storeURL)
-                        logger.info("Deleted corrupt store, reloading...")
+                        LogManager.shared.log("Deleted corrupt store, reloading...", category: "Persistence")
 
                         // Attempt to reload after deletion
                         self.container.loadPersistentStores { recoveryDescription, recoveryError in
                             if let recoveryError = recoveryError {
-                                logger.error("Recovery failed: \(recoveryError.localizedDescription)")
+                                LogManager.shared.log("Recovery failed: \(recoveryError.localizedDescription)", category: "Persistence")
                                 // Cannot recover - show error to user but don't crash
                                 DispatchQueue.main.async {
                                     // Note: @Published doesn't work on struct, but leaving for reference
                                     // In practice, app will function with in-memory store
                                 }
                             } else {
-                                logger.info("Store recovered successfully: \(recoveryDescription.url?.path ?? "unknown")")
+                                LogManager.shared.log("Store recovered successfully: \(recoveryDescription.url?.path ?? "unknown")", category: "Persistence")
                             }
                         }
                     } catch {
-                        logger.error("Failed to delete corrupt store: \(error.localizedDescription)")
+                        LogManager.shared.log("Failed to delete corrupt store: \(error.localizedDescription)", category: "Persistence")
                         // Continue with in-memory store as fallback
                     }
                 } else {
-                    logger.error("No store URL found for recovery")
+                    LogManager.shared.log("No store URL found for recovery", category: "Persistence")
                 }
             } else {
-                logger.info("CoreData store loaded: \(description.url?.path ?? "unknown")")
+                LogManager.shared.log("CoreData store loaded: \(description.url?.path ?? "unknown")", category: "Persistence")
             }
         }
 
@@ -169,14 +166,14 @@ class PersistenceController {
             do {
                 let result = try context.execute(batchUpdate) as? NSBatchUpdateResult
                 if let count = result?.result as? Int, count > 0 {
-                    logger.info("Reset TTS gate cursors (liveFromSeq, liveFromOffset) on \(count) sessions for fresh app launch")
+                    LogManager.shared.log("Reset TTS gate cursors (liveFromSeq, liveFromOffset) on \(count) sessions for fresh app launch", category: "Persistence")
                 }
             } catch {
                 // Non-fatal: TTS gate falls back to "suppress all" behavior
                 // until each session captures the cursors from its first
                 // post-launch reply, which is correct (just slightly more
                 // aggressive than intended).
-                logger.error("Failed to reset TTS gate cursors: \(error.localizedDescription)")
+                LogManager.shared.log("Failed to reset TTS gate cursors: \(error.localizedDescription)", category: "Persistence")
             }
             // Run continuation inside the same perform block so it observes
             // the batch update's effects on the store. Fires on the catch
@@ -257,14 +254,14 @@ class PersistenceController {
                     try context.save()
                 }
                 userDefaults.set(true, forKey: Self.v6ToV7BackfillCompleteKey)
-                logger.info("v6→v7 backfill complete: updated \(sessions) sessions and \(messages) messages")
+                LogManager.shared.log("v6→v7 backfill complete: updated \(sessions) sessions and \(messages) messages", category: "Persistence")
             } catch {
                 // Leave the sentinel unset so the backfill retries next launch
                 // — better an extra pass than a permanently-zero cursor that
                 // would refetch every session's full history. Covers both
                 // fetch failures (would otherwise silently mark complete) and
                 // save failures.
-                logger.error("v6→v7 backfill failed (will retry next launch): \(error.localizedDescription)")
+                LogManager.shared.log("v6→v7 backfill failed (will retry next launch): \(error.localizedDescription)", category: "Persistence")
             }
         }
     }
@@ -312,9 +309,9 @@ class PersistenceController {
         
         do {
             try context.save()
-            logger.debug("Context saved successfully")
+            LogManager.shared.log("Context saved successfully", category: "Persistence")
         } catch {
-            logger.error("Failed to save context: \(error.localizedDescription)")
+            LogManager.shared.log("Failed to save context: \(error.localizedDescription)", category: "Persistence")
         }
     }
 
