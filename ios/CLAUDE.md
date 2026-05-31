@@ -1,20 +1,20 @@
 ## In-App Logging
 
-The app has two separate logging paths:
+All application logging goes through a single path: **`LogManager.shared.log(message, category:)`**.
+It feeds the in-app debug log viewer (ladybug icon → Captured Logs), which is what the
+user copies (or shares with an agent via the Share Logs button) when reporting bugs.
 
-1. **`Logger` (os.log)** — visible in Console.app and `log stream`. Not visible in the in-app debug log viewer.
-2. **`LogManager.shared.log(message, category:)`** — feeds the in-app debug log viewer (ladybug icon → Captured Logs). This is what the user copies when reporting bugs.
+`Logger`/OSLog and `print()` are **not** used for application logging. Do not add
+`import OSLog` / `import os.log`, `Logger(subsystem:category:)` declarations, or diagnostic
+`print()` statements. (Exceptions: the Share Extension has its own logging, and `#if DEBUG`
+blocks may keep `print()` for dev-only output.)
 
-**Any manager that wants its logs visible in the in-app viewer must call `LogManager.shared.log()`.** Using only `Logger.info()` means the logs are invisible to the user.
-
-The in-app system logs tab (`getSystemLogs`) filters by subsystem `"com.travisbrown.VoiceCode"`, but most managers use `"dev.910labs.voice-code"` — so the system logs tab will miss those too. Use Captured Logs (manual `LogManager.shared.log()` calls) as the reliable path.
-
-Pattern used in `HeadsetRemoteCommandManager`:
+Pass a `category` derived from the manager/view name so logs are easy to filter. Pattern
+used in `HeadsetRemoteCommandManager`:
 ```swift
 private func hLog(_ msg: String) {
-    logger.info("\(msg, privacy: .public)")
     LogManager.shared.log(msg, category: "HeadsetRemote")
 }
 ```
 
-Follow this pattern for any new manager that needs in-app log visibility.
+Follow this pattern for any new manager or view that needs to log.
