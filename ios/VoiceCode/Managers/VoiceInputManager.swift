@@ -18,6 +18,17 @@ class VoiceInputManager: NSObject, ObservableObject {
     /// Reference to voice output manager for muting TTS during recording
     private weak var voiceOutputManager: VoiceOutputManager?
 
+    /// True while THIS instance holds the recording-active gate raised on the
+    /// shared VoiceOutputManager. Multiple VoiceInputManagers share one
+    /// VoiceOutputManager (one per ConversationView, plus the macOS menu-bar
+    /// instance), so deinit must release ONLY the gate this instance owns —
+    /// clearing unconditionally would let a non-recording manager's deallocation
+    /// wipe the gate another manager raised while actively recording, re-opening
+    /// the TTS-into-open-mic feedback loop. Tracked in lockstep with
+    /// `voiceOutputManager.isRecordingActive`. Internal (not private) so the
+    /// ownership invariant can be exercised in tests, mirroring `isRecordingActive`.
+    var didRaiseRecordingGate = false
+
     var onTranscriptionComplete: ((String) -> Void)?
 
     init(voiceOutputManager: VoiceOutputManager? = nil) {
@@ -52,6 +63,7 @@ class VoiceInputManager: NSObject, ObservableObject {
         // enqueued during the async window between here and audio session
         // configuration. Cleared in stopRecording() or on any error exit below.
         voiceOutputManager?.isRecordingActive = true
+        didRaiseRecordingGate = true
 
         // Stop TTS first so the mic doesn't pick up speech output AND so the
         // synthesizer fully releases the audio session before we flip it to
@@ -78,6 +90,7 @@ class VoiceInputManager: NSObject, ObservableObject {
         defer {
             if !recordingStarted {
                 voiceOutputManager?.isRecordingActive = false
+                didRaiseRecordingGate = false
             }
         }
 
@@ -161,6 +174,7 @@ class VoiceInputManager: NSObject, ObservableObject {
             // during the async stop-completion window and cleared the flag,
             // re-raise it so TTS stays suppressed while the mic is actually open.
             self.voiceOutputManager?.isRecordingActive = true
+            self.didRaiseRecordingGate = true
             self.transcribedText = ""
         }
     }
@@ -174,6 +188,7 @@ class VoiceInputManager: NSObject, ObservableObject {
             self.isRecording = false
             // Gate down — allow TTS to resume now that the mic is closed.
             self.voiceOutputManager?.isRecordingActive = false
+            self.didRaiseRecordingGate = false
             // Note: onTranscriptionComplete callback is never set - handled by view layer instead
         }
 
@@ -187,6 +202,19 @@ class VoiceInputManager: NSObject, ObservableObject {
     // MARK: - Cleanup
 
     deinit {
+        // Release the recording gate ONLY if this instance currently owns it.
+        // stopRecording() clears it via an async main-queue hop, but only when
+        // isRecording is true; if we are deallocated during the stop-completion
+        // window — after startRecording() raised the gate but before isRecording
+        // flipped true — neither path runs and the gate would stick true on the
+        // (surviving) VoiceOutputManager, suppressing ALL TTS until app relaunch.
+        // The ownership check is essential because multiple VoiceInputManagers
+        // share one VoiceOutputManager: an unconditional clear here would let a
+        // non-recording manager's deallocation wipe the gate another manager
+        // raised while actively recording, re-opening the feedback loop.
+        if didRaiseRecordingGate {
+            voiceOutputManager?.isRecordingActive = false
+        }
         if isRecording {
             stopRecording()
         }

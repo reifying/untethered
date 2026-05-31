@@ -221,4 +221,101 @@ final class VoiceInputManagerTests: XCTestCase {
             inputManager.stopRecording()
         }
     }
+
+    /// Guards the stuck-true edge: if the input manager is deallocated during the
+    /// stop-completion window (it raised the gate and took ownership, but
+    /// isRecording is not yet true), deinit must release the gate it owns —
+    /// otherwise TTS stays suppressed on the surviving VoiceOutputManager until
+    /// app relaunch.
+    func testDeinitReleasesGateThisManagerOwns() {
+        let voiceOutput = VoiceOutputManager()
+        var inputManager: VoiceInputManager? = VoiceInputManager(voiceOutputManager: voiceOutput)
+        XCTAssertNotNil(inputManager)
+
+        // Reproduce the window: startRecording() raised the gate AND took
+        // ownership, but recording has not actually begun (isRecording false).
+        voiceOutput.isRecordingActive = true
+        inputManager!.didRaiseRecordingGate = true
+        XCTAssertFalse(inputManager!.isRecording)
+
+        // Drop the only strong reference → deinit runs synchronously (ARC).
+        inputManager = nil
+
+        XCTAssertFalse(voiceOutput.isRecordingActive,
+                       "deinit must release the gate this manager owns so TTS isn't suppressed until app relaunch")
+    }
+
+    /// Regression guard for the shared gate: multiple VoiceInputManagers share one
+    /// VoiceOutputManager. A non-recording manager being deallocated must NOT clear
+    /// a gate raised by a DIFFERENT manager that is actively recording — doing so
+    /// would re-open the TTS-into-open-mic feedback loop.
+    func testDeinitDoesNotReleaseGateOwnedByAnotherManager() {
+        let voiceOutput = VoiceOutputManager()
+
+        // A peer manager is recording: its gate is up. (Set directly to represent
+        // the peer recorder without depending on speech authorization.)
+        voiceOutput.isRecordingActive = true
+
+        // This manager shares the same VoiceOutputManager but never recorded, so it
+        // does not own the gate.
+        var nonOwner: VoiceInputManager? = VoiceInputManager(voiceOutputManager: voiceOutput)
+        XCTAssertFalse(nonOwner!.didRaiseRecordingGate)
+        XCTAssertFalse(nonOwner!.isRecording)
+
+        // Deallocate the non-owner → deinit runs synchronously (ARC).
+        nonOwner = nil
+
+        XCTAssertTrue(voiceOutput.isRecordingActive,
+                      "a non-owning manager's deinit must not clear the gate another manager raised")
+    }
+
+    // MARK: - Cross-Manager Integration: auto-speak suppression
+
+    /// Integration: a VoiceInputManager and the VoiceOutputManager it records
+    /// against (the production wiring) must cooperate so that auto-speak calls —
+    /// e.g. SessionSyncManager speaking a newly-arrived assistant message, or the
+    /// "Read Aloud" notification action — are dropped while the mic is open and
+    /// proceed again once it closes. This is the actual feedback-loop scenario the
+    /// feature exists to prevent.
+    func testAutoSpeakSuppressedWhileInputManagerRecording() {
+        let voiceOutput = VoiceOutputManager()
+        let inputManager = VoiceInputManager(voiceOutputManager: voiceOutput)
+
+        // Establish the recording-active state the input manager raises at the top
+        // of startRecording() (set directly so the test is independent of the
+        // simulator's speech-recognition authorization).
+        voiceOutput.isRecordingActive = true
+
+        // The exact auto-speak call SessionSyncManager makes for an active session.
+        voiceOutput.speak("Assistant reply arriving mid-recording",
+                          respectSilentMode: true,
+                          workingDirectory: nil,
+                          sessionId: UUID())
+
+        let suppressed = XCTestExpectation(description: "auto-speak suppressed during recording")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+            XCTAssertFalse(voiceOutput.isSpeaking,
+                           "Auto-speak must be suppressed while the input manager holds the recording gate")
+            suppressed.fulfill()
+        }
+        wait(for: [suppressed], timeout: 1.0)
+
+        // Closing the mic via stopRecording() lowers the gate (async, main queue);
+        // the same auto-speak call must then proceed.
+        inputManager.stopRecording()
+        let resumed = XCTestExpectation(description: "auto-speak proceeds after recording ends")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+            voiceOutput.speak("Now safe to speak",
+                              respectSilentMode: true,
+                              workingDirectory: nil,
+                              sessionId: UUID())
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                XCTAssertTrue(voiceOutput.isSpeaking,
+                              "Auto-speak must proceed once the input manager releases the gate")
+                resumed.fulfill()
+            }
+        }
+        wait(for: [resumed], timeout: 2.0)
+        voiceOutput.stop()
+    }
 }
