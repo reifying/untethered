@@ -24,6 +24,13 @@ extension AVSpeechUtterance {
 class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
     @Published var isSpeaking = false
 
+    /// When true, all speech requests are silently dropped. Set by VoiceInputManager
+    /// when recording starts; cleared when recording stops or fails to start.
+    /// Unlike `isMuted` (macOS-only, user-toggled, persisted), this is automatic,
+    /// cross-platform, and transient. Plain `var` (internal) so VoiceInputManager
+    /// can set it from a different file.
+    var isRecordingActive = false
+
     /// When muted, all speech requests are silently ignored (macOS only)
     #if os(macOS)
     @Published var isMuted: Bool {
@@ -202,6 +209,13 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
         }
         #endif
 
+        // Suppress all speech while the microphone is recording — playing TTS
+        // into the open mic creates a feedback loop. Drop the request (don't queue).
+        if isRecordingActive {
+            logger.debug("🔇 Speech suppressed — recording active, dropping request")
+            return
+        }
+
         // Stop any ongoing speech
         if synthesizer.isSpeaking {
             synthesizer.stopSpeaking(at: .immediate)
@@ -337,6 +351,9 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
     }
 
     func resume() {
+        // resume() bypasses speakWithVoice(), so it would otherwise play into an
+        // open mic during recording. Guard it explicitly.
+        guard !isRecordingActive else { return }
         synthesizer.continueSpeaking()
     }
 

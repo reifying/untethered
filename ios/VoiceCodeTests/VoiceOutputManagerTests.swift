@@ -156,6 +156,89 @@ final class VoiceOutputManagerTests: XCTestCase {
         wait(for: [startExpectation], timeout: 2.0)
     }
 
+    // MARK: - Recording-Active Suppression Tests (tmux-untethered-y03)
+
+    /// While recording is active, speak() requests must be dropped — playing TTS
+    /// into the open mic creates a feedback loop.
+    func testSpeechSuppressedWhenRecordingActive() {
+        manager.isRecordingActive = true
+        manager.speak("This should be suppressed")
+
+        let expectation = XCTestExpectation(description: "main queue settles")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+            XCTAssertFalse(self.manager.isSpeaking,
+                           "Should not be speaking when recording is active")
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 1.0)
+    }
+
+    /// Once recording ends, the gate is lifted and subsequent speak() calls play
+    /// normally. (Suppressed speech is dropped, not queued, so only the post-record
+    /// call is heard.)
+    func testSpeechResumesWhenRecordingEnds() {
+        manager.isRecordingActive = true
+        manager.speak("Suppressed")
+
+        manager.isRecordingActive = false
+        manager.speak("This should play")
+
+        let expectation = XCTestExpectation(description: "speech starts")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+            XCTAssertTrue(self.manager.isSpeaking,
+                          "Should be speaking after recording ends")
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 1.0)
+        manager.stop()
+    }
+
+    /// resume() bypasses speakWithVoice(), so it needs its own recording-active
+    /// guard: a stray continueSpeaking() would otherwise play into an open mic.
+    ///
+    /// We assert the guard's effect via onSpeechComplete (didFinish). The
+    /// discriminator is whether the paused utterance ever runs to completion:
+    /// a suppressed resume() leaves it paused (no completion), while an
+    /// un-suppressed resume() lets it finish (completion fires). We keep the
+    /// utterance short so the post-resume remainder completes well within the
+    /// positive-control timeout, but multi-word so a `.word`-boundary pause on
+    /// the first word leaves more left to speak (the pause genuinely holds back
+    /// playback rather than the utterance draining on its own).
+    func testResumeSuppressedWhenRecordingActive() {
+        // Short, multi-word utterance: completes quickly after a real resume,
+        // but has enough words that a .word-boundary pause leaves more to speak.
+        manager.speak("Testing resume suppression behavior now")
+
+        let started = XCTestExpectation(description: "speech starts")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { started.fulfill() }
+        wait(for: [started], timeout: 1.0)
+        XCTAssertTrue(manager.isSpeaking, "Precondition: synthesizer should be speaking")
+
+        // Phase 1 — suppressed resume(): with recording active, resume() must be
+        // a no-op. The utterance stays paused, so onSpeechComplete must NOT fire
+        // and the synthesizer must still report speaking (paused counts as speaking).
+        let suppressedCompletion = XCTestExpectation(description: "completion must NOT fire while suppressed")
+        suppressedCompletion.isInverted = true
+        manager.onSpeechComplete = { suppressedCompletion.fulfill() }
+
+        manager.pause()
+        manager.isRecordingActive = true
+        manager.resume()  // Should be suppressed by the recording-active guard.
+
+        wait(for: [suppressedCompletion], timeout: 1.5)
+        XCTAssertTrue(manager.isSpeaking,
+                      "Still paused (not finished): suppressed resume() must not restart playback")
+
+        // Phase 2 — un-suppressed resume(): clear the flag and resume for real.
+        // The short utterance now runs to completion, firing onSpeechComplete.
+        let realCompletion = XCTestExpectation(description: "completion fires after un-suppressed resume")
+        manager.onSpeechComplete = { realCompletion.fulfill() }
+        manager.isRecordingActive = false
+        manager.resume()
+
+        wait(for: [realCompletion], timeout: 10.0)
+    }
+
     // MARK: - stop(completion:) Tests
 
     /// When the synthesizer was not speaking, stop(completion:) should still invoke
