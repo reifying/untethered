@@ -926,7 +926,7 @@ struct ConversationView: View {
         let ghostSessionId = session.id
         let syncManager = client.sessionSyncManager
         syncManager.createOptimisticMessage(sessionId: session.id, text: trimmedText) { messageId in
-            print("Created optimistic message: \(messageId)")
+            LogManager.shared.log("Created optimistic message: \(messageId)", category: "ConversationView")
             if ghostSend {
                 syncManager.registerPendingGhost(sessionId: ghostSessionId, messageId: messageId)
             }

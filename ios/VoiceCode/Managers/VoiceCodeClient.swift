@@ -948,7 +948,7 @@ class VoiceCodeClient: ObservableObject {
                 if VoiceCodeClient.isGhostError(error),
                    let ghostSession = (json["session_id"] as? String) ?? (json["session-id"] as? String),
                    let ghostUUID = UUID(uuidString: ghostSession) {
-                    print("👻 [VoiceCodeClient] Ghost prompt failed for \(ghostSession): \(error)")
+                    LogManager.shared.log("👻 [VoiceCodeClient] Ghost prompt failed for \(ghostSession): \(error)", category: "VoiceCodeClient")
                     self.sessionSyncManager.failGhostPrompt(sessionId: ghostUUID)
                 }
 
@@ -1035,7 +1035,7 @@ class VoiceCodeClient: ObservableObject {
                 if let sessionId = sessionId,
                    let uuid = UUID(uuidString: sessionId),
                    let effectivePrompt = effectivePrompt, !effectivePrompt.isEmpty {
-                    print("👻 [VoiceCodeClient] Received ghost_prompt for \(sessionId) (len=\(effectivePrompt.count))")
+                    LogManager.shared.log("👻 [VoiceCodeClient] Received ghost_prompt for \(sessionId) (len=\(effectivePrompt.count))", category: "VoiceCodeClient")
                     self.sessionSyncManager.reconcileGhostPrompt(sessionId: uuid, effectivePrompt: effectivePrompt)
                 } else {
                     LogManager.shared.log("Received malformed ghost_prompt (session_id/text missing): \(json.keys)", category: "VoiceCodeClient")
