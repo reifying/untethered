@@ -232,13 +232,23 @@ struct ConversationView: View {
                             // Auto-scroll to new messages if enabled
                             guard newCount > oldCount else { return }
 
+                            // Suppress auto-scroll while the View Full sheet is open so the
+                            // background list does not move away from what the user is reading.
+                            guard fullMessageSnapshot == nil else {
+                                logger.debug("📨 Skipping auto-scroll (View Full sheet open)")
+                                return
+                            }
+
                             logger.debug("📨 New messages: \(oldCount) -> \(newCount), auto-scroll: \(self.autoScrollEnabled ? "enabled" : "disabled")")
 
                             // Debounce scroll to avoid triggering during layout calculations
                             if autoScrollEnabled {
                                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                                    // Re-check autoScrollEnabled after delay in case user disabled it
-                                    guard self.autoScrollEnabled, let lastMessage = self.messages.last else { return }
+                                    // Re-check autoScrollEnabled and sheet state after delay in case
+                                    // the user disabled scroll or opened the View Full sheet meanwhile.
+                                    guard self.autoScrollEnabled,
+                                          self.fullMessageSnapshot == nil,
+                                          let lastMessage = self.messages.last else { return }
                                     logger.debug("📨 Scrolling to last message (debounced)")
                                     proxy.scrollTo(lastMessage.id, anchor: .bottom)
                                 }
