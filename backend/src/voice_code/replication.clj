@@ -1031,6 +1031,42 @@
       (log/error e "Failed to parse .jsonl file" {:file file-path})
       [])))
 
+(def ghost-fork-marker
+  "Marker carried by every ghost meta-prompt. A fork writes its transcript only on
+  the first prompt (the meta-prompt), so the fork file is born containing this
+  marker -- a content scan is the primary hide for ghost fork transcripts."
+  "VC-GHOST-FORK")
+
+;; Belt for the narrow window where the watcher might read the just-created fork
+;; file after its history lines flush but before the meta-prompt line does (or read
+;; it empty and defer to the delayed-notification path). one-shot-fork! registers
+;; the workdir before launch and clears it when done. Gates the session_created PUSH
+;; only -- the durable :ghost tag comes from the marker, so a genuine concurrent
+;; session in the same workdir is not mis-hidden. Refcounted by workdir so two ghost
+;; prompts in the same repo each hold the guard until the LAST one finishes (a bare
+;; set would drop the belt for a still-running fork as soon as the first finished).
+(defonce ghost-fork-guard (atom {})) ; workdir -> count of in-flight forks
+
+(defn register-ghost-fork!
+  "Increment the in-flight ghost-fork count for `workdir`."
+  [workdir]
+  (swap! ghost-fork-guard update workdir (fnil inc 0)))
+
+(defn unregister-ghost-fork!
+  "Decrement the in-flight ghost-fork count for `workdir`, dissociating the entry
+  when it reaches zero. Safe to call more times than register (a spurious or
+  double unregister never drives the count negative)."
+  [workdir]
+  (swap! ghost-fork-guard
+         (fn [g]
+           (let [n (dec (get g workdir 1))]
+             (if (pos? n) (assoc g workdir n) (dissoc g workdir))))))
+
+(defn ghost-guarded?
+  "True when at least one ghost fork is in flight for `working-dir`."
+  [working-dir]
+  (pos? (get @ghost-fork-guard working-dir 0)))
+
 (defn- assemble-opencode-message-text
   "Read all text parts for an OpenCode message and concatenate them.
    Parts are stored under <opencode-storage>/part/<message-id>/."

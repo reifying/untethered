@@ -6331,3 +6331,25 @@
                 (str "emission latency " elapsed "ms exceeds 500ms budget"))))
         (.shutdownNow scheduler)
         (is (= session-id (first @calls)))))))
+
+(deftest ghost-fork-guard-refcount-test
+  (testing "workdir stays guarded until the LAST concurrent fork in it unregisters"
+    (reset! repl/ghost-fork-guard {})
+    (repl/register-ghost-fork! "/repo")          ; fork A
+    (repl/register-ghost-fork! "/repo")          ; fork B — concurrent, same repo
+    (is (repl/ghost-guarded? "/repo") "guarded while two forks are in flight")
+    (repl/unregister-ghost-fork! "/repo")        ; A finishes first
+    (is (repl/ghost-guarded? "/repo") "still guarded while B runs")
+    (repl/unregister-ghost-fork! "/repo")        ; B finishes
+    (is (not (repl/ghost-guarded? "/repo")) "unguarded after the last fork finishes")
+    (is (= {} @repl/ghost-fork-guard) "entry is dissociated at zero, not left at 0")
+    (repl/unregister-ghost-fork! "/repo")        ; spurious extra unregister
+    (is (not (repl/ghost-guarded? "/repo")) "spurious unregister is safe")
+    (is (= {} @repl/ghost-fork-guard) "spurious unregister never drives the count negative"))
+  (testing "guards are independent per workdir"
+    (reset! repl/ghost-fork-guard {})
+    (repl/register-ghost-fork! "/repo-a")
+    (is (repl/ghost-guarded? "/repo-a"))
+    (is (not (repl/ghost-guarded? "/repo-b")) "an unrelated workdir is never guarded")
+    (repl/unregister-ghost-fork! "/repo-a")
+    (is (not (repl/ghost-guarded? "/repo-a")))))
