@@ -408,6 +408,28 @@
           (is (not (clojure.string/includes? cmd "--append-system-prompt"))
               (str provider " should not include --append-system-prompt")))))))
 
+(deftest build-provider-command-fork-test
+  (testing "claude fork? emits --resume <src> --fork-session, never --session-id"
+    (with-redefs [voice-code.providers/cli-path (constantly "/usr/local/bin/claude")]
+      (let [cmd (tmux/build-provider-command :claude {:session-uuid "S-123" :fork? true})]
+        (is (clojure.string/includes? cmd "--resume S-123 --fork-session"))
+        (is (not (clojure.string/includes? cmd "--session-id"))))))
+
+  (testing "claude fork? does not append --append-system-prompt (a fork is a resume)"
+    (with-redefs [voice-code.providers/cli-path (constantly "/usr/local/bin/claude")]
+      (let [cmd (tmux/build-provider-command :claude {:session-uuid "S-123"
+                                                      :fork? true
+                                                      :system-prompt "Be terse."})]
+        (is (not (clojure.string/includes? cmd "--append-system-prompt"))))))
+
+  (testing "fork? takes precedence over resume?"
+    (with-redefs [voice-code.providers/cli-path (constantly "/usr/local/bin/claude")]
+      (let [cmd (tmux/build-provider-command :claude {:session-uuid "S-123"
+                                                      :fork? true
+                                                      :resume? true})]
+        (is (clojure.string/includes? cmd "--resume S-123 --fork-session"))
+        (is (not (clojure.string/includes? cmd "--session-id")))))))
+
 ;; ============================================================================
 ;; choose-victim
 ;; ============================================================================

@@ -146,14 +146,20 @@
    Working directory is set via `tmux new-window -c` by the caller; it is not
    part of the shell command string.
 
+   When `:fork?` is true (Claude only) the source session is branched with
+   `--resume <session-uuid> --fork-session`, minting a new session id that
+   copies the source's history and leaves the source untouched; `:session-uuid`
+   is the *source* id in that case. `:fork?` takes precedence over `:resume?`.
+
    `:system-prompt` is appended via `--append-system-prompt` for :claude only,
-   and only for new (non-resume) sessions — it is a startup-only flag and the
-   CLI has already launched by the time a resumed session needs it. Blank or
-   whitespace-only values are dropped silently."
-  [provider {:keys [session-uuid resume? system-prompt model]}]
+   and only for new (non-resume, non-fork) sessions — it is a startup-only flag
+   and the CLI has already launched by the time a resumed/forked session needs
+   it. Blank or whitespace-only values are dropped silently."
+  [provider {:keys [session-uuid resume? fork? system-prompt model]}]
   (let [trimmed-system-prompt (when system-prompt (str/trim system-prompt))
         include-system-prompt? (and (= provider :claude)
                                     (not resume?)
+                                    (not fork?)
                                     trimmed-system-prompt
                                     (not (str/blank? trimmed-system-prompt)))]
     (case provider
@@ -161,9 +167,10 @@
       (str "unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT && "
            (providers/cli-path :claude) " "
            "--dangerously-skip-permissions "
-           (if resume?
-             (str "--resume " session-uuid)
-             (str "--session-id " session-uuid))
+           (cond
+             fork? (str "--resume " session-uuid " --fork-session")
+             resume? (str "--resume " session-uuid)
+             :else (str "--session-id " session-uuid))
            (when include-system-prompt?
              (str " --append-system-prompt " (shell-single-quote trimmed-system-prompt)))
            (when model (str " --model " model)))
