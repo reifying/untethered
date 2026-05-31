@@ -145,6 +145,19 @@ extension CDMessage {
         request.fetchLimit = 1
         return request
     }
+
+    /// Find the most recent optimistic (status == "sending") user message in a
+    /// session. Used to reconcile a ghost send's task-X bubble against the
+    /// effective prompt P delivered out-of-band via the `ghost_prompt` event.
+    /// `status` is the raw stored attribute backing `messageStatus`.
+    static func fetchLatestSendingUserMessage(sessionId: UUID) -> NSFetchRequest<CDMessage> {
+        let request = fetchRequest()
+        request.predicate = NSPredicate(format: "sessionId == %@ AND role == %@ AND status == %@",
+                                       sessionId as CVarArg, "user", MessageStatus.sending.rawValue)
+        request.sortDescriptors = [NSSortDescriptor(keyPath: \CDMessage.timestamp, ascending: false)]
+        request.fetchLimit = 1
+        return request
+    }
 }
 
 extension CDMessage: Identifiable {}

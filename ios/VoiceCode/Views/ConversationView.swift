@@ -74,6 +74,11 @@ struct ConversationView: View {
     // Provider selection for new sessions
     @State private var selectedProvider: String = "claude"
 
+    // Ghost prompt mode (tmux-untethered-5hw): when on, the composer input is a
+    // *task description*; the backend forks the session to author the real
+    // prompt P and injects it. Resumed Claude sessions only.
+    @State private var ghostMode: Bool = false
+
     // Auto-scroll state
     @State private var hasPerformedInitialScroll = false
     @State private var autoScrollEnabled = true  // Auto-scroll on by default
@@ -101,6 +106,13 @@ struct ConversationView: View {
     // Active recipe for this session
     private var activeRecipe: ActiveRecipe? {
         client.activeRecipes[session.id.uuidString.lowercased()]
+    }
+
+    /// Whether ghost prompts may be offered for this session. Ghost requires a
+    /// resumed session (the fork copies existing context) and the Claude
+    /// provider (`--fork-session` is Claude-only). See ghost-prompt design §3.3.
+    private var canGhost: Bool {
+        session.messageCount > 0 && session.provider == "claude"
     }
 
     // Stable function reference for infer name - prevents closure recreation on each render
@@ -271,6 +283,14 @@ struct ConversationView: View {
                     .padding(.horizontal)
                 }
 
+                // Ghost prompt toggle — resumed Claude sessions only. When on,
+                // the input is a task description; the backend forks the session
+                // to author the effective prompt and injects it.
+                if canGhost {
+                    GhostModeToggle(isOn: $ghostMode)
+                        .padding(.horizontal)
+                }
+
                 // Mode toggle and connection status
                 HStack {
                     Button(action: { isVoiceMode.toggle() }) {
@@ -321,6 +341,9 @@ struct ConversationView: View {
                     // Text mode
                     ConversationTextInputView(
                         text: $promptText,
+                        placeholder: (ghostMode && canGhost)
+                            ? "Describe a task for the agent…"
+                            : "Type your message...",
                         onSend: {
                             sendPromptText(promptText)
                             promptText = ""
@@ -841,44 +864,54 @@ struct ConversationView: View {
         // Note: Priority queue auto-add now happens in VoiceCodeClient.turn_complete handler
         // This ensures sessions are only added after successful response (no ghost sessions)
 
-        // Create optimistic message
-        client.sessionSyncManager.createOptimisticMessage(sessionId: session.id, text: trimmedText) { messageId in
-            print("Created optimistic message: \(messageId)")
-        }
-
         // Determine if this is a new session (no messages yet) or existing session
         let isNewSession = session.messageCount == 0
+
+        // Ghost is resumed-session only; never honor a stale toggle on a new send.
+        let ghost = ghostMode && canGhost && !isNewSession
+
+        // Create optimistic message. On a ghost send this renders the *task X*
+        // the user typed; the backend later returns the effective prompt P via
+        // the `ghost_prompt` event, which reconciles this same bubble. Register
+        // the bubble's id so that event targets THIS row precisely — not merely
+        // "the latest sending message", which a follow-up send could displace.
+        let ghostSend = ghost
+        let ghostSessionId = session.id
+        let syncManager = client.sessionSyncManager
+        syncManager.createOptimisticMessage(sessionId: session.id, text: trimmedText) { messageId in
+            print("Created optimistic message: \(messageId)")
+            if ghostSend {
+                syncManager.registerPendingGhost(sessionId: ghostSessionId, messageId: messageId)
+            }
+        }
 
         // Send prompt to backend
         // - New sessions: use new_session_id (backend will create .jsonl file)
         // - Existing sessions: use resume_session_id (backend appends to existing file)
-        var message: [String: Any] = [
-            "type": "prompt",
-            "text": trimmedText,
-            "working_directory": session.workingDirectory
-        ]
+        // - Ghost: resume_session_id + ghost:true (backend forks to author P)
+        let message = PromptMessageBuilder.build(
+            text: trimmedText,
+            sessionId: sessionId,
+            workingDirectory: session.workingDirectory,
+            isNewSession: isNewSession,
+            provider: selectedProvider,
+            systemPrompt: settings.systemPrompt,
+            ghost: ghost
+        )
 
         if isNewSession {
-            message["new_session_id"] = sessionId
-            message["provider"] = selectedProvider
             print("📤 [ConversationView] Sending prompt with new_session_id: \(sessionId), provider: \(selectedProvider)")
-            // Note: Subscribe will happen when we receive turn_complete (after backend creates session)
         } else {
-            message["resume_session_id"] = sessionId
-            print("📤 [ConversationView] Sending prompt with resume_session_id: \(sessionId)")
-        }
-
-        // Include system prompt if configured and non-empty
-        print("🔍 [ConversationView] System prompt value: '\(settings.systemPrompt)'")
-        print("🔍 [ConversationView] System prompt isEmpty: \(settings.systemPrompt.isEmpty)")
-        if !settings.systemPrompt.isEmpty {
-            message["system_prompt"] = settings.systemPrompt
-            print("✅ [ConversationView] Including system_prompt in message")
-        } else {
-            print("⚠️ [ConversationView] NOT including system_prompt (empty)")
+            print("📤 [ConversationView] Sending prompt with resume_session_id: \(sessionId), ghost: \(ghost)")
         }
 
         client.sendMessage(message)
+
+        // Ghost is a deliberate per-task action: reset the toggle after each
+        // send so the next ordinary message is not accidentally ghosted.
+        if ghost {
+            ghostMode = false
+        }
     }
     
     private func copySessionID() {
@@ -1450,12 +1483,13 @@ struct ConversationVoiceInputView: View {
 
 struct ConversationTextInputView: View {
     @Binding var text: String
+    var placeholder: String = "Type your message..."
     let onSend: () -> Void
 
     var body: some View {
         let _ = RenderLoopDetector.shared.recordRender()
         HStack {
-            TextField("Type your message...", text: $text, axis: .vertical)
+            TextField(placeholder, text: $text, axis: .vertical)
                 .textFieldStyle(.roundedBorder)
                 .lineLimit(1...5)
                 #if os(macOS)
@@ -1483,6 +1517,38 @@ struct ConversationTextInputView: View {
             .disabled(text.isEmpty)
         }
         .padding(.horizontal)
+    }
+}
+
+// MARK: - Ghost Mode Toggle
+
+/// Composer control that switches the input into "ghost prompt" mode. When on,
+/// the text being sent is a *task description* — the backend forks the session
+/// to author the effective prompt and injects it (tmux-untethered-5hw).
+struct GhostModeToggle: View {
+    @Binding var isOn: Bool
+
+    var body: some View {
+        Toggle(isOn: $isOn) {
+            HStack(spacing: 6) {
+                Image(systemName: isOn ? "theatermasks.fill" : "theatermasks")
+                    .foregroundColor(isOn ? .purple : .secondary)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Ghost task")
+                        .font(.caption)
+                        .fontWeight(.medium)
+                    Text(isOn
+                         ? "Input is a task; the agent writes & runs the prompt"
+                         : "Have the agent author a clean prompt for a task")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+        .toggleStyle(.switch)
+        .tint(.purple)
+        .accessibilityIdentifier("ghostModeToggle")
     }
 }
 

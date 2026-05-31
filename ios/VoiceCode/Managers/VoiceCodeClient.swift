@@ -951,6 +951,17 @@ class VoiceCodeClient: ObservableObject {
 
                 scheduleUpdate(key: "currentError", value: error as String?)
 
+                // Ghost-failure envelopes (e.g. "Ghost prompt generation
+                // failed: timeout") carry the resumed session_id but never
+                // deliver P. Mark the stuck optimistic task-X bubble as failed
+                // so it doesn't sit "sending" forever (tmux-untethered-5hw).
+                if VoiceCodeClient.isGhostError(error),
+                   let ghostSession = (json["session_id"] as? String) ?? (json["session-id"] as? String),
+                   let ghostUUID = UUID(uuidString: ghostSession) {
+                    print("👻 [VoiceCodeClient] Ghost prompt failed for \(ghostSession): \(error)")
+                    self.sessionSyncManager.failGhostPrompt(sessionId: ghostUUID)
+                }
+
                 // Route to quick prompt handler if applicable
                 let errorIosSessionId = (json["ios_session_id"] as? String) ?? (json["ios-session-id"] as? String) ?? ""
                 if let handler = self.quickPromptHandlers.removeValue(forKey: errorIosSessionId) {
@@ -1023,6 +1034,22 @@ class VoiceCodeClient: ObservableObject {
                 // New session created (terminal or iOS)
                 print("✨ [VoiceCodeClient] Received session_created")
                 self.sessionSyncManager.handleSessionCreated(json)
+
+            case "ghost_prompt":
+                // Effective prompt P for a ghost send. The watcher drops human
+                // prompts from the normal stream, so this is the only channel
+                // that carries P to iOS — it reconciles the optimistic task-X
+                // bubble created on send (tmux-untethered-5hw, protocol §ghost).
+                let sessionId = (json["session_id"] as? String) ?? (json["session-id"] as? String)
+                let effectivePrompt = json["text"] as? String
+                if let sessionId = sessionId,
+                   let uuid = UUID(uuidString: sessionId),
+                   let effectivePrompt = effectivePrompt, !effectivePrompt.isEmpty {
+                    print("👻 [VoiceCodeClient] Received ghost_prompt for \(sessionId) (len=\(effectivePrompt.count))")
+                    self.sessionSyncManager.reconcileGhostPrompt(sessionId: uuid, effectivePrompt: effectivePrompt)
+                } else {
+                    LogManager.shared.log("Received malformed ghost_prompt (session_id/text missing): \(json.keys)", category: "VoiceCodeClient")
+                }
 
             case "session_history":
                 // Unified delivery envelope for both subscribe replies and
@@ -2343,6 +2370,14 @@ class VoiceCodeClient: ObservableObject {
         return extras.isEmpty ? type : "\(type) \(extras)"
     }
 
+    /// True when an `{type:error}` envelope's message is a ghost-prompt failure.
+    /// All four ghost error strings (pre-flight rejections + the post-fork
+    /// "Ghost prompt generation failed: …") mention "ghost", so a case-insensitive
+    /// substring match cleanly distinguishes them from ordinary prompt errors.
+    static func isGhostError(_ message: String) -> Bool {
+        message.range(of: "ghost", options: .caseInsensitive) != nil
+    }
+
     /// Pick a small, fixed set of fields per type. Keep the total under
     /// ~80 chars so log lines stay scannable. `dict` is either an outbound
     /// message dict or a parsed inbound JSON.
@@ -2365,6 +2400,7 @@ class VoiceCodeClient: ObservableObject {
             // new is obvious in a glance at the trace.
             if let s = dict["new_session_id"] as? String, !s.isEmpty { parts.append("new=\(s.prefix(8))") }
             if let s = dict["resume_session_id"] as? String, !s.isEmpty { parts.append("resume=\(s.prefix(8))") }
+            if let g = dict["ghost"] as? Bool, g { parts.append("ghost=true") }
             if let p = dict["provider"] as? String { parts.append("prov=\(p)") }
             if let t = dict["text"] as? String { parts.append("len=\(t.count)") }
         case "session_history":
@@ -2381,6 +2417,9 @@ class VoiceCodeClient: ObservableObject {
         case "turn_complete":
             if let s = shortSess(dict["session_id"] as? String) { parts.append(s) }
             if let a = dict["aborted"] as? Bool, a { parts.append("aborted=true") }
+        case "ghost_prompt":
+            if let s = shortSess(dict["session_id"] as? String) { parts.append(s) }
+            if let t = dict["text"] as? String { parts.append("len=\(t.count)") }
         case "session_created", "session_ready", "session_updated", "session_deleted",
              "compaction_complete", "compaction_error":
             if let s = shortSess(dict["session_id"] as? String) { parts.append(s) }
