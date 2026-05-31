@@ -1,6 +1,7 @@
 (ns voice-code.orchestration-server-test
   (:require [clojure.test :refer :all]
             [clojure.string :as str]
+            [clojure.tools.logging.test :as log-test]
             [voice-code.server :as server]
             [voice-code.recipes :as recipes]
             [voice-code.orchestration :as orch]
@@ -60,7 +61,47 @@
 
   (testing "handles exit for session not in recipe"
     (let [session-id "not-in-recipe"]
-      (server/exit-recipe-for-session session-id "test-reason"))))
+      (server/exit-recipe-for-session session-id "test-reason")))
+
+  (testing "records completion state in completed-recipes before dissoc"
+    (let [session-id "exit-records-completion"
+          state (server/start-recipe-for-session session-id :implement-and-review false)
+          _ (server/exit-recipe-for-session session-id "changes-committed")
+          completed (get @server/completed-recipes session-id)]
+      ;; Live orchestration entry is gone...
+      (is (nil? (server/get-session-recipe-state session-id)))
+      ;; ...but completion state is retained so the status endpoint can report it.
+      (is (some? completed) "completed-recipes should retain an entry after exit")
+      (is (= :implement-and-review (:recipe-id completed)))
+      (is (= "changes-committed" (:reason completed)))
+      (is (= (:step-count state) (:step-count completed)))
+      (is (integer? (:completed-at completed))
+          "completed-at should be recorded as epoch millis")))
+
+  (testing "does not record completion for a session not in a recipe"
+    (let [session-id "exit-no-state-no-record"]
+      (server/exit-recipe-for-session session-id "whatever")
+      (is (nil? (get @server/completed-recipes session-id))
+          "no completion entry when there was no active recipe"))))
+
+(deftest send-to-client!-nil-channel-test
+  (testing "nil channel is skipped silently: no WARN logged, no send, no throw"
+    ;; API-triggered recipes pass nil instead of a WebSocket channel. Before the
+    ;; nil guard, every state update emitted a WARN ('Channel not in
+    ;; connected-clients'); the guard must skip without logging. See
+    ;; beads tmux-untethered-mgi.
+    (let [send-calls (atom 0)]
+      (with-redefs [org.httpkit.server/send! (fn [_ _] (swap! send-calls inc))]
+        (log-test/with-log
+          ;; Must not throw, returns nil.
+          (is (nil? (server/send-to-client! nil {:type :recipe-state :session-id "s"})))
+          ;; Must not emit any WARN.
+          (let [warns (filterv #(= :warn (:level %)) (log-test/the-log))]
+            (is (empty? warns)
+                (str "Expected no WARN entries for nil channel, got: " warns)))
+          ;; Body never runs, so http/send! is never invoked.
+          (is (zero? @send-calls)
+              "http/send! must not be called for a nil channel"))))))
 
 (deftest get-next-step-prompt-test
   (testing "returns prompt with outcome requirements appended"

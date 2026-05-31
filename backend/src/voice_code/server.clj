@@ -694,6 +694,15 @@
   ;; Cleanup via exit-recipe-for-session when recipe completes or user cancels.
   (atom {}))
 
+(defonce completed-recipes
+  ;; Retains completion state for recipes that have finished: session-id ->
+  ;; {:recipe-id :reason :step-count :completed-at}. exit-recipe-for-session
+  ;; assocs an entry here before dissoc-ing from session-orchestration-state,
+  ;; so the recipe status endpoint can report finished runs (which are no longer
+  ;; in session-orchestration-state). No eviction — the atom is cleared on
+  ;; backend restart, and recipes complete at most a few times per hour.
+  (atom {}))
+
 ;; Stored API key loaded at startup. Used for authenticating all connections.
 (defonce api-key (atom nil))
 
@@ -829,46 +838,53 @@
   "Send message to a specific channel if it's connected.
    Applies truncation for messages with :text or :messages fields if needed.
 
+   A nil channel is skipped silently. API-triggered recipes (the recipe REST
+   API / supervisor run_recipe tool) run orchestration with no WebSocket
+   channel, so send-to-client! is called with nil. The nil guard returns
+   without logging; otherwise every state update would emit a WARN
+   (dozens per recipe run). See beads tmux-untethered-mgi.
+
    On send failure (e.g. dead socket), remove the channel from
    `connected-clients` and unsubscribe it from all sessions via
    `unregister-channel!`. Without this cleanup the channel would persist
    as a zombie subscriber, slowing every subsequent broadcast and leaking
    memory (see beads tmux-untethered-rxr)."
   [channel message-data]
-  (if (contains? @connected-clients channel)
-    (let [;; Apply truncation for messages that might have large content
-          max-bytes (get-client-max-message-size-bytes channel)
-          final-data (truncate-response-text message-data max-bytes)
-          json-str (generate-json final-data)
-          ;; One terse outbound line, with the fields that matter per type.
-          ;; A failure path adds a separate `warn` below; absence of the warn
-          ;; is the implicit "send succeeded."
-          ;; Silence high-frequency types so they don't dominate logs:
-          ;; :pong fires every keepalive, :command-output streams per-line.
-          msg-type (:type message-data)
-          silenced? (contains? #{:pong :command-output} msg-type)
-          summary (cond-> {:bytes (count json-str)}
-                    (:session-id message-data)  (assoc :sess (subs (str (:session-id message-data)) 0 (min 8 (count (str (:session-id message-data))))))
-                    (:first-seq message-data)   (assoc :first (:first-seq message-data))
-                    (:last-seq message-data)    (assoc :last (:last-seq message-data))
-                    (:next-seq message-data)    (assoc :next (:next-seq message-data))
-                    (:is-complete message-data) (assoc :complete? (:is-complete message-data))
-                    (:gap message-data)         (assoc :gap (get-in message-data [:gap :reason]))
-                    (:messages message-data)    (assoc :msgs (count (:messages message-data)))
-                    (:exit-code message-data)   (assoc :exit (:exit-code message-data))
-                    (:code message-data)        (assoc :code (:code message-data)))]
-      (when-not silenced?
-        (log/info (str "→ " msg-type) summary))
-      (try
-        (http/send! channel json-str)
-        (catch Exception e
-          (log/warn e "Failed to send to client; removing dead channel"
-                    {:type msg-type :bytes (count json-str)})
-          (try
-            (unregister-channel! channel)
-            (catch Exception cleanup-e
-              (log/warn cleanup-e "Failed to clean up dead channel after send failure"))))))
-    (log/warn "Channel not in connected-clients, skipping send" {:type (:type message-data)})))
+  (when (some? channel)
+    (if (contains? @connected-clients channel)
+      (let [;; Apply truncation for messages that might have large content
+            max-bytes (get-client-max-message-size-bytes channel)
+            final-data (truncate-response-text message-data max-bytes)
+            json-str (generate-json final-data)
+            ;; One terse outbound line, with the fields that matter per type.
+            ;; A failure path adds a separate `warn` below; absence of the warn
+            ;; is the implicit "send succeeded."
+            ;; Silence high-frequency types so they don't dominate logs:
+            ;; :pong fires every keepalive, :command-output streams per-line.
+            msg-type (:type message-data)
+            silenced? (contains? #{:pong :command-output} msg-type)
+            summary (cond-> {:bytes (count json-str)}
+                      (:session-id message-data)  (assoc :sess (subs (str (:session-id message-data)) 0 (min 8 (count (str (:session-id message-data))))))
+                      (:first-seq message-data)   (assoc :first (:first-seq message-data))
+                      (:last-seq message-data)    (assoc :last (:last-seq message-data))
+                      (:next-seq message-data)    (assoc :next (:next-seq message-data))
+                      (:is-complete message-data) (assoc :complete? (:is-complete message-data))
+                      (:gap message-data)         (assoc :gap (get-in message-data [:gap :reason]))
+                      (:messages message-data)    (assoc :msgs (count (:messages message-data)))
+                      (:exit-code message-data)   (assoc :exit (:exit-code message-data))
+                      (:code message-data)        (assoc :code (:code message-data)))]
+        (when-not silenced?
+          (log/info (str "→ " msg-type) summary))
+        (try
+          (http/send! channel json-str)
+          (catch Exception e
+            (log/warn e "Failed to send to client; removing dead channel"
+                      {:type msg-type :bytes (count json-str)})
+            (try
+              (unregister-channel! channel)
+              (catch Exception cleanup-e
+                (log/warn cleanup-e "Failed to clean up dead channel after send failure"))))))
+      (log/warn "Channel not in connected-clients, skipping send" {:type (:type message-data)}))))
 
 (defn send-recent-sessions!
   "Send the recent sessions list to a connected client.
@@ -977,10 +993,19 @@
 (declare recipe-turn-callbacks)
 
 (defn exit-recipe-for-session
-  "Exit orchestration for a session"
+  "Exit orchestration for a session.
+   Records completion state in `completed-recipes` (session-id ->
+   {:recipe-id :reason :step-count :completed-at}) BEFORE dissoc-ing the live
+   orchestration entry, so the recipe status endpoint can still report the
+   finished run. See beads tmux-untethered-mgi."
   [session-id reason]
   (when-let [state (get-session-recipe-state session-id)]
     (orch/log-orchestration-event "recipe-exited" session-id (:recipe-id state) (:current-step state) {:reason reason})
+    (swap! completed-recipes assoc session-id
+           {:recipe-id (:recipe-id state)
+            :reason reason
+            :step-count (:step-count state)
+            :completed-at (System/currentTimeMillis)})
     (swap! session-orchestration-state dissoc session-id))
   ;; Drop any orphaned turn-complete callback so the atom doesn't leak entries
   ;; when a recipe exits mid-flight (e.g., tmux window killed externally,
