@@ -20,6 +20,75 @@
           block (orch/find-json-block response)]
       (is (nil? block)))))
 
+(deftest find-json-block-whole-response-test
+  (testing "outcome found when it is the last line"
+    (is (= "{\"outcome\": \"complete\"}"
+           (orch/find-json-block "Doing the work...\n{\"outcome\": \"complete\"}"))))
+
+  (testing "outcome found when followed by more than 4 trailing lines"
+    ;; Regression for the old 5-line window: the outcome is line 1 of 7.
+    (is (= "{\"outcome\": \"complete\"}"
+           (orch/find-json-block "{\"outcome\": \"complete\"}\na\nb\nc\nd\ne\nf"))))
+
+  (testing "last whole-line object wins across the whole response"
+    (is (= "{\"outcome\": \"issues-found\"}"
+           (orch/find-json-block "{\"outcome\": \"x\"}\ntext\n{\"outcome\": \"issues-found\"}\nx\ny\nz\nw"))))
+
+  (testing "outcome found inside a ```json fence"
+    (is (= "{\"outcome\": \"complete\"}"
+           (orch/find-json-block "```json\n{\"outcome\": \"complete\"}\n```"))))
+
+  (testing "outcome found inside a ```json fence surrounded by prose"
+    (is (= "{\"outcome\": \"complete\"}"
+           (orch/find-json-block "Here is the result:\n\n```json\n{\"outcome\": \"complete\"}\n```\n\nThanks!"))))
+
+  (testing "multi-line / pretty-printed JSON inside a fence is captured whole"
+    (is (= "{\n  \"outcome\": \"blocked\"\n}"
+           (orch/find-json-block "```json\n{\n  \"outcome\": \"blocked\"\n}\n```"))))
+
+  (testing "last fence wins when multiple ```json fences are present"
+    (is (= "{\"outcome\": \"second\"}"
+           (orch/find-json-block "```json\n{\"outcome\": \"first\"}\n```\nthen\n```json\n{\"outcome\": \"second\"}\n```"))))
+
+  (testing "a fenced example earlier in the turn does not shadow the real final bare outcome"
+    ;; The recipe prompt asks for a bare outcome on the last line; an agent that
+    ;; first shows a fenced example must not have that example win (last-by-
+    ;; position wins, not fence-first).
+    (is (= "{\"outcome\": \"issues-found\"}"
+           (orch/find-json-block
+            (str "Here's the format I'll use:\n"
+                 "```json\n{\"outcome\": \"no-issues\"}\n```\n"
+                 "After reviewing, I found problems.\n\n"
+                 "{\"outcome\": \"issues-found\"}")))))
+
+  (testing "a final multi-line fenced outcome wins over an earlier bare object"
+    (is (= "{\n  \"outcome\": \"blocked\"\n}"
+           (orch/find-json-block
+            (str "{\"outcome\": \"draft\"}\nworking...\n"
+                 "```json\n{\n  \"outcome\": \"blocked\"\n}\n```")))))
+
+  (testing "returns nil when no outcome object exists anywhere"
+    (is (nil? (orch/find-json-block "no json here\njust prose\nover several\nlines\nand more"))))
+
+  (testing "returns nil for empty or blank text"
+    (is (nil? (orch/find-json-block "")))
+    (is (nil? (orch/find-json-block "   \n  \n"))))
+
+  (testing "ignores a fence that contains no JSON object"
+    (is (nil? (orch/find-json-block "```json\nnot really json\n```"))))
+
+  (testing "extract-orchestration-outcome succeeds when the outcome is beyond the last 5 lines"
+    (let [response "{\"outcome\": \"complete\"}\nstep 1 done\nstep 2 done\nstep 3 done\nstep 4 done\nstep 5 done\nstep 6 done"
+          result (orch/extract-orchestration-outcome response #{:complete :other})]
+      (is (true? (:success result)))
+      (is (= :complete (:outcome result)))))
+
+  (testing "extract-orchestration-outcome succeeds for multi-line JSON in a fence"
+    (let [response "Here you go:\n```json\n{\n  \"outcome\": \"blocked\"\n}\n```"
+          result (orch/extract-orchestration-outcome response #{:complete :blocked :other})]
+      (is (true? (:success result)))
+      (is (= :blocked (:outcome result))))))
+
 (deftest markdown-fence-removal-test
   (testing "removes markdown code fences"
     (let [input "```json\n{\"outcome\": \"no-issues\"}\n```"
