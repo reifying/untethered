@@ -160,3 +160,6 @@ android/app/debug/
 *.dex
 # br doctor per-run artifacts
 .doctor/
+
+# Untethered session working-directory artifacts (resources, uploaded logs, api-key, command-history)
+.untethered/
