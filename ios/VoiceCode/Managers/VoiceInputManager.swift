@@ -18,6 +18,17 @@ class VoiceInputManager: NSObject, ObservableObject {
     /// Reference to voice output manager for muting TTS during recording
     private weak var voiceOutputManager: VoiceOutputManager?
 
+    /// True while THIS instance holds the recording-active gate raised on the
+    /// shared VoiceOutputManager. Multiple VoiceInputManagers share one
+    /// VoiceOutputManager (one per ConversationView, plus the macOS menu-bar
+    /// instance), so deinit must release ONLY the gate this instance owns —
+    /// clearing unconditionally would let a non-recording manager's deallocation
+    /// wipe the gate another manager raised while actively recording, re-opening
+    /// the TTS-into-open-mic feedback loop. Tracked in lockstep with
+    /// `voiceOutputManager.isRecordingActive`. Internal (not private) so the
+    /// ownership invariant can be exercised in tests, mirroring `isRecordingActive`.
+    var didRaiseRecordingGate = false
+
     var onTranscriptionComplete: ((String) -> Void)?
 
     init(voiceOutputManager: VoiceOutputManager? = nil) {
@@ -25,6 +36,10 @@ class VoiceInputManager: NSObject, ObservableObject {
         super.init()
         speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
         authorizationStatus = SFSpeechRecognizer.authorizationStatus()
+    }
+
+    private func log(_ message: String) {
+        LogManager.shared.log(message, category: "VoiceInput")
     }
 
     // MARK: - Authorization
@@ -54,6 +69,13 @@ class VoiceInputManager: NSObject, ObservableObject {
     /// restart any audio-output keep-alive player in the correct session context,
     /// so it doesn't lose the Now Playing slot mid-recording.
     func startRecording(onSessionReady: (() -> Void)? = nil) {
+        // Gate up FIRST — blocks any new speech (e.g. WebSocket-delivered
+        // assistant messages auto-spoken by SessionSyncManager) from being
+        // enqueued during the async window between here and audio session
+        // configuration. Cleared in stopRecording() or on any error exit below.
+        voiceOutputManager?.isRecordingActive = true
+        didRaiseRecordingGate = true
+
         // Stop TTS first so the mic doesn't pick up speech output AND so the
         // synthesizer fully releases the audio session before we flip it to
         // .record. Without waiting, the first tap of the mic during TTS would
@@ -71,9 +93,21 @@ class VoiceInputManager: NSObject, ObservableObject {
     }
 
     private func startRecordingAfterTTSStopped(onSessionReady: (() -> Void)? = nil) {
+        // Clear the recording-active gate on any early/error return below; only
+        // the successful path keeps it raised. A single defer covers every
+        // current and future error path automatically — no per-exit cleanup to
+        // forget (a stuck-true flag would suppress all TTS until app relaunch).
+        var recordingStarted = false
+        defer {
+            if !recordingStarted {
+                voiceOutputManager?.isRecordingActive = false
+                didRaiseRecordingGate = false
+            }
+        }
+
         // Check authorization
         guard authorizationStatus == .authorized else {
-            LogManager.shared.log("Speech recognition not authorized", category: "VoiceInput")
+            log("Speech recognition not authorized")
             return
         }
 
@@ -106,8 +140,7 @@ class VoiceInputManager: NSObject, ObservableObject {
             // elsewhere. Does NOT activate HFP — AirPods stay in A2DP mode.
             try audioSession.setCategory(.playAndRecord, mode: .default, options: [.allowBluetoothA2DP])
             try audioSession.setActive(true)
-            let msg = "VoiceInput: audio session → .playAndRecord/.default (was \(prevCategory)/\(prevMode)) route=\(audioSession.currentRoute.inputs.map(\.portName))"
-            LogManager.shared.log(msg, category: "VoiceInput")
+            log("VoiceInput: audio session → .playAndRecord/.default (was \(prevCategory)/\(prevMode)) route=\(audioSession.currentRoute.inputs.map(\.portName))")
             // Notify caller that session is in .playAndRecord context. Dispatched
             // async on main so it runs after this function returns and after
             // audioEngine.start() — but still in the .playAndRecord session.
@@ -115,8 +148,7 @@ class VoiceInputManager: NSObject, ObservableObject {
             // in the new session context so it actually starts outputting audio.
             DispatchQueue.main.async { onSessionReady?() }
         } catch {
-            let msg = "VoiceInput: failed to configure audio session: \(error.localizedDescription) (was \(prevCategory)/\(prevMode))"
-            LogManager.shared.log("❌ \(msg)", category: "VoiceInput")
+            log("❌ VoiceInput: failed to configure audio session: \(error.localizedDescription) (was \(prevCategory)/\(prevMode))")
             return
         }
         #endif
@@ -125,7 +157,7 @@ class VoiceInputManager: NSObject, ObservableObject {
         // Create recognition request
         recognitionRequest = SFSpeechAudioBufferRecognitionRequest()
         guard let recognitionRequest = recognitionRequest else {
-            LogManager.shared.log("Unable to create recognition request", category: "VoiceInput")
+            log("Unable to create recognition request")
             return
         }
 
@@ -134,7 +166,7 @@ class VoiceInputManager: NSObject, ObservableObject {
         // Create audio engine
         audioEngine = AVAudioEngine()
         guard let audioEngine = audioEngine else {
-            LogManager.shared.log("Unable to create audio engine", category: "VoiceInput")
+            log("Unable to create audio engine")
             return
         }
 
@@ -150,7 +182,7 @@ class VoiceInputManager: NSObject, ObservableObject {
         do {
             try audioEngine.start()
         } catch {
-            LogManager.shared.log("Failed to start audio engine: \(error)", category: "VoiceInput")
+            log("Failed to start audio engine: \(error)")
             return
         }
 
@@ -166,18 +198,23 @@ class VoiceInputManager: NSObject, ObservableObject {
             }
 
             if let error = error {
-                LogManager.shared.log("VoiceInput: recognition ended with error: \(error.localizedDescription), isFinal=\(result?.isFinal ?? false)", category: "VoiceInput")
+                self.log("VoiceInput: recognition ended with error: \(error.localizedDescription), isFinal=\(result?.isFinal ?? false)")
                 self.stopRecording()
             } else if result?.isFinal == true {
-                LogManager.shared.log("VoiceInput: recognition finalized, text='\(result?.bestTranscription.formattedString ?? "")'", category: "VoiceInput")
+                self.log("VoiceInput: recognition finalized, text='\(result?.bestTranscription.formattedString ?? "")'")
                 self.stopRecording()
             }
         }
 
-        let startMsg = "VoiceInput: recording started — engine running, route=\(audioEngine.inputNode.outputFormat(forBus: 0).sampleRate)Hz"
-        LogManager.shared.log(startMsg, category: "VoiceInput")
+        recordingStarted = true
+        log("VoiceInput: recording started — engine running, route=\(audioEngine.inputNode.outputFormat(forBus: 0).sampleRate)Hz")
         DispatchQueue.main.async {
             self.isRecording = true
+            // Keep the gate consistent with isRecording: if stopRecording() ran
+            // during the async stop-completion window and cleared the flag,
+            // re-raise it so TTS stays suppressed while the mic is actually open.
+            self.voiceOutputManager?.isRecordingActive = true
+            self.didRaiseRecordingGate = true
             self.transcribedText = ""
         }
     }
@@ -192,19 +229,35 @@ class VoiceInputManager: NSObject, ObservableObject {
         // .playAndRecord immediately after calling stopRecording(), and deactivating first
         // creates a race window where another app can seize the Now Playing slot. For
         // non-headset usage the session staying active in .playAndRecord is harmless.
-        let sessionMsg = "VoiceInput: stopRecording — session left active, category=\(AVAudioSession.sharedInstance().category.rawValue)"
-        LogManager.shared.log(sessionMsg, category: "VoiceInput")
+        log("VoiceInput: stopRecording — session left active, category=\(AVAudioSession.sharedInstance().category.rawValue)")
         #endif
 
-        LogManager.shared.log("VoiceInput: recording stopped", category: "VoiceInput")
+        log("VoiceInput: recording stopped")
         DispatchQueue.main.async {
             self.isRecording = false
+            // Gate down — allow TTS to resume now that the mic is closed.
+            self.voiceOutputManager?.isRecordingActive = false
+            self.didRaiseRecordingGate = false
+            // Note: onTranscriptionComplete callback is never set - handled by view layer instead
         }
     }
 
     // MARK: - Cleanup
 
     deinit {
+        // Release the recording gate ONLY if this instance currently owns it.
+        // stopRecording() clears it via an async main-queue hop, but only when
+        // isRecording is true; if we are deallocated during the stop-completion
+        // window — after startRecording() raised the gate but before isRecording
+        // flipped true — neither path runs and the gate would stick true on the
+        // (surviving) VoiceOutputManager, suppressing ALL TTS until app relaunch.
+        // The ownership check is essential because multiple VoiceInputManagers
+        // share one VoiceOutputManager: an unconditional clear here would let a
+        // non-recording manager's deallocation wipe the gate another manager
+        // raised while actively recording, re-opening the feedback loop.
+        if didRaiseRecordingGate {
+            voiceOutputManager?.isRecordingActive = false
+        }
         if isRecording {
             stopRecording()
         }

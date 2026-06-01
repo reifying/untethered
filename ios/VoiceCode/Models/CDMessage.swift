@@ -129,10 +129,15 @@ extension CDMessage {
         return request
     }
     
-    /// Fetch a specific message by ID
+    /// Fetch a specific message by ID.
+    /// Carries a sort descriptor so it is safe to use with SwiftUI's `@FetchRequest`
+    /// (backed by NSFetchedResultsController, which crashes without one). The
+    /// unique-id predicate + fetchLimit 1 make the sort a no-op for plain
+    /// `context.fetch` callers.
     static func fetchMessage(id: UUID) -> NSFetchRequest<CDMessage> {
         let request = fetchRequest()
         request.predicate = NSPredicate(format: "id == %@", id as CVarArg)
+        request.sortDescriptors = [NSSortDescriptor(keyPath: \CDMessage.timestamp, ascending: true)]
         request.fetchLimit = 1
         return request
     }

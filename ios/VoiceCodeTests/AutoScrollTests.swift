@@ -399,4 +399,128 @@ final class AutoScrollTests: XCTestCase {
 
         XCTAssertFalse(isLoading, "isLoading should remain false — no double-clear side effect")
     }
+
+    // MARK: - View Full Sheet Suppression (tmux-untethered-9w4)
+    //
+    // Limitation: these are specification tests. The helpers below re-state the
+    // ConversationView guard logic rather than driving the SwiftUI view (which
+    // can't be exercised without a render harness — same approach as the
+    // testLoadingSpinner_* tests above). They lock in the intended boolean
+    // contract and catch transcription drift, but a change to the real guards in
+    // ConversationView.swift will NOT fail them on its own. Keep the helpers in
+    // sync with the production guards by hand.
+
+    /// Mirrors the auto-scroll gate in ConversationView's onChange(of: messages.count):
+    ///
+    ///     guard newCount > oldCount else { return }
+    ///     guard fullMessageSnapshot == nil else { return }   // skip while sheet open
+    ///     if autoScrollEnabled { /* schedule debounced scroll */ }
+    ///
+    /// Returns whether the debounced scroll would be scheduled.
+    private func wouldScheduleAutoScroll(
+        oldCount: Int,
+        newCount: Int,
+        sheetOpen: Bool,
+        autoScrollEnabled: Bool
+    ) -> Bool {
+        guard newCount > oldCount else { return false }
+        guard !sheetOpen else { return false }
+        return autoScrollEnabled
+    }
+
+    /// Mirrors the re-check inside the 0.3s debounced closure:
+    ///
+    ///     guard self.autoScrollEnabled,
+    ///           self.fullMessageSnapshot == nil,
+    ///           let lastMessage = self.messages.last else { return }
+    ///
+    /// Returns whether the debounced closure would actually scroll.
+    private func debouncedWouldScroll(
+        autoScrollEnabled: Bool,
+        sheetOpen: Bool,
+        hasLastMessage: Bool
+    ) -> Bool {
+        return autoScrollEnabled && !sheetOpen && hasLastMessage
+    }
+
+    func testAutoScroll_SuppressedWhileSheetOpen() {
+        // New messages arrive while the View Full sheet is open — the background
+        // list must NOT auto-scroll away from what the user is reading.
+        let scheduled = wouldScheduleAutoScroll(
+            oldCount: 5, newCount: 7, sheetOpen: true, autoScrollEnabled: true
+        )
+
+        XCTAssertFalse(scheduled, "Auto-scroll must be suppressed while the View Full sheet is open")
+    }
+
+    func testAutoScroll_ProceedsWhenSheetClosed() {
+        // Without the sheet open, auto-scroll works normally for new messages.
+        let scheduled = wouldScheduleAutoScroll(
+            oldCount: 5, newCount: 7, sheetOpen: false, autoScrollEnabled: true
+        )
+
+        XCTAssertTrue(scheduled, "Auto-scroll should fire normally when no sheet is open")
+    }
+
+    func testAutoScroll_StillRespectsDisabledToggleWhenSheetClosed() {
+        // The sheet guard must not override the existing autoScrollEnabled gate.
+        let scheduled = wouldScheduleAutoScroll(
+            oldCount: 5, newCount: 7, sheetOpen: false, autoScrollEnabled: false
+        )
+
+        XCTAssertFalse(scheduled, "Auto-scroll stays off when the user has disabled it, sheet or not")
+    }
+
+    func testAutoScroll_NoNewMessagesNeverScrolls() {
+        // Count not increasing short-circuits before any sheet check.
+        let scheduled = wouldScheduleAutoScroll(
+            oldCount: 7, newCount: 7, sheetOpen: false, autoScrollEnabled: true
+        )
+
+        XCTAssertFalse(scheduled, "No auto-scroll when message count did not increase")
+    }
+
+    func testAutoScroll_DebouncedRecheckSkipsIfSheetOpenedDuringDelay() {
+        // Scroll was scheduled while the sheet was closed, but the user opened the
+        // View Full sheet during the 0.3s debounce — the closure must re-check and bail.
+        XCTAssertTrue(
+            wouldScheduleAutoScroll(oldCount: 5, newCount: 6, sheetOpen: false, autoScrollEnabled: true),
+            "Scroll should be scheduled when the sheet is closed at message-arrival time"
+        )
+
+        let scrolled = debouncedWouldScroll(autoScrollEnabled: true, sheetOpen: true, hasLastMessage: true)
+
+        XCTAssertFalse(scrolled, "Debounced closure must not scroll if the sheet opened during the delay")
+    }
+
+    func testAutoScroll_DebouncedRecheckProceedsWhenSheetStillClosed() {
+        let scrolled = debouncedWouldScroll(autoScrollEnabled: true, sheetOpen: false, hasLastMessage: true)
+
+        XCTAssertTrue(scrolled, "Debounced closure should scroll when the sheet is still closed")
+    }
+
+    func testSheetClose_LiftsSuppressionWithoutReengageStep() {
+        // Requirement #3: closing the sheet must not itself jump to bottom, and
+        // auto-scroll must resume for the NEXT message without any explicit
+        // re-engage step. Suppression is purely state-driven (sheetOpen), and the
+        // gate only fires on a messages.count increase — closing the sheet is not
+        // a count change, so it can never trigger a scroll on its own.
+        //
+        // autoScrollEnabled is passed as `true` in BOTH calls to demonstrate the
+        // close transition does not mutate it; the only thing that changes between
+        // the two calls is sheetOpen flipping false.
+
+        // While open: a new inbound message is suppressed.
+        XCTAssertFalse(
+            wouldScheduleAutoScroll(oldCount: 5, newCount: 6, sheetOpen: true, autoScrollEnabled: true),
+            "New messages must be suppressed while the sheet is open"
+        )
+
+        // After close: the next inbound message scrolls again, automatically —
+        // no separate re-engage call, just sheetOpen == false.
+        XCTAssertTrue(
+            wouldScheduleAutoScroll(oldCount: 6, newCount: 7, sheetOpen: false, autoScrollEnabled: true),
+            "Closing the sheet lifts suppression automatically for the next message"
+        )
+    }
 }
