@@ -212,6 +212,15 @@ struct ConversationView: View {
                                 .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
                                 .listRowSeparator(.hidden)
                             }
+
+                            // Always-present, zero-height bottom anchor. Never removed,
+                            // so its index path is always valid — scrolling to it can
+                            // never raise (unlike a prunable messages.last?.id).
+                            Color.clear
+                                .frame(height: 0)
+                                .id(Self.bottomAnchorID)
+                                .listRowInsets(EdgeInsets())
+                                .listRowSeparator(.hidden)
                         }
                         .listStyle(.plain)
                         .scrollContentBackground(.hidden)
@@ -221,10 +230,8 @@ struct ConversationView: View {
                             // This handles the case where messages are already loaded from CoreData
                             if !hasPerformedInitialScroll && !messages.isEmpty {
                                 hasPerformedInitialScroll = true
-                                if let lastMessage = messages.last {
-                                    LogManager.shared.log("📨 Initial scroll on ScrollViewReader appear", category: "ConversationView")
-                                    proxy.scrollTo(lastMessage.id, anchor: .bottom)
-                                }
+                                LogManager.shared.log("📨 Initial scroll on ScrollViewReader appear", category: "ConversationView")
+                                proxy.scrollTo(Self.bottomAnchorID, anchor: .bottom)
                             }
                         }
                         .onChange(of: messages.count) { oldCount, newCount in
@@ -269,10 +276,9 @@ struct ConversationView: View {
                                     // Re-check autoScrollEnabled and sheet state after delay in case
                                     // the user disabled scroll or opened the View Full sheet meanwhile.
                                     guard self.autoScrollEnabled,
-                                          self.fullMessageSnapshot == nil,
-                                          let lastMessage = self.messages.last else { return }
-                                    LogManager.shared.log("📨 Scrolling to last message (debounced)", category: "ConversationView")
-                                    proxy.scrollTo(lastMessage.id, anchor: .bottom)
+                                          self.fullMessageSnapshot == nil else { return }
+                                    LogManager.shared.log("📨 Scrolling to bottom anchor (debounced)", category: "ConversationView")
+                                    proxy.scrollTo(Self.bottomAnchorID, anchor: .bottom)
                                 }
                             } else {
                                 LogManager.shared.log("📨 Skipping auto-scroll (disabled)", category: "ConversationView")
@@ -280,10 +286,10 @@ struct ConversationView: View {
                         }
                         .onChange(of: isLoading) { wasLoading, nowLoading in
                             // When loading finishes, perform initial scroll to bottom
-                            if wasLoading && !nowLoading && !hasPerformedInitialScroll, let lastMessage = messages.last {
+                            if wasLoading && !nowLoading && !hasPerformedInitialScroll, !messages.isEmpty {
                                 hasPerformedInitialScroll = true
                                 // Non-animated for immediate positioning
-                                proxy.scrollTo(lastMessage.id, anchor: .bottom)
+                                proxy.scrollTo(Self.bottomAnchorID, anchor: .bottom)
                             }
                         }
                     }
@@ -1275,10 +1281,10 @@ struct ConversationView: View {
             LogManager.shared.log("🔘 [AutoScroll] Re-enabling via manual toggle and jumping to bottom", category: "ConversationView")
             autoScrollEnabled = true
 
-            if let proxy = scrollProxy, let lastMessage = messages.last {
-                LogManager.shared.log("🔘 [AutoScroll] Scrolling to last message", category: "ConversationView")
+            if let proxy = scrollProxy, !messages.isEmpty {
+                LogManager.shared.log("🔘 [AutoScroll] Scrolling to bottom anchor", category: "ConversationView")
                 // Note: Removed withAnimation wrapper to prevent multiple layout passes
-                proxy.scrollTo(lastMessage.id, anchor: .bottom)
+                proxy.scrollTo(Self.bottomAnchorID, anchor: .bottom)
             } else {
                 LogManager.shared.log("🔘 [AutoScroll] No scroll proxy or messages available", category: "ConversationView")
             }
@@ -1379,6 +1385,15 @@ struct ConversationView: View {
             LogManager.shared.log("❌ [Queue] Failed to remove session from queue: \(error)", category: "ConversationView")
         }
     }
+}
+
+extension ConversationView {
+    /// Constant, always-present scroll target. The List appends a zero-height row
+    /// with this id after ForEach(messages), so the anchor is always the last row
+    /// and its index path is always valid. Scrolling to it can never raise the
+    /// invalid-index-path exception that scrolling to a prunable messages.last?.id
+    /// did. This is the single permitted scrollTo target — never pass a CDMessage.id.
+    static let bottomAnchorID = "conversation-bottom-anchor"
 }
 
 
