@@ -158,3 +158,5 @@ android/app/debug/
 *.aab
 *.ap_
 *.dex
+# br doctor per-run artifacts
+.doctor/
