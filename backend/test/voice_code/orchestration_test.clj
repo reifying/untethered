@@ -191,8 +191,8 @@
     (let [recipe (recipes/get-recipe :implement-and-review)
           state {:recipe-id :implement-and-review
                  :step-count 5
-                 :step-visit-counts {:implement 2 :code-review 3}}]
-      ;; code-review has been visited 3 times, max-step-visits is 3
+                 :step-visit-counts {:implement 2 :code-review 10}}]
+      ;; code-review has been visited 10 times, max-step-visits is 10
       (is (some? (orch/should-exit-recipe? state recipe :code-review)))))
 
   (testing "detects when max total steps exceeded"
@@ -214,7 +214,7 @@
     (let [recipe (recipes/get-recipe :implement-and-review)
           state {:recipe-id :implement-and-review
                  :step-count 5
-                 :step-visit-counts {:fix 3}}]
+                 :step-visit-counts {:fix 10}}]
       (is (= "max-step-visits-exceeded:fix" (orch/should-exit-recipe? state recipe :fix)))))
 
   (testing "returns reason string for max-total-steps"

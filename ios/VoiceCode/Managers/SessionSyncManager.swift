@@ -1431,7 +1431,180 @@ class SessionSyncManager {
         
         LogManager.shared.log("Reconciled optimistic message: \(message.id)", category: "SessionSync")
     }
-    
+
+    // MARK: - Ghost Prompt Reconciliation
+
+    /// Pending ghost reconciliations: sessionId → queue of optimistic message ids
+    /// awaiting their `ghost_prompt` (success) or error event. A ghost send
+    /// registers its bubble's id here so the matching event reconciles THAT bubble
+    /// rather than merely "the latest sending message" — which an interleaved
+    /// *ordinary* send would otherwise displace. That ordinary-interleave case is
+    /// the realistic one: ghost mode resets after each send, so a second
+    /// concurrent ghost on the same session requires a deliberate re-toggle.
+    ///
+    /// Drained oldest-first. This is **exact** for the common case (at most one
+    /// ghost in flight per session) and **best-effort** otherwise: two concurrent
+    /// ghosts on the SAME session can have their `ghost_prompt` events emitted out
+    /// of send order, because the backend generates each P on an independent
+    /// fork/future with no per-session serialization (server.clj ghost dispatch),
+    /// so the slower task's event can arrive second. The event carries no
+    /// correlation id (only session_id + text), so the client cannot perfectly
+    /// disambiguate that case — the worst outcome is the two effective prompts
+    /// annotating each other's bubble (cosmetic, no data loss). A precise fix
+    /// would require the protocol to echo a per-send correlation key.
+    ///
+    /// Main-thread access only: registered from `createOptimisticMessage`'s
+    /// main-queue completion, drained from `VoiceCodeClient`'s main-queue handler.
+    private var pendingGhostMessageIds: [UUID: [UUID]] = [:]
+
+    /// Remember the optimistic bubble a ghost send just created so its later
+    /// `ghost_prompt`/error event can target it precisely. Call on the main thread.
+    func registerPendingGhost(sessionId: UUID, messageId: UUID) {
+        pendingGhostMessageIds[sessionId, default: []].append(messageId)
+    }
+
+    /// Pop the oldest pending ghost bubble id for a session (oldest-first), or nil
+    /// when none is registered (e.g. the in-memory registry was lost to an app
+    /// restart between send and event). Call on the main thread.
+    private func dequeuePendingGhost(sessionId: UUID) -> UUID? {
+        guard var queue = pendingGhostMessageIds[sessionId], !queue.isEmpty else { return nil }
+        let id = queue.removeFirst()
+        if queue.isEmpty {
+            pendingGhostMessageIds.removeValue(forKey: sessionId)
+        } else {
+            pendingGhostMessageIds[sessionId] = queue
+        }
+        return id
+    }
+
+    /// Display text for a reconciled ghost bubble. Keeps the user's task (when
+    /// known) and appends the effective prompt P the agent actually acted on.
+    /// Defensive guard: an already-annotated bubble (leading 👻) is returned
+    /// unchanged so a re-annotation can't double-wrap it. (Whole-event
+    /// idempotency on a re-delivered `ghost_prompt` is enforced separately in
+    /// `reconcileGhostPrompt`.)
+    static func ghostDisplayText(task: String?, effectivePrompt: String) -> String {
+        let trimmedTask = (task ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmedTask.hasPrefix("👻") { return trimmedTask }
+        let trimmedPrompt = effectivePrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmedTask.isEmpty {
+            return "👻 Effective prompt\n\(trimmedPrompt)"
+        }
+        return "👻 Ghost task: \(trimmedTask)\n\n— Effective prompt —\n\(trimmedPrompt)"
+    }
+
+    /// The optimistic bubble a ghost event should act on: the precise row the
+    /// send registered (`targetId`, still `.sending`) when known, else the most
+    /// recent still-`.sending` user row as a best-effort fallback (lost registry).
+    private static func ghostBubble(targetId: UUID?, sessionId: UUID, in context: NSManagedObjectContext) -> CDMessage? {
+        if let targetId = targetId {
+            let req = CDMessage.fetchRequest()
+            req.predicate = NSPredicate(format: "id == %@ AND sessionId == %@ AND status == %@",
+                                        targetId as CVarArg, sessionId as CVarArg, MessageStatus.sending.rawValue)
+            req.fetchLimit = 1
+            if let hit = (try? context.fetch(req))?.first { return hit }
+        }
+        return try? context.fetch(CDMessage.fetchLatestSendingUserMessage(sessionId: sessionId)).first
+    }
+
+    /// True when some row in the session already carries `needle`. Used to make a
+    /// re-delivered `ghost_prompt` idempotent: once P is present (whether annotated
+    /// onto the task bubble or stand-alone), a duplicate fallback bubble is skipped.
+    private static func sessionHasMessageContaining(_ needle: String, sessionId: UUID, in context: NSManagedObjectContext) -> Bool {
+        let trimmed = needle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        let req = CDMessage.fetchRequest()
+        req.predicate = NSPredicate(format: "sessionId == %@ AND text CONTAINS %@", sessionId as CVarArg, trimmed)
+        req.fetchLimit = 1
+        return ((try? context.count(for: req)) ?? 0) > 0
+    }
+
+    /// Reconcile a ghost send: the optimistic bubble currently shows the *task X*
+    /// the user typed, but the agent acts on the effective prompt *P* carried by
+    /// the `ghost_prompt` event. Annotate the send's registered bubble in place
+    /// with P and confirm it. If that row is gone (pruned/late/lost registry),
+    /// create a confirmed bubble carrying P — the event is the only channel that
+    /// delivers P to iOS, so it must never be dropped silently — unless P is
+    /// already present (re-delivered event), which is a no-op for idempotency.
+    /// See ghost-prompt design §3.3 / protocol §ghost.
+    func reconcileGhostPrompt(sessionId: UUID, effectivePrompt: String) {
+        let targetId = dequeuePendingGhost(sessionId: sessionId)
+        let sessionIdStr = sessionId.uuidString.lowercased()
+        persistenceController.performBackgroundTask { [weak self] context in
+            guard self != nil else { return }
+
+            if let optimistic = Self.ghostBubble(targetId: targetId, sessionId: sessionId, in: context) {
+                optimistic.text = Self.ghostDisplayText(task: optimistic.text, effectivePrompt: effectivePrompt)
+                optimistic.messageStatus = .confirmed
+                optimistic.serverTimestamp = Date()
+                optimistic.session?.preview = String(optimistic.text.prefix(100))
+                LogManager.shared.log("👻 Reconciled ghost optimistic bubble for session \(sessionIdStr)", category: "SessionSync")
+            } else {
+                // No optimistic row to annotate. P must still surface — unless it
+                // is already present (a re-delivered event), which we skip so the
+                // reconcile stays idempotent.
+                guard !Self.sessionHasMessageContaining(effectivePrompt, sessionId: sessionId, in: context) else {
+                    LogManager.shared.log("👻 ghost_prompt P already present for session \(sessionIdStr); skipping duplicate", category: "SessionSync")
+                    return
+                }
+                let fetch = CDBackendSession.fetchBackendSession(id: sessionId)
+                guard let session = try? context.fetch(fetch).first else {
+                    LogManager.shared.log("👻 ghost_prompt for unknown session \(sessionIdStr); dropping effective prompt", category: "SessionSync")
+                    return
+                }
+                let messageId = UUID()
+                let message = CDMessage(context: context)
+                message.id = messageId
+                message.sessionId = sessionId
+                message.role = "user"
+                message.text = Self.ghostDisplayText(task: nil, effectivePrompt: effectivePrompt)
+                message.timestamp = Date()
+                message.serverTimestamp = Date()
+                message.messageStatus = .confirmed
+                message.session = session
+                // Negative sentinel seq/offset so the (sessionId, offset) upsert
+                // path never matches this locally-minted row (mirrors the
+                // optimistic-message convention).
+                message.seq = Self.optimisticSeq(for: messageId)
+                message.offset = Self.optimisticSeq(for: messageId)
+                session.lastModified = Date()
+                session.messageCount += 1
+                session.preview = String(message.text.prefix(100))
+                LogManager.shared.log("👻 Created fallback ghost bubble for session \(sessionIdStr)", category: "SessionSync")
+            }
+
+            do {
+                if context.hasChanges { try context.save() }
+            } catch {
+                LogManager.shared.log("Failed to save ghost reconcile for \(sessionIdStr): \(error.localizedDescription)", category: "SessionSync")
+            }
+        }
+    }
+
+    /// Mark a ghost send as failed: the backend returned an error envelope and
+    /// delivered nothing to the session, so the send's optimistic task-X bubble
+    /// would otherwise sit "sending" forever. Flip the registered bubble to
+    /// `.error` (falling back to the latest still-sending row if the registry was
+    /// lost). No-op if the row is already gone. The error text itself is surfaced
+    /// via `currentError`.
+    func failGhostPrompt(sessionId: UUID) {
+        let targetId = dequeuePendingGhost(sessionId: sessionId)
+        let sessionIdStr = sessionId.uuidString.lowercased()
+        persistenceController.performBackgroundTask { [weak self] context in
+            guard self != nil else { return }
+            guard let optimistic = Self.ghostBubble(targetId: targetId, sessionId: sessionId, in: context) else {
+                LogManager.shared.log("👻 No optimistic ghost bubble to fail for session \(sessionIdStr)", category: "SessionSync")
+                return
+            }
+            optimistic.messageStatus = .error
+            do {
+                if context.hasChanges { try context.save() }
+            } catch {
+                LogManager.shared.log("Failed to save ghost failure for \(sessionIdStr): \(error.localizedDescription)", category: "SessionSync")
+            }
+        }
+    }
+
     // MARK: - Session Updated Handling
     
     /// Handle session_updated message from backend

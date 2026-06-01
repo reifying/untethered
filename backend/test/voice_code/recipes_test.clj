@@ -57,7 +57,7 @@
 
   (testing "has valid guardrails"
     (let [recipe (recipes/get-recipe :review-and-commit)]
-      (is (= 3 (get-in recipe [:guardrails :max-step-visits])))
+      (is (= 10 (get-in recipe [:guardrails :max-step-visits])))
       (is (= 100 (get-in recipe [:guardrails :max-total-steps])))))
 
   (testing "passes validation"
@@ -149,7 +149,7 @@
   (testing "has valid max-step-visits guardrail"
     (let [recipe (recipes/get-recipe :implement-and-review)
           max-visits (get-in recipe [:guardrails :max-step-visits])]
-      (is (= 3 max-visits))))
+      (is (= 10 max-visits))))
 
   (testing "has valid max-total-steps guardrail"
     (let [recipe (recipes/get-recipe :implement-and-review)
@@ -396,7 +396,7 @@
 
   (testing "has valid guardrails"
     (let [recipe (recipes/get-recipe :rebase)]
-      (is (= 3 (get-in recipe [:guardrails :max-step-visits])))
+      (is (= 10 (get-in recipe [:guardrails :max-step-visits])))
       (is (= 100 (get-in recipe [:guardrails :max-total-steps])))))
 
   (testing "recipe validation passes"
@@ -501,3 +501,132 @@
   (testing "passes validation"
     (let [recipe (recipes/break-down-tasks-recipe)]
       (is (nil? (recipes/validate-recipe recipe))))))
+
+;; ============================================================================
+;; Design → Break Down → Implement All Recipe Tests
+;; ============================================================================
+
+(deftest design-break-impl-all-recipe-metadata-test
+  (testing "recipe exists and has correct metadata"
+    (let [recipe (recipes/get-recipe :design-break-impl-all)]
+      (is (not (nil? recipe)))
+      (is (= :design-break-impl-all (:id recipe)))
+      (is (= "Design → Break Down → Implement All" (:label recipe)))))
+
+  (testing "has opus model"
+    (let [recipe (recipes/get-recipe :design-break-impl-all)]
+      (is (= "opus" (:model recipe)))))
+
+  (testing "initial step is design-document"
+    (let [recipe (recipes/get-recipe :design-break-impl-all)]
+      (is (= :design-document (:initial-step recipe)))))
+
+  (testing "has all expected steps"
+    (let [recipe (recipes/get-recipe :design-break-impl-all)
+          steps (set (keys (:steps recipe)))]
+      (is (contains? steps :design-document))
+      (is (contains? steps :design-review))
+      (is (contains? steps :design-fix))
+      (is (contains? steps :design-commit))
+      (is (contains? steps :tasks-analyze))
+      (is (contains? steps :tasks-create-epic))
+      (is (contains? steps :tasks-create-tasks))
+      (is (contains? steps :tasks-review))
+      (is (contains? steps :tasks-fix))
+      (is (contains? steps :tasks-commit))))
+
+  (testing "has correct max-step-visits guardrail"
+    (let [recipe (recipes/get-recipe :design-break-impl-all)]
+      (is (= 10 (get-in recipe [:guardrails :max-step-visits])))))
+
+  (testing "passes validation"
+    (let [recipe (recipes/design-break-impl-all-recipe)]
+      (is (nil? (recipes/validate-recipe recipe))))))
+
+(deftest design-break-impl-all-phase-transition-test
+  (testing "design-document complete transitions to design-review"
+    (let [recipe (recipes/get-recipe :design-break-impl-all)
+          t (get-in recipe [:steps :design-document :on-outcome :complete])]
+      (is (= :design-review (:next-step t)))))
+
+  (testing "design-review no-issues transitions to design-commit"
+    (let [recipe (recipes/get-recipe :design-break-impl-all)
+          t (get-in recipe [:steps :design-review :on-outcome :no-issues])]
+      (is (= :design-commit (:next-step t)))))
+
+  (testing "design-review issues-found transitions to design-fix"
+    (let [recipe (recipes/get-recipe :design-break-impl-all)
+          t (get-in recipe [:steps :design-review :on-outcome :issues-found])]
+      (is (= :design-fix (:next-step t)))))
+
+  (testing "design-fix complete loops back to design-review"
+    (let [recipe (recipes/get-recipe :design-break-impl-all)
+          t (get-in recipe [:steps :design-fix :on-outcome :complete])]
+      (is (= :design-review (:next-step t)))))
+
+  (testing "design-commit committed transitions to tasks-analyze (no exit — same session)"
+    (let [recipe (recipes/get-recipe :design-break-impl-all)
+          t (get-in recipe [:steps :design-commit :on-outcome :committed])]
+      (is (= :tasks-analyze (:next-step t)))
+      (is (nil? (:action t)))))
+
+  (testing "design-commit nothing-to-commit also transitions to tasks-analyze"
+    (let [recipe (recipes/get-recipe :design-break-impl-all)
+          t (get-in recipe [:steps :design-commit :on-outcome :nothing-to-commit])]
+      (is (= :tasks-analyze (:next-step t)))
+      (is (nil? (:action t)))))
+
+  (testing "tasks-analyze complete transitions to tasks-create-epic"
+    (let [recipe (recipes/get-recipe :design-break-impl-all)
+          t (get-in recipe [:steps :tasks-analyze :on-outcome :complete])]
+      (is (= :tasks-create-epic (:next-step t)))))
+
+  (testing "tasks-create-epic complete transitions to tasks-create-tasks"
+    (let [recipe (recipes/get-recipe :design-break-impl-all)
+          t (get-in recipe [:steps :tasks-create-epic :on-outcome :complete])]
+      (is (= :tasks-create-tasks (:next-step t)))))
+
+  (testing "tasks-create-tasks complete transitions to tasks-review"
+    (let [recipe (recipes/get-recipe :design-break-impl-all)
+          t (get-in recipe [:steps :tasks-create-tasks :on-outcome :complete])]
+      (is (= :tasks-review (:next-step t)))))
+
+  (testing "tasks-review no-issues transitions to tasks-commit"
+    (let [recipe (recipes/get-recipe :design-break-impl-all)
+          t (get-in recipe [:steps :tasks-review :on-outcome :no-issues])]
+      (is (= :tasks-commit (:next-step t)))))
+
+  (testing "tasks-review issues-found transitions to tasks-fix"
+    (let [recipe (recipes/get-recipe :design-break-impl-all)
+          t (get-in recipe [:steps :tasks-review :on-outcome :issues-found])]
+      (is (= :tasks-fix (:next-step t)))))
+
+  (testing "tasks-fix complete loops back to tasks-review"
+    (let [recipe (recipes/get-recipe :design-break-impl-all)
+          t (get-in recipe [:steps :tasks-fix :on-outcome :complete])]
+      (is (= :tasks-review (:next-step t))))))
+
+(deftest design-break-impl-all-session-boundary-test
+  (testing "no step in phases 1+2 uses restart-new-session"
+    (let [recipe (recipes/get-recipe :design-break-impl-all)
+          phase-1-2 [:design-document :design-review :design-fix :design-commit
+                     :tasks-analyze :tasks-create-epic :tasks-create-tasks
+                     :tasks-review :tasks-fix]
+          restarts (for [step-key phase-1-2
+                         [_ transition] (get-in recipe [:steps step-key :on-outcome])
+                         :when (= :restart-new-session (:action transition))]
+                     step-key)]
+      (is (empty? restarts)
+          "Phases 1 and 2 must not restart the session — they share one agent")))
+
+  (testing "tasks-commit committed restarts a new session for implement-and-review-all"
+    (let [recipe (recipes/get-recipe :design-break-impl-all)
+          t (get-in recipe [:steps :tasks-commit :on-outcome :committed])]
+      (is (= :restart-new-session (:action t)))
+      (is (= :implement-and-review-all (:recipe-id t)))))
+
+  (testing "tasks-commit nothing-to-commit also restarts a new session"
+    (let [recipe (recipes/get-recipe :design-break-impl-all)
+          t (get-in recipe [:steps :tasks-commit :on-outcome :nothing-to-commit])]
+      (is (= :restart-new-session (:action t)))
+      (is (= :implement-and-review-all (:recipe-id t))))))

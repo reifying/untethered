@@ -69,6 +69,10 @@ struct ConversationView: View {
     @State private var showingRecipeMenu = false
     @State private var isRefreshingMessages = false
 
+    // "View Full" sheet presentation. Lives here (above the List) rather than on
+    // CDMessageView so list cell recycling and pruning can't dismiss the open sheet.
+    @State private var fullMessageSnapshot: MessageSnapshot?
+
     // Share-logs-with-agent state
     @State private var isSharingLogs = false
     @State private var pendingLogFilename: String?  // non-nil while waiting for the upload response
@@ -79,6 +83,11 @@ struct ConversationView: View {
 
     // Provider selection for new sessions
     @State private var selectedProvider: String = "claude"
+
+    // Ghost prompt mode (tmux-untethered-5hw): when on, the composer input is a
+    // *task description*; the backend forks the session to author the real
+    // prompt P and injects it. Resumed Claude sessions only.
+    @State private var ghostMode: Bool = false
 
     // Auto-scroll state
     @State private var hasPerformedInitialScroll = false
@@ -111,6 +120,13 @@ struct ConversationView: View {
     // Active recipe for this session
     private var activeRecipe: ActiveRecipe? {
         client.activeRecipes[session.id.uuidString.lowercased()]
+    }
+
+    /// Whether ghost prompts may be offered for this session. Ghost requires a
+    /// resumed session (the fork copies existing context) and the Claude
+    /// provider (`--fork-session` is Claude-only). See ghost-prompt design §3.3.
+    private var canGhost: Bool {
+        session.messageCount > 0 && session.provider == "claude"
     }
 
     // Stable function reference for infer name - prevents closure recreation on each render
@@ -188,7 +204,10 @@ struct ConversationView: View {
                                 CDMessageView(
                                     message: message,
                                     voiceOutput: voiceOutput,
-                                    onInferName: handleInferName
+                                    onInferName: handleInferName,
+                                    onViewFull: { snapshot in
+                                        fullMessageSnapshot = snapshot
+                                    }
                                 )
                                 .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
                                 .listRowSeparator(.hidden)
@@ -235,13 +254,23 @@ struct ConversationView: View {
                             // Auto-scroll to new messages if enabled
                             guard newCount > oldCount else { return }
 
+                            // Suppress auto-scroll while the View Full sheet is open so the
+                            // background list does not move away from what the user is reading.
+                            guard fullMessageSnapshot == nil else {
+                                LogManager.shared.log("📨 Skipping auto-scroll (View Full sheet open)", category: "ConversationView")
+                                return
+                            }
+
                             LogManager.shared.log("📨 New messages: \(oldCount) -> \(newCount), auto-scroll: \(self.autoScrollEnabled ? "enabled" : "disabled")", category: "ConversationView")
 
                             // Debounce scroll to avoid triggering during layout calculations
                             if autoScrollEnabled {
                                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                                    // Re-check autoScrollEnabled after delay in case user disabled it
-                                    guard self.autoScrollEnabled, let lastMessage = self.messages.last else { return }
+                                    // Re-check autoScrollEnabled and sheet state after delay in case
+                                    // the user disabled scroll or opened the View Full sheet meanwhile.
+                                    guard self.autoScrollEnabled,
+                                          self.fullMessageSnapshot == nil,
+                                          let lastMessage = self.messages.last else { return }
                                     LogManager.shared.log("📨 Scrolling to last message (debounced)", category: "ConversationView")
                                     proxy.scrollTo(lastMessage.id, anchor: .bottom)
                                 }
@@ -279,6 +308,14 @@ struct ConversationView: View {
                     }
                     .pickerStyle(.segmented)
                     .padding(.horizontal)
+                }
+
+                // Ghost prompt toggle — resumed Claude sessions only. When on,
+                // the input is a task description; the backend forks the session
+                // to author the effective prompt and injects it.
+                if canGhost {
+                    GhostModeToggle(isOn: $ghostMode)
+                        .padding(.horizontal)
                 }
 
                 // Mode toggle and connection status
@@ -331,6 +368,9 @@ struct ConversationView: View {
                     // Text mode
                     ConversationTextInputView(
                         text: $promptText,
+                        placeholder: (ghostMode && canGhost)
+                            ? "Describe a task for the agent…"
+                            : "Type your message...",
                         onSend: {
                             sendPromptText(promptText)
                             promptText = ""
@@ -671,6 +711,16 @@ struct ConversationView: View {
         .sheet(isPresented: $showingRecipeMenu) {
             RecipeMenuView(client: client, sessionId: session.id.uuidString.lowercased(), workingDirectory: session.workingDirectory, settings: settings)
         }
+        // "View Full" sheet — presented at ConversationView level (above the List)
+        // so incoming messages, pruning, and List cell recycling can't dismiss it.
+        .sheet(item: $fullMessageSnapshot) { snapshot in
+            MessageDetailView(
+                snapshot: snapshot,
+                voiceOutput: voiceOutput,
+                onInferName: handleInferName
+            )
+            .environment(\.managedObjectContext, viewContext)
+        }
         .onAppear {
             // Reset scroll flags when view appears (handles navigation back to session)
             LogManager.shared.log("👁️ [AutoScroll] View appeared, resetting state", category: "ConversationView")
@@ -888,44 +938,54 @@ struct ConversationView: View {
         // Note: Priority queue auto-add now happens in VoiceCodeClient.turn_complete handler
         // This ensures sessions are only added after successful response (no ghost sessions)
 
-        // Create optimistic message
-        client.sessionSyncManager.createOptimisticMessage(sessionId: session.id, text: trimmedText) { messageId in
-            LogManager.shared.log("Created optimistic message: \(messageId)", category: "ConversationView")
-        }
-
         // Determine if this is a new session (no messages yet) or existing session
         let isNewSession = session.messageCount == 0
+
+        // Ghost is resumed-session only; never honor a stale toggle on a new send.
+        let ghost = ghostMode && canGhost && !isNewSession
+
+        // Create optimistic message. On a ghost send this renders the *task X*
+        // the user typed; the backend later returns the effective prompt P via
+        // the `ghost_prompt` event, which reconciles this same bubble. Register
+        // the bubble's id so that event targets THIS row precisely — not merely
+        // "the latest sending message", which a follow-up send could displace.
+        let ghostSend = ghost
+        let ghostSessionId = session.id
+        let syncManager = client.sessionSyncManager
+        syncManager.createOptimisticMessage(sessionId: session.id, text: trimmedText) { messageId in
+            LogManager.shared.log("Created optimistic message: \(messageId)", category: "ConversationView")
+            if ghostSend {
+                syncManager.registerPendingGhost(sessionId: ghostSessionId, messageId: messageId)
+            }
+        }
 
         // Send prompt to backend
         // - New sessions: use new_session_id (backend will create .jsonl file)
         // - Existing sessions: use resume_session_id (backend appends to existing file)
-        var message: [String: Any] = [
-            "type": "prompt",
-            "text": trimmedText,
-            "working_directory": session.workingDirectory
-        ]
+        // - Ghost: resume_session_id + ghost:true (backend forks to author P)
+        let message = PromptMessageBuilder.build(
+            text: trimmedText,
+            sessionId: sessionId,
+            workingDirectory: session.workingDirectory,
+            isNewSession: isNewSession,
+            provider: selectedProvider,
+            systemPrompt: settings.systemPrompt,
+            ghost: ghost
+        )
 
         if isNewSession {
-            message["new_session_id"] = sessionId
-            message["provider"] = selectedProvider
             LogManager.shared.log("📤 [ConversationView] Sending prompt with new_session_id: \(sessionId), provider: \(selectedProvider)", category: "ConversationView")
-            // Note: Subscribe will happen when we receive turn_complete (after backend creates session)
         } else {
-            message["resume_session_id"] = sessionId
-            LogManager.shared.log("📤 [ConversationView] Sending prompt with resume_session_id: \(sessionId)", category: "ConversationView")
-        }
-
-        // Include system prompt if configured and non-empty
-        LogManager.shared.log("🔍 [ConversationView] System prompt value: '\(settings.systemPrompt)'", category: "ConversationView")
-        LogManager.shared.log("🔍 [ConversationView] System prompt isEmpty: \(settings.systemPrompt.isEmpty)", category: "ConversationView")
-        if !settings.systemPrompt.isEmpty {
-            message["system_prompt"] = settings.systemPrompt
-            LogManager.shared.log("✅ [ConversationView] Including system_prompt in message", category: "ConversationView")
-        } else {
-            LogManager.shared.log("⚠️ [ConversationView] NOT including system_prompt (empty)", category: "ConversationView")
+            LogManager.shared.log("📤 [ConversationView] Sending prompt with resume_session_id: \(sessionId), ghost: \(ghost)", category: "ConversationView")
         }
 
         client.sendMessage(message)
+
+        // Ghost is a deliberate per-task action: reset the toggle after each
+        // send so the next ordinary message is not accidentally ghosted.
+        if ghost {
+            ghostMode = false
+        }
     }
 
     // MARK: - Share Logs With Agent
@@ -1412,8 +1472,7 @@ struct CDMessageView: View {
     let message: CDMessage
     let voiceOutput: VoiceOutputManager
     let onInferName: (String) -> Void
-
-    @State private var showFullMessage = false
+    let onViewFull: (MessageSnapshot) -> Void
 
     var body: some View {
         let _ = RenderTracker.count(Self.self)
@@ -1438,7 +1497,7 @@ struct CDMessageView: View {
                     .lineLimit(nil)  // displayText is already bounded; no limit needed
 
                 // Show expand button for truncated messages OR for quick actions
-                Button(action: { showFullMessage = true }) {
+                Button(action: { onViewFull(MessageSnapshot(from: message)) }) {
                     HStack(spacing: 4) {
                         if message.isTruncated {
                             Image(systemName: "arrow.up.left.and.arrow.down.right")
@@ -1478,20 +1537,42 @@ struct CDMessageView: View {
         .padding(12)  // Explicit padding value instead of default
         .background(Color(message.role == "user" ? .systemBlue : .systemGreen).opacity(0.1))
         .cornerRadius(12)
-        .sheet(isPresented: $showFullMessage) {
-            MessageDetailView(message: message, voiceOutput: voiceOutput, onInferName: onInferName)
-        }
+        // No .sheet here — lifted to ConversationView so list cell recycling
+        // (and pruning) can't dismiss the open "View Full" sheet.
     }
 }
 
 // MARK: - Message Detail View
 
 struct MessageDetailView: View {
-    @ObservedObject var message: CDMessage
+    let snapshot: MessageSnapshot
     @ObservedObject var voiceOutput: VoiceOutputManager
     let onInferName: (String) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var showCopiedConfirmation = false
+
+    /// Live message lookup — keyed on the snapshot's CoreData message UUID.
+    /// Streaming messages update live; once confirmed the server stops updating
+    /// the row so the text "naturally freezes" at its final value. Returns empty
+    /// if the message is pruned/deleted, in which case we fall back to the snapshot.
+    @FetchRequest private var liveMessages: FetchedResults<CDMessage>
+
+    init(snapshot: MessageSnapshot, voiceOutput: VoiceOutputManager, onInferName: @escaping (String) -> Void) {
+        self.snapshot = snapshot
+        self.voiceOutput = voiceOutput
+        self.onInferName = onInferName
+        _liveMessages = FetchRequest(
+            fetchRequest: CDMessage.fetchMessage(id: snapshot.messageId),
+            animation: nil
+        )
+    }
+
+    /// Freshest available text: live CoreData text while the message exists,
+    /// snapshot text as a value-type fallback after pruning/deletion. All actions
+    /// (display, copy, speech, infer-name) read through this single property.
+    private var currentText: String {
+        liveMessages.first?.text ?? snapshot.text
+    }
 
     var body: some View {
         NavigationController(minWidth: 500, minHeight: 400) {
@@ -1502,7 +1583,7 @@ struct MessageDetailView: View {
     private var messageDetailContent: some View {
         VStack(spacing: 0) {
             ScrollView {
-                SelectableText(text: message.text)
+                SelectableText(text: currentText)
                     .padding()
             }
 
@@ -1511,7 +1592,7 @@ struct MessageDetailView: View {
             // Action buttons at bottom for better accessibility
             HStack(spacing: 20) {
                 Button(action: {
-                    ClipboardUtility.copy(message.text)
+                    ClipboardUtility.copy(currentText)
 
                     // Haptic feedback
                     ClipboardUtility.triggerSuccessHaptic()
@@ -1542,8 +1623,8 @@ struct MessageDetailView: View {
                     if voiceOutput.isSpeaking {
                         voiceOutput.stop()
                     } else {
-                        let processedText = TextProcessor.prepareForSpeech(from: message.text)
-                        voiceOutput.speak(processedText, workingDirectory: message.session?.workingDirectory, sessionId: message.session?.id)
+                        let processedText = TextProcessor.prepareForSpeech(from: currentText)
+                        voiceOutput.speak(processedText, workingDirectory: snapshot.workingDirectory, sessionId: snapshot.sessionId)
                     }
                 }) {
                     VStack(spacing: 4) {
@@ -1556,7 +1637,7 @@ struct MessageDetailView: View {
                 }
 
                 Button(action: {
-                    onInferName(message.text)
+                    onInferName(currentText)
                     dismiss()
                 }) {
                     VStack(spacing: 4) {
@@ -1699,12 +1780,13 @@ struct ConversationVoiceInputView: View {
 
 struct ConversationTextInputView: View {
     @Binding var text: String
+    var placeholder: String = "Type your message..."
     let onSend: () -> Void
 
     var body: some View {
         let _ = RenderLoopDetector.shared.recordRender()
         HStack {
-            TextField("Type your message...", text: $text, axis: .vertical)
+            TextField(placeholder, text: $text, axis: .vertical)
                 .textFieldStyle(.roundedBorder)
                 .lineLimit(1...5)
                 #if os(macOS)
@@ -1732,6 +1814,38 @@ struct ConversationTextInputView: View {
             .disabled(text.isEmpty)
         }
         .padding(.horizontal)
+    }
+}
+
+// MARK: - Ghost Mode Toggle
+
+/// Composer control that switches the input into "ghost prompt" mode. When on,
+/// the text being sent is a *task description* — the backend forks the session
+/// to author the effective prompt and injects it (tmux-untethered-5hw).
+struct GhostModeToggle: View {
+    @Binding var isOn: Bool
+
+    var body: some View {
+        Toggle(isOn: $isOn) {
+            HStack(spacing: 6) {
+                Image(systemName: isOn ? "theatermasks.fill" : "theatermasks")
+                    .foregroundColor(isOn ? .purple : .secondary)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Ghost task")
+                        .font(.caption)
+                        .fontWeight(.medium)
+                    Text(isOn
+                         ? "Input is a task; the agent writes & runs the prompt"
+                         : "Have the agent author a clean prompt for a task")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+        .toggleStyle(.switch)
+        .tint(.purple)
+        .accessibilityIdentifier("ghostModeToggle")
     }
 }
 

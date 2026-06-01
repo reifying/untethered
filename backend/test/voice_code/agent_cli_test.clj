@@ -5,6 +5,7 @@
    We focus on the pure helpers that are testable without a real tmux server."
   (:require [clojure.test :refer [deftest is testing]]
             [voice-code.agent-cli :as cli]
+            [voice-code.replication :as repl]
             [voice-code.tmux :as tmux]))
 
 ;; ============================================================================
@@ -184,6 +185,44 @@
                       :else {:exit 0 :out "" :err ""}))]
       (binding [tmux/*tmux-invoker* invoker]
         (is (nil? (#'cli/recover-session-name-from-tmux-env uuid)))))))
+
+;; ============================================================================
+;; resolve-session-uuid — workdir fallback excludes ghost sessions
+;; ============================================================================
+
+(deftest resolve-session-uuid-workdir-fallback-excludes-ghost-test
+  (testing "workdir fallback skips :ghost-tagged index entries"
+    ;; No tmux env match forces the session-index workdir fallback. The ghost
+    ;; entry is the most recently modified in the workdir, so without the
+    ;; (remove :ghost) filter it would win the sort-by and resolve as the resume
+    ;; target. The fix must instead pick the user's real session.
+    (let [no-tmux (fn [& _] {:exit 0 :out "" :err ""})]
+      (binding [tmux/*tmux-invoker* no-tmux]
+        (with-redefs [repl/session-index
+                      (atom {"ghost-uuid" {:session-id "ghost-uuid"
+                                           :working-directory "/tmp/proj"
+                                           :last-modified-ms 2000
+                                           :ghost true}
+                             "real-uuid" {:session-id "real-uuid"
+                                          :working-directory "/tmp/proj"
+                                          :last-modified-ms 1000}})]
+          (is (= "real-uuid"
+                 (#'cli/resolve-session-uuid "some-name" "/tmp/proj"))
+              "must resolve the real session, not the more-recent ghost fork")))))
+
+  (testing "throws when the only workdir match is a ghost session"
+    ;; If every candidate in the workdir is a ghost fork, there is no legitimate
+    ;; session to resume and resolution must fail rather than return a ghost id.
+    (let [no-tmux (fn [& _] {:exit 0 :out "" :err ""})]
+      (binding [tmux/*tmux-invoker* no-tmux]
+        (with-redefs [repl/session-index
+                      (atom {"ghost-uuid" {:session-id "ghost-uuid"
+                                           :working-directory "/tmp/proj"
+                                           :last-modified-ms 2000
+                                           :ghost true}})]
+          (is (thrown-with-msg? clojure.lang.ExceptionInfo
+                                #"Cannot find session to resume"
+                                (#'cli/resolve-session-uuid "some-name" "/tmp/proj"))))))))
 
 ;; ============================================================================
 ;; resume idempotency

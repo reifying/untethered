@@ -129,10 +129,15 @@ extension CDMessage {
         return request
     }
     
-    /// Fetch a specific message by ID
+    /// Fetch a specific message by ID.
+    /// Carries a sort descriptor so it is safe to use with SwiftUI's `@FetchRequest`
+    /// (backed by NSFetchedResultsController, which crashes without one). The
+    /// unique-id predicate + fetchLimit 1 make the sort a no-op for plain
+    /// `context.fetch` callers.
     static func fetchMessage(id: UUID) -> NSFetchRequest<CDMessage> {
         let request = fetchRequest()
         request.predicate = NSPredicate(format: "id == %@", id as CVarArg)
+        request.sortDescriptors = [NSSortDescriptor(keyPath: \CDMessage.timestamp, ascending: true)]
         request.fetchLimit = 1
         return request
     }
@@ -142,6 +147,19 @@ extension CDMessage {
         let request = fetchRequest()
         request.predicate = NSPredicate(format: "sessionId == %@ AND role == %@ AND text == %@",
                                        sessionId as CVarArg, role, text)
+        request.fetchLimit = 1
+        return request
+    }
+
+    /// Find the most recent optimistic (status == "sending") user message in a
+    /// session. Used to reconcile a ghost send's task-X bubble against the
+    /// effective prompt P delivered out-of-band via the `ghost_prompt` event.
+    /// `status` is the raw stored attribute backing `messageStatus`.
+    static func fetchLatestSendingUserMessage(sessionId: UUID) -> NSFetchRequest<CDMessage> {
+        let request = fetchRequest()
+        request.predicate = NSPredicate(format: "sessionId == %@ AND role == %@ AND status == %@",
+                                       sessionId as CVarArg, "user", MessageStatus.sending.rawValue)
+        request.sortDescriptors = [NSSortDescriptor(keyPath: \CDMessage.timestamp, ascending: false)]
         request.fetchLimit = 1
         return request
     }

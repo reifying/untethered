@@ -89,7 +89,7 @@ If working on a beads task, update its status first:
 
 (def default-guardrails
   "Default guardrails for recipes"
-  {:max-step-visits 3
+  {:max-step-visits 10
    :max-total-steps 100
    :exit-on-other true})
 
@@ -239,7 +239,7 @@ Report any gaps or issues found. Do not make changes yet."
       :other {:action :exit :reason "user-provided-other"}}}}
 
    :guardrails
-   {:max-step-visits 3
+   {:max-step-visits 10
     :max-total-steps 100
     :exit-on-other true}})
 
@@ -475,7 +475,7 @@ Example: 'Add implementation tasks for user authentication (epic-abc123)'"
       :other {:action :exit :reason "user-provided-other"}}}}
 
    :guardrails
-   {:max-step-visits 3
+   {:max-step-visits 10
     :max-total-steps 100
     :exit-on-other true}})
 
@@ -1066,8 +1066,382 @@ Example: 'Refine user authentication design: add error handling, simplify token 
       :other {:action :exit :reason "user-provided-other"}}}}
 
    :guardrails
-   {:max-step-visits 5
+   {:max-step-visits 10
     :max-total-steps 150
+    :exit-on-other true}})
+
+(def design-break-impl-all-commit-step
+  "Commit step for the tasks phase of design-break-impl-all.
+   After committing the task breakdown, starts a fresh session running implement-and-review-all."
+  {:prompt "Commit and push the beads changes.
+
+## Commit Requirements
+- Include all files in `beads/` directory
+- Use the epic ID in the commit message
+- Write a clear commit message
+
+Example: 'Add implementation tasks for user authentication (epic-abc123)'"
+   :outcomes #{:committed :nothing-to-commit :other}
+   :on-outcome
+   {:committed {:action :restart-new-session :recipe-id :implement-and-review-all}
+    :nothing-to-commit {:action :restart-new-session :recipe-id :implement-and-review-all}
+    :other {:action :exit :reason "user-provided-other"}}})
+
+(defn design-break-impl-all-recipe
+  "Returns the design-break-impl-all recipe definition.
+   Chains three phases in a full pipeline:
+   - Phase 1 (design): document-design steps, Opus model, same agent session
+   - Phase 2 (tasks): break-down-tasks steps, continuing the same agent session
+   - Phase 3 (impl): restarts a fresh agent per iteration via implement-and-review-all
+
+   Phases 1 and 2 share an agent session because design output feeds directly into
+   task breakdown. Phase 3 starts fresh sessions per task, same as implement-and-review-all."
+  []
+  {:id :design-break-impl-all
+   :label "Design → Break Down → Implement All"
+   :description "Full pipeline: design document, break into tasks, then implement all tasks"
+   :model "opus"
+   :initial-step :design-document
+   :steps
+   {;; ── Phase 1: Document design ───────────────────────────────────────────
+    :design-document
+    {:prompt "Create a detailed design document for the requested feature or change. Store as a markdown file following the repository's conventions for location and naming.
+
+## Document Structure
+
+Include the following sections:
+
+### 1. Overview
+- Problem statement: What problem does this solve?
+- Goals: What are we trying to achieve?
+- Non-goals: What is explicitly out of scope?
+
+### 2. Background & Context
+- Current state: How does the system work today?
+- Why now: What triggered this work?
+- Related work: Links to relevant documents, issues, or prior art
+
+### 3. Detailed Design
+
+#### Data Model
+- New or modified data structures
+- Schema changes with before/after examples
+- Migration strategy if applicable
+
+#### API Design
+- Endpoint signatures with request/response examples
+- Error cases and status codes
+- Breaking changes and deprecation plan
+
+#### Code Examples
+Provide concrete implementation examples:
+
+```clojure
+;; Example: Show the key function signatures
+(defn process-request
+  \"Process incoming request with validation.\"
+  [request]
+  ;; Implementation approach...
+  )
+```
+
+Include examples for:
+- Happy path usage
+- Error handling patterns
+- Edge cases
+
+#### Component Interactions
+- Sequence diagrams or flow descriptions
+- Integration points with existing systems
+- Dependency relationships
+
+### 4. Verification Strategy
+
+#### Testing Approach
+- Unit tests: What functions need direct testing?
+- Integration tests: What component interactions need verification?
+- End-to-end tests: What user workflows should be validated?
+
+#### Test Examples
+```clojure
+(deftest process-request-test
+  (testing \"validates required fields\"
+    (is (thrown? ExceptionInfo (process-request {}))))
+  (testing \"returns processed result\"
+    (is (= expected-result (process-request valid-input)))))
+```
+
+#### Acceptance Criteria
+- Numbered list of verifiable requirements
+- Each criterion should be testable
+
+### 5. Alternatives Considered
+- What other approaches were evaluated?
+- Why was this approach chosen?
+- Trade-offs of the chosen approach
+
+### 6. Risks & Mitigations
+- What could go wrong?
+- How will we detect problems?
+- Rollback strategy
+
+## Quality Checklist
+Before marking complete, verify:
+- [ ] All code examples are syntactically correct
+- [ ] Examples match the codebase's style and conventions
+- [ ] Verification steps are specific and actionable
+- [ ] Cross-references to related files use @filename.md format
+- [ ] No placeholder text remains"
+     :outcomes #{:complete :needs-input :other}
+     :on-outcome
+     {:complete {:next-step :design-review}
+      :needs-input {:action :exit :reason "clarification-needed"}
+      :other {:action :exit :reason "user-provided-other"}}}
+
+    :design-review
+    {:prompt "Review the design document you created. Check for:
+- Completeness: Are all sections filled in with substantive content?
+- Correctness: Do code examples compile/parse correctly?
+- Clarity: Would another developer understand the design?
+- Consistency: Does it align with existing patterns in the codebase?
+- Actionability: Are verification steps specific enough to execute?
+
+Report any gaps or issues found. Do not make changes yet."
+     :outcomes #{:no-issues :issues-found :other}
+     :on-outcome
+     {:no-issues {:next-step :design-commit}
+      :issues-found {:next-step :design-fix}
+      :other {:action :exit :reason "user-provided-other"}}}
+
+    :design-fix
+    {:prompt "Address the issues found in the design document review."
+     :outcomes #{:complete :other}
+     :on-outcome
+     {:complete {:next-step :design-review}
+      :other {:action :exit :reason "user-provided-other"}}}
+
+    :design-commit
+    {:prompt "Commit and push the design document. Use a descriptive commit message that summarizes what is being designed."
+     :outcomes #{:committed :nothing-to-commit :other}
+     :on-outcome
+     ;; Do not exit — continue in the same session into task breakdown phase
+     {:committed {:next-step :tasks-analyze}
+      :nothing-to-commit {:next-step :tasks-analyze}
+      :other {:action :exit :reason "user-provided-other"}}}
+
+    ;; ── Phase 2: Break down tasks (same agent session as Phase 1) ──────────
+    :tasks-analyze
+    {:prompt "Analyze the design document to understand the implementation scope.
+
+## Prerequisites
+1. Run `bd quickstart` to understand beads workflow if unfamiliar
+2. Locate the design document for this feature (you just created it in the previous phase)
+3. Read the design document thoroughly
+
+## Analysis Steps
+1. Identify all components that need to be created or modified
+2. Map acceptance criteria to concrete implementation work
+3. Identify dependencies between pieces of work
+4. Note any verification steps from the design
+
+Report your analysis including:
+- Key components to implement
+- Dependency graph (what must be done before what)
+- Estimated number of tasks needed
+- Any ambiguities or gaps in the design"
+     :outcomes #{:complete :design-missing :needs-input :other}
+     :on-outcome
+     {:complete {:next-step :tasks-create-epic}
+      :design-missing {:action :exit :reason "no-design-document-found"}
+      :needs-input {:action :exit :reason "clarification-needed"}
+      :other {:action :exit :reason "user-provided-other"}}}
+
+    :tasks-create-epic
+    {:prompt "Create the parent epic for this implementation work.
+
+## Epic Creation
+Run `bd create` to create an epic with:
+- **Title**: Clear, concise name for the feature/change
+- **Description**: Reference the design document using @path/to/design.md
+- **Type**: epic
+
+The epic description should include:
+```
+## Design Document
+@path/to/design-document.md
+
+## Overview
+[Brief summary of what this epic delivers]
+
+## Acceptance Criteria
+[Copy or reference the acceptance criteria from the design]
+```"
+     :outcomes #{:complete :other}
+     :on-outcome
+     {:complete {:next-step :tasks-create-tasks}
+      :other {:action :exit :reason "user-provided-other"}}}
+
+    :tasks-create-tasks
+    {:prompt "Create individual implementation tasks as children of the epic.
+
+## Task Creation Guidelines
+
+For each task, run `bd create` with:
+- **Parent**: The epic you just created
+- **Title**: Action-oriented (e.g., 'Add validation to user input handler')
+- **Type**: task
+
+### Task Granularity
+Each task should be:
+- **Atomic**: Completes one logical unit of work
+- **Testable**: Has clear verification criteria
+- **Independent**: Can be worked on without blocking others (where possible)
+- **Small**: Completable in a single focused session
+
+### Required Task Sections
+
+Each task description must include:
+
+```
+## Design Reference
+@path/to/design-document.md#relevant-section
+
+## Context
+[Why this task exists and how it fits into the larger feature]
+
+## Requirements
+- [ ] Specific requirement 1
+- [ ] Specific requirement 2
+
+## Technical Approach
+[Key implementation details from the design document]
+- Files to modify: [list specific files]
+- New files to create: [if any]
+- Dependencies: [other tasks that must complete first]
+
+## Verification
+- [ ] Unit tests for [specific functionality]
+- [ ] Integration test for [specific interaction]
+- [ ] Manual verification: [specific steps]
+
+## Acceptance Criteria
+[Subset of epic criteria this task addresses]
+```
+
+### Task Ordering
+Create tasks in dependency order:
+1. Foundation tasks (data models, schemas, migrations)
+2. Core logic tasks (business logic, algorithms)
+3. Integration tasks (API endpoints, event handlers)
+4. UI tasks (if applicable)
+5. Documentation tasks (if needed beyond design doc)
+
+### Parallelization
+Mark tasks that can be worked in parallel with a note:
+```
+## Parallelization
+Can be worked alongside: [list task titles]
+```
+
+### Setting Up Dependency Links
+
+After creating all tasks, establish dependency links using `bd dep add`.
+This ensures `bd ready` only shows tasks that are actually ready to work on.
+
+**Syntax:** `bd dep add <blocked-task> <blocking-task>`
+(The blocked-task depends on blocking-task completing first)
+
+**Required dependencies:**
+1. Epic depends on ALL child tasks (epic can't close until children complete):
+   ```bash
+   bd dep add <epic-id> <child-task-1>
+   bd dep add <epic-id> <child-task-2>
+   # ... repeat for each child
+   ```
+
+2. Tasks depend on their prerequisites (tests depend on implementation, etc.):
+   ```bash
+   # Example: \"Write tests\" depends on \"Implement handler\"
+   bd dep add <test-task-id> <impl-task-id>
+   ```
+
+**Verify with:** `bd blocked` to see dependency relationships"
+     :outcomes #{:complete :other}
+     :on-outcome
+     {:complete {:next-step :tasks-review}
+      :other {:action :exit :reason "user-provided-other"}}}
+
+    :tasks-review
+    {:prompt "Review the task breakdown for completeness and quality.
+
+## Review Checklist
+
+### Coverage
+- [ ] All acceptance criteria from design are addressed by at least one task
+- [ ] All components from design have corresponding tasks
+- [ ] Verification strategy from design is reflected in task verification sections
+
+### Task Quality
+- [ ] Each task has a design document reference
+- [ ] Each task has clear requirements
+- [ ] Each task has verification steps
+- [ ] No task is too large (should be completable in one session)
+- [ ] No task is too vague (specific files and changes identified)
+
+### Dependencies
+- [ ] Task dependencies are explicitly stated in descriptions
+- [ ] No circular dependencies exist
+- [ ] Foundation tasks come before dependent tasks
+- [ ] Parallelizable tasks are marked
+
+### Dependency Links (Critical)
+Run these commands to verify dependency links are properly set up:
+
+1. **Check blocked tasks:** `bd blocked`
+   - Tasks with prerequisites should appear here
+   - If nothing is blocked but tasks have dependencies, links are missing
+
+2. **Check epic dependencies:** `bd show <epic-id>`
+   - Epic should show \"Depends on\" section listing ALL child tasks
+   - If missing, epic will show as \"ready\" before children complete
+
+3. **Check ready tasks:** `bd ready`
+   - Only foundation tasks (no prerequisites) should appear
+   - If all tasks appear, dependency links are missing
+
+### Traceability
+- [ ] Epic references the design document
+- [ ] Each task references the relevant design section
+- [ ] Acceptance criteria map back to design
+
+Run `bd list` to see the created structure.
+
+Report any issues found."
+     :outcomes #{:no-issues :issues-found :other}
+     :on-outcome
+     {:no-issues {:next-step :tasks-commit}
+      :issues-found {:next-step :tasks-fix}
+      :other {:action :exit :reason "user-provided-other"}}}
+
+    :tasks-fix
+    {:prompt "Address the issues found in the task review.
+
+Use `bd edit <task-id>` to update task descriptions.
+Use `bd create` to create missing tasks.
+Use `bd delete <task-id>` to remove duplicate or unnecessary tasks.
+Use `bd dep add <blocked> <blocking>` to add missing dependency links.
+Use `bd dep rm <blocked> <blocking>` to remove incorrect dependencies."
+     :outcomes #{:complete :other}
+     :on-outcome
+     {:complete {:next-step :tasks-review}
+      :other {:action :exit :reason "user-provided-other"}}}
+
+    ;; Phase 3 handoff: restart a fresh session running implement-and-review-all
+    :tasks-commit design-break-impl-all-commit-step}
+
+   :guardrails
+   {:max-step-visits 10
+    :max-total-steps 100
     :exit-on-other true}})
 
 (def all-recipes
@@ -1077,6 +1451,7 @@ Example: 'Refine user authentication design: add error handling, simplify token 
    :review-and-commit (review-and-commit-recipe)
    :implement-and-review (implement-and-review-recipe)
    :implement-and-review-all (implement-and-review-all-recipe)
+   :design-break-impl-all (design-break-impl-all-recipe)
    :rebase (rebase-recipe)
    :retrospective (retrospective-recipe)
    :refine-design (refine-design-recipe)})
