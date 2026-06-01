@@ -1,9 +1,7 @@
 import Foundation
 import MediaPlayer
 import Combine
-#if os(iOS)
 import AVFoundation
-#endif
 
 /// Log to the in-app LogManager so messages appear in the in-app debug log viewer.
 private func hLog(_ msg: String) {
@@ -31,8 +29,8 @@ class HeadsetRemoteCommandManager: ObservableObject {
     #if os(macOS)
     private var bluetoothMonitor: BluetoothAudioMonitor?
     #endif
-    #if os(iOS)
     private var keepAlivePlayer: AVAudioPlayer?
+    #if os(iOS)
     private var interruptionObserver: NSObjectProtocol?
     private(set) var blueParrottManager: BlueParrottButtonManager?
     #endif
@@ -142,9 +140,9 @@ class HeadsetRemoteCommandManager: ObservableObject {
             }
             .store(in: &cancellables)
 
-        #if os(iOS)
         setupKeepAlive()
 
+        #if os(iOS)
         settings.$blueParrottEnabled
             .receive(on: DispatchQueue.main)
             .sink { [weak self] enabled in
@@ -165,6 +163,7 @@ class HeadsetRemoteCommandManager: ObservableObject {
         registerRemoteCommands()
         #if os(macOS)
         if settings.headsetPTTEnabled { startPTTMonitoring() }
+        startKeepAlive()
         #elseif os(iOS)
         activateAudioSession()
         interruptionObserver = NotificationCenter.default.addObserver(
@@ -206,6 +205,7 @@ class HeadsetRemoteCommandManager: ObservableObject {
         }
         #if os(macOS)
         stopPTTMonitoring()
+        stopKeepAlive()
         #endif
         unregisterRemoteCommands()
         #if os(iOS)
@@ -523,7 +523,54 @@ class HeadsetRemoteCommandManager: ObservableObject {
     }
 }
 
-// MARK: - iOS Audio Session Keep-Alive
+// MARK: - Silent Audio Keep-Alive (cross-platform)
+
+extension HeadsetRemoteCommandManager {
+
+    func startKeepAlive() {
+        keepAlivePlayer?.stop()
+        setupKeepAlive()
+        let played = keepAlivePlayer?.play() ?? false
+        hLog("Headset: keep-alive started — looping=\(played)")
+    }
+
+    func stopKeepAlive() {
+        keepAlivePlayer?.stop()
+    }
+
+    private func setupKeepAlive() {
+        let sampleRate: Double = 44100.0
+        let frameCount = UInt32(sampleRate)  // 1 second
+        guard let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1),
+              let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else { return }
+        buffer.frameLength = frameCount
+        // macOS determines the Now Playing app by watching CoreAudio output.
+        // Pure silence (all zeros) doesn't register as active audio, so the
+        // system ignores our MPRemoteCommandCenter registration and plays a
+        // beep instead of routing the media key. A ~20Hz tone at -80dB is
+        // inaudible but produces non-zero samples that satisfy the heuristic.
+        if let channelData = buffer.floatChannelData?[0] {
+            let amplitude: Float = 0.0001  // -80dB, inaudible
+            let frequency: Float = 20.0     // below human hearing threshold
+            for i in 0..<Int(frameCount) {
+                channelData[i] = amplitude * sin(2.0 * .pi * frequency * Float(i) / Float(sampleRate))
+            }
+        }
+        let tempURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("headset_silence.caf")
+        do {
+            let file = try AVAudioFile(forWriting: tempURL, settings: format.settings)
+            try file.write(from: buffer)
+            keepAlivePlayer = try AVAudioPlayer(contentsOf: tempURL)
+            keepAlivePlayer?.numberOfLoops = -1
+            keepAlivePlayer?.prepareToPlay()
+        } catch {
+            hLogError("Headset: failed to create silence player: \(error.localizedDescription)")
+        }
+    }
+}
+
+// MARK: - iOS Audio Session
 
 #if os(iOS)
 extension HeadsetRemoteCommandManager {
@@ -532,17 +579,6 @@ extension HeadsetRemoteCommandManager {
         do {
             let session = AVAudioSession.sharedInstance()
             let prevCategory = session.category.rawValue
-            // Use .playAndRecord so recording never needs to switch categories.
-            // A .playback → .playAndRecord switch causes iOS to re-evaluate the Now
-            // Playing slot; a competing .playback/.spokenAudio app (audiobook) wins
-            // that re-evaluation, stealing AirPod AVRCP routing so the second stem
-            // press (stop recording) is never delivered to our MPRemoteCommandCenter
-            // handlers. Staying in .playAndRecord throughout eliminates the transition.
-            // .allowBluetoothA2DP: without this, .playAndRecord routes output to
-            // [Receiver] (earpiece) instead of AirPods. AirPods only route stem
-            // presses to us when we are actively outputting to them via A2DP.
-            // Note: .allowBluetoothA2DP is A2DP-only; it does NOT activate HFP,
-            // so AirPods stay in A2DP mode and AVRCP continues working normally.
             try session.setCategory(.playAndRecord, mode: .default, options: [.allowBluetoothA2DP])
             try session.setActive(true)
             startKeepAlive()
@@ -563,46 +599,6 @@ extension HeadsetRemoteCommandManager {
             hLog("Headset: audio session deactivated")
         } catch {
             hLogError("Headset: failed to deactivate audio session: \(error.localizedDescription)")
-        }
-    }
-
-    private func startKeepAlive() {
-        // Always reconstruct the player in the current session so it is prepared
-        // against the active category (either .playback or .playAndRecord).
-        // AVAudioPlayer binds its audio routing at prepareToPlay() time, so reusing
-        // a player built under a different category can silently produce no output.
-        // Called from activateAudioSession() (which sets .playAndRecord first) and from
-        // the startRecording() onSessionReady callback (after .playAndRecord is set).
-        keepAlivePlayer?.stop()  // stop old player before rebuilding to avoid duplicates
-        setupKeepAlive()
-        let played = keepAlivePlayer?.play() ?? false
-        hLog("Headset: keep-alive started — looping=\(played), category=\(AVAudioSession.sharedInstance().category.rawValue)")
-    }
-
-    private func stopKeepAlive() {
-        keepAlivePlayer?.stop()
-    }
-
-    private func setupKeepAlive() {
-        // 1-second silent PCM buffer that loops indefinitely. Continuous silent
-        // output keeps our audio session "active" so iOS treats us as the Now
-        // Playing app throughout recording, preventing other apps (e.g. an
-        // audiobook) from stealing the Now Playing slot and AirPod stem presses.
-        let sampleRate: Double = 44100.0
-        let frameCount = UInt32(sampleRate)  // 1 second
-        guard let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1),
-              let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else { return }
-        buffer.frameLength = frameCount
-        let tempURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("headset_silence.caf")
-        do {
-            let file = try AVAudioFile(forWriting: tempURL, settings: format.settings)
-            try file.write(from: buffer)
-            keepAlivePlayer = try AVAudioPlayer(contentsOf: tempURL)
-            keepAlivePlayer?.numberOfLoops = -1  // Loop indefinitely
-            keepAlivePlayer?.prepareToPlay()
-        } catch {
-            hLogError("Headset: failed to create silence player: \(error.localizedDescription)")
         }
     }
 

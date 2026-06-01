@@ -136,6 +136,24 @@ class VoiceCodeClient: ObservableObject {
     /// Test seam: read-only view of the current subscription map.
     var subscriptionsForTesting: [String: SubscriptionPhase] { subscriptions }
 
+    // Coalesce rapid/duplicate `turn_complete` frames per session
+    // (tmux-untethered-prg). The backend emits one `turn_complete` per
+    // historical `end_turn` assistant message, so a backlog replay (or any
+    // duplicate delivery) can deliver a burst of identical frames for the same
+    // session within milliseconds. The only action `turn_complete` drives on
+    // the client is the idempotent fallback auto-subscribe, so collapsing the
+    // burst to a single auto-subscribe is safe and avoids redundant
+    // `subscribe()` churn and log spam. Keyed sessionId → timestamp of the last
+    // *processed* (non-coalesced) turn_complete. All access is on the main
+    // queue — read/write in the `handleMessage` switch, cleared in
+    // `unsubscribe` (itself always called on the main thread) — so no locking
+    // is needed.
+    private var lastTurnCompleteProcessedAt: [String: Date] = [:]
+
+    /// Window within which a subsequent `turn_complete` for the same session is
+    /// treated as a duplicate of the one just processed and coalesced away.
+    static let turnCompleteCoalesceWindow: TimeInterval = 1.0
+
     /// Test seam: invoked for every dict passed to `sendMessage`. Production leaves nil.
     var onMessageSent: (([String: Any]) -> Void)?
 
@@ -1090,6 +1108,26 @@ class VoiceCodeClient: ObservableObject {
                         .map { ActiveSessionManager.shared.isActive($0) } ?? false
 
                     if isStillActive {
+                        // Coalesce a rapid burst of duplicate turn_complete
+                        // frames for the same session (tmux-untethered-prg).
+                        // The backend can deliver one turn_complete per
+                        // historical end_turn during a backlog replay, so 8
+                        // identical frames can land within milliseconds. The
+                        // only action here is the idempotent fallback
+                        // auto-subscribe, so one auto-subscribe per burst is
+                        // sufficient. Gate (and record the timestamp) only on
+                        // the active-session path so a turn_complete for a
+                        // not-yet-active session never suppresses a later,
+                        // genuinely-needed auto-subscribe. See
+                        // `lastTurnCompleteProcessedAt`.
+                        let now = Date()
+                        if let last = self.lastTurnCompleteProcessedAt[sessionId],
+                           now.timeIntervalSince(last) < VoiceCodeClient.turnCompleteCoalesceWindow {
+                            LogManager.shared.log("⏭️ [VoiceCodeClient] Coalescing duplicate turn_complete auto-subscribe for \(sessionId) (within \(VoiceCodeClient.turnCompleteCoalesceWindow)s of prior)", category: "VoiceCodeClient")
+                            return
+                        }
+                        self.lastTurnCompleteProcessedAt[sessionId] = now
+
                         // Idempotent — see session_ready handler above.
                         LogManager.shared.log("📥 [VoiceCodeClient] Auto-subscribing to new session after turn_complete (fallback): \(sessionId)", category: "VoiceCodeClient")
                         self.subscribe(sessionId: sessionId)
@@ -1785,6 +1823,12 @@ class VoiceCodeClient: ObservableObject {
         // backend tolerates an `unsubscribe` for a session it doesn't know
         // about, so we don't gate on auth state.
         subscriptions[sessionId] = nil
+
+        // Mirror the subscription lifecycle: drop the turn_complete coalesce
+        // anchor so it can't (a) leak an entry per session ever seen, or
+        // (b) coalesce a fallback auto-subscribe on re-entry based on a
+        // pre-unsubscribe timestamp (tmux-untethered-prg).
+        lastTurnCompleteProcessedAt[sessionId] = nil
 
         // Reset the TTS gate cursors so the next subscribe reply re-captures
         // a fresh boundary. Without this, leaving and re-entering a session

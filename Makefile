@@ -10,7 +10,7 @@ IOS_DIR := ios
 BACKEND_DIR := backend
 WRAP := ./scripts/wrap-command
 
-.PHONY: help test test-verbose test-quiet test-class test-method test-ui test-ui-crash build clean setup-simulator deploy-device generate-project show-destinations check-sdk xcode-add-files list-simulators
+.PHONY: help test test-verbose test-quiet test-class test-method test-ui test-ui-crash test-ui-autoscroll build clean setup-simulator deploy-device generate-project show-destinations check-sdk xcode-add-files list-simulators
 .PHONY: backend-test backend-test-manual-startup backend-test-manual-protocol backend-test-manual-watcher-new backend-test-manual-prompt-new backend-test-manual-prompt-resume backend-test-manual-broadcast backend-test-manual-errors backend-test-manual-real-data backend-test-manual-resources backend-test-manual-free backend-test-manual-all backend-clean backend-run backend-stop backend-stop-all backend-restart backend-nrepl backend-nrepl-stop recipe-sync tmux-clean
 .PHONY: bump-build bump-build-simple archive export-ipa upload-testflight deploy-testflight
 .PHONY: build-mac test-mac test-mac-class test-mac-ui test-mac-ui-settings run-mac clean-mac list-schemes
@@ -169,6 +169,10 @@ test-ui: setup-simulator
 # Run crash reproduction UI tests
 test-ui-crash: setup-simulator
 	$(WRAP) bash -c "cd $(IOS_DIR) && xcodebuild test -scheme $(SCHEME) -destination $(DESTINATION) -only-testing:VoiceCodeUITests/VoiceCodeUITests/testRapidTextInputNoCrash -only-testing:VoiceCodeUITests/VoiceCodeUITests/testTypeImmediatelyAfterViewAppearsNoCrash"
+
+# Run autoscroll crash-guard UI test (no backend required; seeds a large session)
+test-ui-autoscroll: setup-simulator
+	$(WRAP) bash -c "cd $(IOS_DIR) && xcodebuild test -scheme $(SCHEME) -destination $(DESTINATION) -only-testing:VoiceCodeUITests/AutoScrollCrashUITests"
 
 # Run simple crash test (no backend required)
 test-crash-simple: setup-simulator

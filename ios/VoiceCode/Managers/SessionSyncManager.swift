@@ -151,6 +151,38 @@ class SessionSyncManager {
         return q
     }
 
+    /// Server-assigned message UUIDs already fanned out for TTS / notification
+    /// this launch, keyed by lowercased session id. The normal dedup is
+    /// `upsertMessage` returning `isNew == false` for an existing
+    /// `(sessionId, offset)` row, but `file_replaced` recovery purges every
+    /// cached row and re-subscribes from offset 0, so re-delivered messages
+    /// look brand-new and would be spoken again — and rapid `file_signature`
+    /// churn re-speaks the same recent messages 2-3x (tmux-untethered-icf).
+    /// This set survives the purge and is keyed on the message UUID (stable
+    /// across compaction / offset renumbering, unlike `offset`), so history
+    /// replay never re-enqueues speech for a message already announced.
+    /// Accessed from the per-session upsert queues (which run concurrently
+    /// across sessions), so all access goes through `spokenMessageLock`.
+    private var spokenMessageUUIDs: [String: Set<String>] = [:]
+    private let spokenMessageLock = NSLock()
+
+    /// Returns `true` and records `uuid` if this session has not yet announced
+    /// it; returns `false` if it was already announced (caller must suppress
+    /// the TTS / notification fan-out). Thread-safe. Both the session id and
+    /// the message uuid are lowercased so a case difference between two
+    /// deliveries of the same message can't slip a duplicate past the set.
+    private func claimUnspokenMessage(sessionId: String, uuid: String) -> Bool {
+        spokenMessageLock.lock()
+        defer { spokenMessageLock.unlock() }
+        let key = sessionId.lowercased()
+        let messageKey = uuid.lowercased()
+        if spokenMessageUUIDs[key]?.contains(messageKey) == true {
+            return false
+        }
+        spokenMessageUUIDs[key, default: []].insert(messageKey)
+        return true
+    }
+
     init(persistenceController: PersistenceController = .shared, voiceOutputManager: VoiceOutputManager? = nil) {
         self.persistenceController = persistenceController
         self.context = persistenceController.container.viewContext
@@ -499,9 +531,14 @@ class SessionSyncManager {
                 let inserted = self.upsertMessage(wireMessage, session: session, in: backgroundContext)
                 if inserted {
                     newRows += 1
+                    // `claimUnspokenMessage` dedups re-delivery that survives
+                    // the (sessionId, seq) idempotency — e.g. a duplicate
+                    // turn_complete fan-out re-inserting after a cache prune
+                    // (tmux-untethered-icf).
                     if wireMessage.role == "assistant"
                         && liveFromSeq > 0
-                        && wireMessage.seq >= liveFromSeq {
+                        && wireMessage.seq >= liveFromSeq
+                        && self.claimUnspokenMessage(sessionId: wireMessage.sessionId, uuid: wireMessage.uuid) {
                         newAssistantTexts.append(wireMessage.text)
                     }
                 }
@@ -725,7 +762,25 @@ class SessionSyncManager {
                 // next subscribe re-sends the stale signature and the
                 // server replies `file_replaced: true` again, looping.
                 if payload.fileReplaced == true {
-                    LogManager.shared.log("🧹 file_replaced for \(payload.sessionId): purging cache and re-subscribing from offset 0 (new signature=\(payload.fileSignature ?? "<nil>"))", category: "SessionSync")
+                    // R2 recovery — the server's file signature changed since we
+                    // last subscribed (compaction, in-place rewrite, restore).
+                    // The byte/line offsets are now meaningless, so we DO
+                    // re-subscribe from offset 0. But we must NOT purge the
+                    // cached rows: a purge blanks the conversation, and under the
+                    // rapid signature churn seen in the field (e.g. three
+                    // signatures within ~90s) it blanks it repeatedly — dropping
+                    // the just-arrived assistant message the user is reading even
+                    // though it was already received and spoken. Instead, reset
+                    // only the merge cursor and let the from-0 replay reconcile
+                    // every message by its stable UUID (see the uuidHit branch in
+                    // upsertMessage(_:WireMessageV5)): a message that reappears at
+                    // a new offset updates its existing row in place, so the
+                    // visible tail is retained rather than wiped-and-refetched.
+                    // Rows for messages the rewrite genuinely removed are the
+                    // oldest entries and are evicted by the normal tail-anchored
+                    // prune (CDMessage.pruneOldMessages keeps the newest N).
+                    // (blueparrott-sync-fixes bug 1.)
+                    LogManager.shared.log("🔁 file_replaced for \(payload.sessionId): re-subscribing from offset 0 and reconciling by UUID — retaining the visible tail (new signature=\(payload.fileSignature ?? "<nil>"))", category: "SessionSync")
                     session.lastOffsetMerged = 0
                     session.liveFromOffset = 0
                     // Server contract says R2 always carries a fresh
@@ -736,8 +791,8 @@ class SessionSyncManager {
                     if let sig = payload.fileSignature {
                         session.lastFileSignature = sig
                     }
-                    self.purgeMessagesAtOrAbove(offset: 0, session: session, in: ctx)
-                    session.messageCount = 0
+                    // NOTE: deliberately no purgeMessagesAtOrAbove / messageCount
+                    // reset here — the rows survive so the UI never goes blank.
                     do {
                         try ctx.save()
                     } catch {
@@ -747,9 +802,9 @@ class SessionSyncManager {
                     let sessionId = payload.sessionId
                     DispatchQueue.main.async { [weak self] in
                         guard let self = self else { return }
-                        // Clear any in-flight end_of_file chain — the purge
-                        // replaces the file, so the prior chain's cursor is
-                        // meaningless for the incoming fresh subscribe.
+                        // Clear any in-flight end_of_file chain — the file was
+                        // replaced, so the prior chain's cursor is meaningless
+                        // for the incoming fresh subscribe.
                         self.incompleteChainCursorsV5.removeValue(forKey: sessionId.lowercased())
                         self.delegate?.sessionSyncRequestsResubscribeFromZero(sessionUUID)
                     }
@@ -808,9 +863,15 @@ class SessionSyncManager {
                     let inserted = self.upsertMessage(wireMessage, session: session, in: ctx)
                     if inserted {
                         newRows += 1
+                        // The `claimUnspokenMessage` check is the cross-purge
+                        // dedup: after a `file_replaced` recovery the row was
+                        // purged so `inserted` is true again, but the UUID set
+                        // still remembers we already spoke it — preventing the
+                        // 2-3x re-speak on signature churn (tmux-untethered-icf).
                         if wireMessage.role == "assistant"
                             && liveFromOffset > 0
-                            && wireMessage.offset >= liveFromOffset {
+                            && wireMessage.offset >= liveFromOffset
+                            && self.claimUnspokenMessage(sessionId: wireMessage.sessionId, uuid: wireMessage.uuid) {
                             newAssistantTexts.append(wireMessage.text)
                         }
                     }
@@ -1009,11 +1070,31 @@ class SessionSyncManager {
 
         let offsetHit = (try? context.fetch(offsetRequest))?.first
 
+        // UUID reconciliation (file_replaced / compaction recovery). The same
+        // message can reappear at a *different* offset after the transcript
+        // file is rewritten and we re-subscribe from offset 0. Match the
+        // stable server UUID so the existing row is updated in place (its
+        // `offset` rewritten below) instead of spawning a duplicate. `id`
+        // carries CDMessage's uniqueness constraint, so a UUID match maps a
+        // message to exactly one row regardless of how its offset moved. This
+        // is what lets `file_replaced` recovery reconcile-and-retain the
+        // visible tail rather than purge-and-refetch it (blueparrott-sync-fixes
+        // bug 1: signature churn dropped the just-arrived assistant message).
+        let uuidHit: CDMessage? = {
+            guard offsetHit == nil, let wireUUID = UUID(uuidString: wireMessage.uuid) else { return nil }
+            let req = CDMessage.fetchRequest()
+            req.predicate = NSPredicate(format: "sessionId == %@ AND id == %@",
+                                        wireSessionUUID as CVarArg,
+                                        wireUUID as CVarArg)
+            req.fetchLimit = 1
+            return (try? context.fetch(req))?.first
+        }()
+
         // Optimistic fallback: a locally-created "sending" row with matching
         // role+text can be upgraded in place when its server-assigned offset
         // first lands. Identical contract to the v0.4.0 path.
         let optimistic: CDMessage? = {
-            guard offsetHit == nil else { return nil }
+            guard offsetHit == nil, uuidHit == nil else { return nil }
             let req = CDMessage.fetchRequest()
             req.predicate = NSPredicate(format: "sessionId == %@ AND role == %@ AND text == %@ AND status == %@",
                                         wireSessionUUID as CVarArg,
@@ -1024,7 +1105,7 @@ class SessionSyncManager {
             return (try? context.fetch(req))?.first
         }()
 
-        let existing = offsetHit ?? optimistic
+        let existing = offsetHit ?? uuidHit ?? optimistic
         let message = existing ?? CDMessage(context: context)
         let isNew = existing == nil
 

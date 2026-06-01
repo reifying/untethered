@@ -161,10 +161,12 @@ final class SessionSyncManagerOffsetPayloadTests: XCTestCase {
     // MARK: - file_replaced recovery (AC8)
 
     /// AC8: seeded `lastFileSignature` that no longer matches the server's
-    /// current signature triggers the full-purge recovery path:
-    /// rows deleted, cursors zeroed, new signature persisted, resubscribe
-    /// dispatched.
-    func test_file_replaced_purges_cache_resets_cursors_and_resubscribes() {
+    /// current signature triggers the recovery path: cursors zeroed, new
+    /// signature persisted, resubscribe dispatched. The cached rows are
+    /// deliberately RETAINED (not purged) so the visible tail never blanks —
+    /// the from-0 replay reconciles them in place by stable UUID. See the
+    /// blueparrott-sync-fixes bug-1 fix and SessionSyncManagerFileReplacedTests.
+    func test_file_replaced_retains_cache_resets_cursors_and_resubscribes() {
         seedSession(lastOffsetMerged: 17,
                     liveFromOffset: 12,
                     lastFileSignature: "100:old-uuid",
@@ -189,7 +191,8 @@ final class SessionSyncManagerOffsetPayloadTests: XCTestCase {
         XCTAssertEqual(session?.liveFromOffset, 0, "liveFromOffset reset to 0 on file_replaced")
         XCTAssertEqual(session?.lastFileSignature, "200:new-uuid",
                        "lastFileSignature must be updated to the server's new value")
-        XCTAssertEqual(fetchMessages().count, 0, "all cached rows purged on file_replaced")
+        XCTAssertEqual(fetchMessages().count, 11,
+                       "file_replaced must RETAIN cached rows (the visible tail); the from-0 replay reconciles them by UUID")
         XCTAssertEqual(delegate.resubscribesFromZero, [sessionUUID])
     }
 

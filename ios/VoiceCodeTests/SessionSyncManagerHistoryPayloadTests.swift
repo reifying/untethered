@@ -614,12 +614,23 @@ final class SessionSyncManagerHistoryPayloadTests: XCTestCase {
     func test_concurrent_payloads_for_same_session_produce_one_row_per_seq() {
         // Simulates two payloads landing on the same session at the same time
         // — e.g. a subscribe reply crossing a live `session_history` push, or
-        // two backfill requests dispatched in quick succession. Each payload
-        // is delivered on its own queue so they execute against independent
-        // background contexts in parallel. End-state contract: exactly one
-        // row per seq (idempotent on (session_id, seq) per AC3 of the
+        // two backfill requests dispatched in quick succession. The two
+        // deliveries are fired from independent global queues to race them
+        // through `handleSessionHistoryPayload`. End-state contract: exactly
+        // one row per seq (idempotent on (session_id, seq) per AC3 of the
         // append-only message stream design).
         //
+        // NOTE: This test deliberately asserts ONLY the order-independent
+        // invariant — one persisted row per seq under concurrency. It does
+        // NOT assert on `resubscribes` / `prunedGaps`, because the relative
+        // order in which the two deliveries reach the per-session serial
+        // upsert queue is non-deterministic: if pB (firstSeq=8) is processed
+        // before pA against the seeded local_last_seq=5, then 8 > 5+1 trips
+        // the gap-backfill path and a resubscribe fires; if pA (firstSeq=6)
+        // wins, no gap is detected. Both orderings still collapse to one row
+        // per seq, which is the contract this test's name promises. The
+        // no-backfill behavior for this overlap is pinned deterministically
+        // in `test_serialized_overlapping_payloads_do_not_trigger_backfill`.
         seedSession(seqs: 1...5)
 
         // Overlapping seq ranges. Each payload carries seqs the other does
@@ -642,7 +653,7 @@ final class SessionSyncManagerHistoryPayloadTests: XCTestCase {
         exp.assertForOverFulfill = false
 
         // Fire both payloads concurrently from separate global queues so
-        // they enter `performBackgroundTask` from different threads.
+        // they enter the per-session upsert queue from different threads.
         DispatchQueue.global(qos: .userInitiated).async {
             self.manager.handleSessionHistoryPayload(pA)
         }
@@ -662,9 +673,39 @@ final class SessionSyncManagerHistoryPayloadTests: XCTestCase {
             XCTAssertEqual(count, 1,
                            "seq \(s) appeared \(count) times — concurrent upsert produced a duplicate row")
         }
+    }
 
+    func test_serialized_overlapping_payloads_do_not_trigger_backfill() {
+        // Deterministic companion to
+        // `test_concurrent_payloads_for_same_session_produce_one_row_per_seq`.
+        // Delivers the SAME two overlapping windows, but in a fixed order
+        // (pA — the contiguous first_seq=6 — before pB), so the no-backfill /
+        // no-pruned-gap behavior can be asserted without the race.
+        //
+        // pA is contiguous with the seeded local_last_seq=5 (first_seq == 5+1),
+        // so no gap. pA advances local_last_seq to 10, after which pB's
+        // first_seq=8 is a duplicate/reorder (<= 10), also no gap. The
+        // happy-path overlap must therefore never request a backfill.
+        seedSession(seqs: 1...5)
+
+        let aMessages = (6...10).map { wireMessage(seq: Int64($0), text: "A-\($0)") }
+        let bMessages = (8...12).map { wireMessage(seq: Int64($0), text: "B-\($0)") }
+        let pA = payload(firstSeq: 6, lastSeq: 10, nextSeq: 13,
+                         isComplete: true, messages: aMessages)
+        let pB = payload(firstSeq: 8, lastSeq: 12, nextSeq: 13,
+                         isComplete: true, messages: bMessages)
+
+        manager.handleSessionHistoryPayload(pA)
+        waitForHistoryUpdate()
+        manager.handleSessionHistoryPayload(pB)
+        waitForHistoryUpdate()
+        drainMainQueue(for: 0.3)
+
+        let seqs = fetchMessages().map(\.seq)
+        XCTAssertEqual(seqs, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+                       "serialized overlapping payloads must collapse to one row per seq")
         XCTAssertTrue(delegate.resubscribes.isEmpty,
-                      "happy-path concurrent delivery must not trigger backfill")
+                      "contiguous-then-overlapping delivery must not trigger backfill")
         XCTAssertTrue(delegate.prunedGaps.isEmpty,
                       "no pruned gap on a happy-path payload")
     }

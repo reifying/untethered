@@ -618,6 +618,244 @@ extension SmartSpeakingTests {
         let saved = try XCTUnwrap(try context.fetch(CDBackendSession.fetchBackendSession(id: sessionId)).first)
         XCTAssertEqual(saved.liveFromSeq, 0, "clearLiveFromSeq should zero the cursor")
     }
+
+    // MARK: - History-replay TTS dedup (tmux-untethered-icf)
+
+    private func settle(_ interval: TimeInterval = 0.3) {
+        let exp = XCTestExpectation(description: "settle")
+        DispatchQueue.main.asyncAfter(deadline: .now() + interval) { exp.fulfill() }
+        wait(for: [exp], timeout: interval + 1.0)
+    }
+
+    private func v5Message(_ sessionId: UUID,
+                           offset: Int64,
+                           role: String = "assistant",
+                           text: String,
+                           uuid: String) -> WireMessageV5 {
+        WireMessageV5(
+            sessionId: sessionId.uuidString.lowercased(),
+            offset: offset,
+            role: role,
+            text: text,
+            uuid: uuid,
+            timestamp: Date(timeIntervalSince1970: 1_700_000_000 + Double(offset))
+        )
+    }
+
+    private func v5Payload(_ sessionId: UUID,
+                           messages: [WireMessageV5],
+                           nextOffset: Int64,
+                           endOfFile: Bool = true,
+                           fileReplaced: Bool? = nil,
+                           fileSignature: String? = nil) -> SessionHistoryPayloadV5 {
+        SessionHistoryPayloadV5(
+            sessionId: sessionId.uuidString.lowercased(),
+            messages: messages,
+            nextOffset: nextOffset,
+            endOfFile: endOfFile,
+            fileReplaced: fileReplaced,
+            fileSignature: fileSignature
+        )
+    }
+
+    /// Core regression for tmux-untethered-icf (hardened by the
+    /// blueparrott-sync-fixes bug-1 fix): a live assistant message is spoken
+    /// once, then a `file_replaced` recovery (signature churn) re-subscribes
+    /// from offset 0 and the same message UUID is re-delivered as a live push
+    /// (the duplicate turn_complete fan-out). The cached rows are now RETAINED
+    /// across file_replaced (not purged), so the re-delivered UUID reconciles in
+    /// place rather than re-inserting — and even if it did re-insert, the UUID
+    /// dedup gate keeps it to exactly one speak() call. The live turn must be
+    /// announced exactly once across the whole churn.
+    func testFileReplacedReplayDoesNotRespeakSameMessage() throws {
+        let mockVoiceOutput = MockVoiceOutputManager()
+        let manager = SessionSyncManager(
+            persistenceController: persistenceController,
+            voiceOutputManager: mockVoiceOutput
+        )
+
+        let sessionId = UUID()
+        let session = CDBackendSession(context: context)
+        session.id = sessionId
+        session.backendName = "Replay"
+        session.workingDirectory = "/test"
+        session.lastModified = Date()
+        session.messageCount = 0
+        session.preview = ""
+        session.unreadCount = 0
+        session.liveFromOffset = 0
+        try context.save()
+
+        ActiveSessionManager.shared.setActiveSession(sessionId)
+
+        let liveUUID = UUID().uuidString.lowercased()
+        let liveText = "fresh assistant turn"
+
+        // 1. Catch-up reply latches the TTS boundary at the file head (offset 1).
+        //    The historical message at offset 0 is below the boundary → silent.
+        manager.handleSessionHistoryPayload(
+            v5Payload(sessionId,
+                      messages: [v5Message(sessionId, offset: 0, text: "old history", uuid: UUID().uuidString.lowercased())],
+                      nextOffset: 1, endOfFile: true, fileSignature: "sig-42867"))
+        settle()
+        XCTAssertEqual(mockVoiceOutput.speakCallCount, 0, "catch-up history must not speak")
+
+        // 2. Live push of the new turn at offset 1 (== liveFromOffset) → spoken once.
+        manager.handleSessionHistoryPayload(
+            v5Payload(sessionId,
+                      messages: [v5Message(sessionId, offset: 1, text: liveText, uuid: liveUUID)],
+                      nextOffset: 2, endOfFile: true, fileSignature: "sig-44219"))
+        settle()
+        XCTAssertEqual(mockVoiceOutput.speakCallCount, 1, "first live delivery speaks exactly once")
+
+        // 3. Signature churn → file_replaced: RETAIN cache (the visible tail),
+        //    reset liveFromOffset, re-subscribe from offset 0. No speech on the
+        //    recovery reply itself.
+        manager.handleSessionHistoryPayload(
+            v5Payload(sessionId,
+                      messages: [],
+                      nextOffset: 0, endOfFile: true, fileReplaced: true, fileSignature: "sig-116278"))
+        settle()
+        XCTAssertEqual(fetchMessageCount(sessionId), 2,
+                       "file_replaced retains the cached rows (offsets 0 and 1); they reconcile by UUID on replay")
+        XCTAssertEqual(mockVoiceOutput.speakCallCount, 1, "file_replaced recovery must not speak")
+
+        // 4. Re-subscribe re-delivers history (catch-up re-latches boundary)...
+        manager.handleSessionHistoryPayload(
+            v5Payload(sessionId,
+                      messages: [v5Message(sessionId, offset: 0, text: "old history", uuid: UUID().uuidString.lowercased())],
+                      nextOffset: 1, endOfFile: true, fileSignature: "sig-125016"))
+        settle()
+
+        // 5. ...and the same turn (same UUID) lands again as a live push at an
+        //    offset above the re-latched boundary. The retained row reconciles by
+        //    UUID, and the UUID dedup gate prevents any respeak.
+        manager.handleSessionHistoryPayload(
+            v5Payload(sessionId,
+                      messages: [v5Message(sessionId, offset: 1, text: liveText, uuid: liveUUID)],
+                      nextOffset: 2, endOfFile: true, fileSignature: "sig-126872"))
+        settle()
+
+        XCTAssertEqual(mockVoiceOutput.speakCallCount, 1,
+                       "re-delivered message UUID must not be spoken a second time")
+        XCTAssertEqual(mockVoiceOutput.spokenTexts.filter { $0.contains("fresh assistant turn") }.count, 1,
+                       "the live turn is announced exactly once across the file_replaced churn")
+    }
+
+    /// v0.4.0-path sibling: a duplicate `turn_complete` fan-out that re-inserts
+    /// the same message UUID (after a cache prune made it look new) must not
+    /// re-speak it.
+    func testDuplicateReplayDoesNotRespeakSameMessageV4() throws {
+        let mockVoiceOutput = MockVoiceOutputManager()
+        let manager = SessionSyncManager(
+            persistenceController: persistenceController,
+            voiceOutputManager: mockVoiceOutput
+        )
+
+        let sessionId = UUID()
+        let session = CDBackendSession(context: context)
+        session.id = sessionId
+        session.backendName = "ReplayV4"
+        session.workingDirectory = "/test"
+        session.lastModified = Date()
+        session.messageCount = 0
+        session.preview = ""
+        session.unreadCount = 0
+        session.liveFromSeq = 4
+        try context.save()
+
+        ActiveSessionManager.shared.setActiveSession(sessionId)
+
+        let dupUUID = UUID().uuidString.lowercased()
+        let dupText = "v4 assistant turn"
+
+        let live = SessionHistoryPayload(
+            sessionId: sessionId.uuidString.lowercased(),
+            messages: [WireMessage(sessionId: sessionId.uuidString.lowercased(),
+                                   seq: 4, role: "assistant", text: dupText,
+                                   uuid: dupUUID, timestamp: Date())],
+            firstSeq: 4, lastSeq: 4, nextSeq: 5, isComplete: true, gap: nil
+        )
+        manager.handleSessionHistoryPayload(live)
+        settle()
+        XCTAssertEqual(mockVoiceOutput.speakCallCount, 1, "first delivery speaks once")
+
+        // Purge the cached row so the replay below reports as a brand-new insert,
+        // exercising the UUID dedup rather than the (sessionId, seq) idempotency.
+        let purgeReq = CDMessage.fetchRequest()
+        purgeReq.predicate = NSPredicate(format: "sessionId == %@", sessionId as CVarArg)
+        for row in (try? context.fetch(purgeReq)) ?? [] { context.delete(row) }
+        try context.save()
+
+        manager.handleSessionHistoryPayload(live)
+        settle()
+
+        XCTAssertEqual(mockVoiceOutput.speakCallCount, 1,
+                       "duplicate turn_complete fan-out must not re-speak the same UUID")
+    }
+
+    /// The dedup key must be case-insensitive: the same message redelivered
+    /// with a different-case UUID string (after a purge made it look new) must
+    /// still be suppressed. Without lowercasing in `claimUnspokenMessage` the
+    /// two casings would be distinct set members and the message would respeak.
+    func testReplayWithDifferentCaseUUIDDoesNotRespeak() throws {
+        let mockVoiceOutput = MockVoiceOutputManager()
+        let manager = SessionSyncManager(
+            persistenceController: persistenceController,
+            voiceOutputManager: mockVoiceOutput
+        )
+
+        let sessionId = UUID()
+        let session = CDBackendSession(context: context)
+        session.id = sessionId
+        session.backendName = "CaseReplay"
+        session.workingDirectory = "/test"
+        session.lastModified = Date()
+        session.messageCount = 0
+        session.preview = ""
+        session.unreadCount = 0
+        session.liveFromOffset = 5
+        try context.save()
+
+        ActiveSessionManager.shared.setActiveSession(sessionId)
+
+        // Fixed UUID with hex letters so the two casings genuinely differ.
+        let upperUUID = "ABCDEF12-3456-7890-ABCD-EF1234567890"
+        let lowerUUID = upperUUID.lowercased()
+        XCTAssertNotEqual(upperUUID, lowerUUID, "test needs a UUID with case-sensitive characters")
+
+        // First delivery at offset 5 (== liveFromOffset) with the UPPERCASE uuid.
+        manager.handleSessionHistoryPayload(
+            v5Payload(sessionId,
+                      messages: [v5Message(sessionId, offset: 5, text: "case turn", uuid: upperUUID)],
+                      nextOffset: 6, endOfFile: true))
+        settle()
+        XCTAssertEqual(mockVoiceOutput.speakCallCount, 1, "first delivery speaks once")
+
+        // Purge the row so the replay reports as a brand-new insert (exercises
+        // the UUID dedup, not the (sessionId, offset) idempotency).
+        let purgeReq = CDMessage.fetchRequest()
+        purgeReq.predicate = NSPredicate(format: "sessionId == %@", sessionId as CVarArg)
+        for row in (try? context.fetch(purgeReq)) ?? [] { context.delete(row) }
+        try context.save()
+
+        // Redeliver the SAME logical message with the lowercase uuid string.
+        manager.handleSessionHistoryPayload(
+            v5Payload(sessionId,
+                      messages: [v5Message(sessionId, offset: 5, text: "case turn", uuid: lowerUUID)],
+                      nextOffset: 6, endOfFile: true))
+        settle()
+
+        XCTAssertEqual(mockVoiceOutput.speakCallCount, 1,
+                       "different-case UUID of an already-spoken message must not respeak")
+    }
+
+    private func fetchMessageCount(_ sessionId: UUID) -> Int {
+        context.refreshAllObjects()
+        let req = CDMessage.fetchRequest()
+        req.predicate = NSPredicate(format: "sessionId == %@", sessionId as CVarArg)
+        return (try? context.count(for: req)) ?? 0
+    }
 }
 
 // MARK: - Mock Voice Output Manager
@@ -628,11 +866,17 @@ class MockVoiceOutputManager: VoiceOutputManager {
     var lastWorkingDirectory: String?
     var lastSessionId: UUID?
 
+    /// Every text passed to `speak`, in call order. Used by dedup tests that
+    /// assert a given message is spoken exactly once across history replay.
+    var spokenTexts: [String] = []
+    var speakCallCount: Int { spokenTexts.count }
+
     override func speak(_ text: String, rate: Float = 0.5, respectSilentMode: Bool = false, workingDirectory: String? = nil, sessionId: UUID? = nil) {
         speakWasCalled = true
         lastSpokenText = text
         lastWorkingDirectory = workingDirectory
         lastSessionId = sessionId
+        spokenTexts.append(text)
         print("🎤 [MockVoiceOutput] speak() called with text: \(text), workingDirectory: \(workingDirectory ?? "nil"), sessionId: \(sessionId?.uuidString.lowercased() ?? "nil")")
     }
 }

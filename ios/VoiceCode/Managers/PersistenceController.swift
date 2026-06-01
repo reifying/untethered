@@ -4,7 +4,21 @@
 import CoreData
 
 class PersistenceController {
-    static let shared = PersistenceController()
+    static let shared: PersistenceController = {
+        #if DEBUG
+        // Debug/test-only: when a UI test passes -uiTestSeedLargeSession, run on
+        // an isolated in-memory store seeded with a large conversation. This keeps
+        // the autoscroll crash-guard UI test (AutoScrollCrashUITests) from touching
+        // real on-disk data and gives it a clean, large backlog on every launch.
+        // Production never passes the flag, so this branch never runs in the field.
+        if TestingEnvironment.shouldSeedLargeSession {
+            let controller = PersistenceController(inMemory: true)
+            controller.seedLargeSessionForUITesting()
+            return controller
+        }
+        #endif
+        return PersistenceController()
+    }()
 
     /// Shared managed object model to prevent multiple entity description conflicts during tests.
     /// CoreData requires a single NSManagedObjectModel instance per entity class. When multiple
@@ -326,3 +340,109 @@ class PersistenceController {
         }
     }
 }
+
+#if DEBUG
+// MARK: - UI-test seeding (debug-only)
+
+extension PersistenceController {
+    /// Errors thrown by the debug-only UI-test seed when given invalid input.
+    enum SeedError: LocalizedError {
+        case nonPositiveMessageCount(Int)
+
+        var errorDescription: String? {
+            switch self {
+            case .nonPositiveMessageCount(let count):
+                return "seedLargeSession requires messageCount > 0, got \(count)"
+            }
+        }
+    }
+
+    /// Working directory the UI-test seed session lives under. AutoScrollCrashUITests
+    /// navigates DirectoryListView → this directory → the session → ConversationView.
+    static let uiTestSeedWorkingDirectory = "/uitest/AutoScrollCrash"
+
+    /// Number of messages seeded — well above `CDMessage.maxMessagesPerSession`
+    /// (the local window cap) so the conversation list is long enough to scroll
+    /// through repeatedly and mirrors the large launch-time backlog from the
+    /// crash report (count oscillated into the hundreds).
+    static let uiTestSeedMessageCount = 300
+
+    /// Seed a single large session into the view context for the autoscroll
+    /// crash-guard UI test (`-uiTestSeedLargeSession`). Runs on the in-memory
+    /// store built in `shared`, so it never touches on-disk data and starts
+    /// clean on every launch. Debug-only; not compiled into release.
+    func seedLargeSessionForUITesting() {
+        let context = container.viewContext
+        do {
+            let sessionId = try Self.seedLargeSession(
+                in: context,
+                workingDirectory: Self.uiTestSeedWorkingDirectory,
+                messageCount: Self.uiTestSeedMessageCount
+            )
+            try context.save()
+            LogManager.shared.log(
+                "🧪 Seeded large UI-test session \(sessionId.uuidString.lowercased()) with \(Self.uiTestSeedMessageCount) messages under \(Self.uiTestSeedWorkingDirectory)",
+                category: "Persistence"
+            )
+        } catch {
+            LogManager.shared.log(
+                "🧪 Failed to seed large UI-test session: \(error.localizedDescription)",
+                category: "Persistence"
+            )
+        }
+    }
+
+    /// Pure seed used by both the launch hook and unit tests. Creates one
+    /// backend session under `workingDirectory` plus `messageCount` confirmed
+    /// messages (alternating user/assistant) with strictly increasing
+    /// timestamps and 0-based offsets, so `CDMessage.fetchMessages` returns them
+    /// in stable chronological order. Does NOT save — the caller saves the
+    /// context. Returns the new session id.
+    @discardableResult
+    static func seedLargeSession(
+        in context: NSManagedObjectContext,
+        workingDirectory: String,
+        messageCount: Int
+    ) throws -> UUID {
+        // Reject degenerate input up front (also rules out the negative range
+        // that would trap in the loop below). Validated before any object is
+        // created, so a rejected call stages nothing.
+        guard messageCount > 0 else {
+            throw SeedError.nonPositiveMessageCount(messageCount)
+        }
+
+        let sessionId = UUID()
+
+        let session = CDBackendSession(context: context)
+        session.id = sessionId
+        session.backendName = "UITest Large Session"
+        session.workingDirectory = workingDirectory
+        session.lastModified = Date()
+        session.messageCount = Int32(messageCount)
+        session.preview = "Seeded conversation for the autoscroll crash guard"
+        session.unreadCount = 0
+        // Backend-known (not locally created) so ConversationView treats it as a
+        // real session; the subscribe it issues just no-ops without a backend.
+        session.isLocallyCreated = false
+        session.provider = "claude"
+
+        // Anchor timestamps in the past so the whole backlog is "older" than now
+        // and ordering is deterministic (1s apart, ascending).
+        let base = Date().addingTimeInterval(-Double(messageCount))
+        let filler = String(repeating: "lorem ipsum dolor sit amet ", count: 5)
+        for i in 0..<messageCount {
+            let message = CDMessage(context: context)
+            message.id = UUID()
+            message.sessionId = sessionId
+            message.role = (i % 2 == 0) ? "user" : "assistant"
+            message.text = "Seeded message \(i): \(filler)"
+            message.timestamp = base.addingTimeInterval(Double(i))
+            message.offset = Int64(i)
+            message.messageStatus = .confirmed
+            message.session = session
+        }
+
+        return sessionId
+    }
+}
+#endif
