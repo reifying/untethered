@@ -2021,34 +2021,170 @@
           (let [updated-state (server/get-session-recipe-state session-id)]
             (is (= 1 (get-in updated-state [:step-retry-counts :implement])))))))))
 
-(deftest test-process-orchestration-response-invalid-json-exit-after-retry
-  (testing "Second invalid JSON exits recipe after retry failed"
+(deftest test-process-orchestration-response-invalid-json-exit-after-cap
+  (testing "Invalid JSON exits recipe once the reminder cap is reached"
     (let [session-id "test-session-exit"
           sent-messages (atom [])
           mock-channel :test-ch]
-      ;; Setup with retry count already at 1
+      ;; Setup with retry count already at the default cap (3)
       (reset! server/session-orchestration-state {})
+      (reset! server/connected-clients {:test-ch {:authenticated true :deleted-sessions #{}}})
       (server/start-recipe-for-session session-id :implement-and-review false)
-      (swap! server/session-orchestration-state assoc-in [session-id :step-retry-counts :implement] 1)
+      (swap! server/session-orchestration-state assoc-in [session-id :step-retry-counts :implement]
+             recipes/default-max-outcome-reminders)
 
       (with-redefs [org.httpkit.server/send! (fn [_ msg] (swap! sent-messages conj msg))]
         (let [orch-state (server/get-session-recipe-state session-id)
               recipe (recipes/get-recipe :implement-and-review)
-              ;; Simulate Claude response with no JSON (second failure)
+              ;; Simulate Claude response with no JSON (cap reached)
               response-text "Still no JSON here."
               result (server/process-orchestration-response
                       session-id orch-state recipe response-text mock-channel)]
 
-          ;; Should exit with error after retry exhausted
+          ;; Should exit with error after reminders exhausted
           (is (= :exit (:action result)))
           (is (= "orchestration-error" (:reason result)))
 
           ;; Should have sent recipe_exited message
           (is (some #(str/includes? % "recipe_exited") @sent-messages))
           (is (some #(str/includes? % "orchestration-error") @sent-messages))
+          ;; Error message reports the reminder cap
+          (is (some #(str/includes? % "after 3 reminders") @sent-messages))
 
           ;; Recipe state should be cleared
           (is (nil? (server/get-session-recipe-state session-id))))))))
+
+(deftest test-process-orchestration-response-forgiving-retry-policy
+  (testing "N consecutive missing-outcome turns retry until the cap, then exit"
+    ;; Drive the real per-step retry counter through repeated work-only turns and
+    ;; assert it reminds (default cap 3) before exiting with orchestration-error.
+    (let [session-id "test-session-forgiving"
+          mock-channel :test-ch]
+      (reset! server/session-orchestration-state {})
+      (with-redefs [org.httpkit.server/send! (fn [_ _] nil)]
+        (server/start-recipe-for-session session-id :implement-and-review false)
+        (let [recipe (recipes/get-recipe :implement-and-review)
+              run-turn (fn []
+                         (server/process-orchestration-response
+                          session-id
+                          (server/get-session-recipe-state session-id)
+                          recipe
+                          "Still working, no JSON outcome yet."
+                          mock-channel))]
+          ;; retry-counts 0, 1, 2 (< cap 3) -> :retry
+          (is (= :retry (:action (run-turn))))
+          (is (= 1 (get-in (server/get-session-recipe-state session-id)
+                           [:step-retry-counts :implement])))
+          (is (= :retry (:action (run-turn))))
+          (is (= :retry (:action (run-turn))))
+          (is (= 3 (get-in (server/get-session-recipe-state session-id)
+                           [:step-retry-counts :implement])))
+          ;; retry-count now at cap (3) -> :exit
+          (let [result (run-turn)]
+            (is (= :exit (:action result)))
+            (is (= "orchestration-error" (:reason result))))
+          ;; Recipe state cleared on exit
+          (is (nil? (server/get-session-recipe-state session-id))))))))
+
+(deftest test-process-orchestration-response-respects-recipe-max-reminders
+  (testing ":max-outcome-reminders on the recipe overrides the default cap"
+    (let [session-id "test-session-custom-cap"
+          mock-channel :test-ch]
+      (reset! server/session-orchestration-state {})
+      (with-redefs [org.httpkit.server/send! (fn [_ _] nil)]
+        (server/start-recipe-for-session session-id :implement-and-review false)
+        ;; Custom recipe with a cap of 1: retry-count 0 -> :retry, 1 -> :exit
+        (let [recipe (assoc (recipes/get-recipe :implement-and-review)
+                            :max-outcome-reminders 1)
+              run-turn (fn []
+                         (server/process-orchestration-response
+                          session-id
+                          (server/get-session-recipe-state session-id)
+                          recipe
+                          "No JSON outcome."
+                          mock-channel))]
+          (is (= :retry (:action (run-turn))))
+          (let [result (run-turn)]
+            (is (= :exit (:action result)))
+            (is (= "orchestration-error" (:reason result)))))))))
+
+(deftest test-process-orchestration-response-nil-max-reminders-falls-back
+  (testing "An explicit nil :max-outcome-reminders falls back to the default cap (no NPE)"
+    (let [session-id "test-session-nil-cap"
+          mock-channel :test-ch]
+      (reset! server/session-orchestration-state {})
+      (with-redefs [org.httpkit.server/send! (fn [_ _] nil)]
+        (server/start-recipe-for-session session-id :implement-and-review false)
+        ;; Recipe explicitly sets the key to nil; should behave like the default,
+        ;; not throw on (< retry-count nil).
+        (let [recipe (assoc (recipes/get-recipe :implement-and-review)
+                            :max-outcome-reminders nil)
+              run-turn (fn []
+                         (server/process-orchestration-response
+                          session-id
+                          (server/get-session-recipe-state session-id)
+                          recipe
+                          "No JSON outcome."
+                          mock-channel))]
+          ;; Below the default cap -> retries (proves it fell back, did not exit/throw)
+          (is (= :retry (:action (run-turn))))
+          ;; At the default cap -> exits
+          (swap! server/session-orchestration-state assoc-in
+                 [session-id :step-retry-counts :implement] recipes/default-max-outcome-reminders)
+          (let [result (run-turn)]
+            (is (= :exit (:action result)))
+            (is (= "orchestration-error" (:reason result)))))))))
+
+(deftest test-process-orchestration-response-valid-outcome-clears-retry-counter
+  (testing "A valid outcome on any turn clears the step retry counter and transitions"
+    (let [session-id "test-session-clears-retry"
+          mock-channel :test-ch]
+      (reset! server/session-orchestration-state {})
+      (with-redefs [org.httpkit.server/send! (fn [_ _] nil)]
+        (server/start-recipe-for-session session-id :implement-and-review false)
+        ;; Simulate prior work-only turns that accrued retries
+        (swap! server/session-orchestration-state assoc-in
+               [session-id :step-retry-counts :implement] 2)
+        (let [orch-state (server/get-session-recipe-state session-id)
+              recipe (recipes/get-recipe :implement-and-review)
+              response-text "Done now.\n\n{\"outcome\": \"complete\"}"
+              result (server/process-orchestration-response
+                      session-id orch-state recipe response-text mock-channel)]
+          ;; Transitions normally
+          (is (= :next-step (:action result)))
+          (is (= :code-review (:step-name result)))
+          ;; Retry counter for the step is cleared
+          (is (nil? (get-in (server/get-session-recipe-state session-id)
+                            [:step-retry-counts :implement]))))))))
+
+(deftest test-process-orchestration-response-work-then-outcome-completes
+  (testing "Integration: work-only turns then a final outcome turn completes the step"
+    (let [session-id "test-session-work-then-outcome"
+          mock-channel :test-ch]
+      (reset! server/session-orchestration-state {})
+      (with-redefs [org.httpkit.server/send! (fn [_ _] nil)]
+        (server/start-recipe-for-session session-id :implement-and-review false)
+        (let [recipe (recipes/get-recipe :implement-and-review)
+              work-turn (fn []
+                          (server/process-orchestration-response
+                           session-id
+                           (server/get-session-recipe-state session-id)
+                           recipe
+                           "Running tools, still working."
+                           mock-channel))]
+          ;; Two work-only turns -> retry, recipe stays alive
+          (is (= :retry (:action (work-turn))))
+          (is (= :retry (:action (work-turn))))
+          (is (some? (server/get-session-recipe-state session-id)))
+          ;; Final turn emits a valid outcome -> transitions without aborting
+          (let [result (server/process-orchestration-response
+                        session-id
+                        (server/get-session-recipe-state session-id)
+                        recipe
+                        "Finished.\n\n{\"outcome\": \"complete\"}"
+                        mock-channel)]
+            (is (= :next-step (:action result)))
+            (is (= :code-review (:step-name result)))))))))
 
 (deftest test-process-orchestration-response-issues-found
   (testing "issues-found outcome transitions to fix step"

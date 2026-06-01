@@ -95,6 +95,15 @@ If working on a beads task, update its status first:
    :max-total-steps 100
    :exit-on-other true})
 
+;; Optional top-level recipe key (read by process-orchestration-response in
+;; server.clj): :max-outcome-reminders — the number of consecutive
+;; missing-outcome turns the orchestrator tolerates with a gentle reminder
+;; before exiting with "orchestration-error". Defaults to 3 when absent. A
+;; non-trivial step spans several agent turns (run tools, think, then emit the
+;; outcome last); this prevents work-only turns from prematurely aborting the
+;; recipe. Bounded independently by the :guardrails above.
+(def default-max-outcome-reminders 3)
+
 (defn review-and-commit-recipe
   "Returns the review-and-commit recipe definition.
    This recipe reviews existing changes, fixes issues, and commits."

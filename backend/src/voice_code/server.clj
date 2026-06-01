@@ -1034,7 +1034,9 @@
    Returns one of:
    - {:action :next-step :step-name keyword} - transition to next step
    - {:action :exit :reason string} - exit recipe
-   - {:action :retry :prompt string} - retry with reminder prompt (first failure only)"
+   - {:action :retry :prompt string} - retry with reminder prompt (up to the
+     recipe's :max-outcome-reminders consecutive missing-outcome turns, defaulting
+     to recipes/default-max-outcome-reminders)"
   [session-id orch-state recipe response-text channel]
   (let [current-step (:current-step orch-state)
         step (orch/get-current-step recipe current-step)
@@ -1091,14 +1093,22 @@
           :restart-new-session
           ;; Pass through to execute-recipe-step which handles the restart
           next-action))
-      ;; Failed to parse outcome - check if we should retry or exit
+      ;; Failed to parse outcome - remind up to max-outcome-reminders, then exit.
+      ;; A still-working turn (no outcome yet) must not abort the recipe; we nudge
+      ;; the agent up to the cap before declaring a genuine failure. Runaway is
+      ;; impossible: should-exit-recipe? still bounds max-step-visits/max-total-steps,
+      ;; and this per-step counter caps at max-outcome-reminders.
       (let [retry-count (get-in orch-state [:step-retry-counts current-step] 0)
+            ;; `or` (not get's default) so an explicit nil key falls back too; a
+            ;; legitimate 0 stays 0 (truthy in Clojure) for strict no-reminder recipes.
+            max-reminders (or (:max-outcome-reminders recipe) recipes/default-max-outcome-reminders)
             error-msg (:error outcome-result)]
-        (if (zero? retry-count)
-          ;; First failure - retry with reminder prompt
+        (if (< retry-count max-reminders)
+          ;; Still within reminder budget - nudge, do NOT abort
           (do
             (orch/log-orchestration-event "outcome-parse-retry" session-id (:recipe-id orch-state) current-step
-                                          {:error error-msg :retry-attempt 1})
+                                          {:error error-msg :retry-attempt (inc retry-count)
+                                           :max-reminders max-reminders})
             ;; Increment retry count in state
             (swap! session-orchestration-state update-in [session-id :step-retry-counts current-step] (fnil inc 0))
             (send-to-client! channel
@@ -1108,16 +1118,18 @@
                               :error error-msg})
             {:action :retry
              :prompt (orch/get-outcome-reminder-prompt current-step expected-outcomes error-msg)})
-          ;; Already retried - exit recipe
+          ;; Exhausted reminders - genuine failure, exit recipe
           (do
             (orch/log-orchestration-event "outcome-parse-error" session-id (:recipe-id orch-state) current-step
-                                          {:error error-msg :retry-attempts (inc retry-count)})
+                                          {:error error-msg :retry-attempts (inc retry-count)
+                                           :max-reminders max-reminders})
             (exit-recipe-for-session session-id "orchestration-error")
             (send-to-client! channel
                              {:type :recipe-exited
                               :session-id session-id
                               :reason "orchestration-error"
-                              :error (str "Agent failed to produce valid JSON outcome after retry. " error-msg)})
+                              :error (str "No valid JSON outcome after " max-reminders
+                                          " reminders. " error-msg)})
             {:action :exit :reason "orchestration-error"}))))))
 
 (defonce ^:private recipe-turn-callbacks
