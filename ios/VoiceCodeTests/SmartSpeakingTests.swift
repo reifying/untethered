@@ -658,12 +658,15 @@ extension SmartSpeakingTests {
         )
     }
 
-    /// Core regression for tmux-untethered-icf: a live assistant message is
-    /// spoken once, then a `file_replaced` purge (signature churn) re-subscribes
+    /// Core regression for tmux-untethered-icf (hardened by the
+    /// blueparrott-sync-fixes bug-1 fix): a live assistant message is spoken
+    /// once, then a `file_replaced` recovery (signature churn) re-subscribes
     /// from offset 0 and the same message UUID is re-delivered as a live push
-    /// (the duplicate turn_complete fan-out). Because the cached row was purged,
-    /// `upsertMessage` reports it as new again — without the UUID dedup the gate
-    /// would re-speak it. The dedup must keep it to exactly one speak() call.
+    /// (the duplicate turn_complete fan-out). The cached rows are now RETAINED
+    /// across file_replaced (not purged), so the re-delivered UUID reconciles in
+    /// place rather than re-inserting — and even if it did re-insert, the UUID
+    /// dedup gate keeps it to exactly one speak() call. The live turn must be
+    /// announced exactly once across the whole churn.
     func testFileReplacedReplayDoesNotRespeakSameMessage() throws {
         let mockVoiceOutput = MockVoiceOutputManager()
         let manager = SessionSyncManager(
@@ -705,14 +708,16 @@ extension SmartSpeakingTests {
         settle()
         XCTAssertEqual(mockVoiceOutput.speakCallCount, 1, "first live delivery speaks exactly once")
 
-        // 3. Signature churn → file_replaced: purge cache, reset liveFromOffset,
-        //    re-subscribe from offset 0. No speech on the recovery reply itself.
+        // 3. Signature churn → file_replaced: RETAIN cache (the visible tail),
+        //    reset liveFromOffset, re-subscribe from offset 0. No speech on the
+        //    recovery reply itself.
         manager.handleSessionHistoryPayload(
             v5Payload(sessionId,
                       messages: [],
                       nextOffset: 0, endOfFile: true, fileReplaced: true, fileSignature: "sig-116278"))
         settle()
-        XCTAssertEqual(fetchMessageCount(sessionId), 0, "file_replaced purges the cache")
+        XCTAssertEqual(fetchMessageCount(sessionId), 2,
+                       "file_replaced retains the cached rows (offsets 0 and 1); they reconcile by UUID on replay")
         XCTAssertEqual(mockVoiceOutput.speakCallCount, 1, "file_replaced recovery must not speak")
 
         // 4. Re-subscribe re-delivers history (catch-up re-latches boundary)...
@@ -723,8 +728,8 @@ extension SmartSpeakingTests {
         settle()
 
         // 5. ...and the same turn (same UUID) lands again as a live push at an
-        //    offset above the re-latched boundary. The row was purged so it is
-        //    "new" again — the UUID dedup is the only thing preventing a respeak.
+        //    offset above the re-latched boundary. The retained row reconciles by
+        //    UUID, and the UUID dedup gate prevents any respeak.
         manager.handleSessionHistoryPayload(
             v5Payload(sessionId,
                       messages: [v5Message(sessionId, offset: 1, text: liveText, uuid: liveUUID)],
