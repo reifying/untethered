@@ -93,6 +93,11 @@ struct ConversationView: View {
     @State private var hasPerformedInitialScroll = false
     @State private var autoScrollEnabled = true  // Auto-scroll on by default
     @State private var scrollProxy: ScrollViewProxy?
+    // Bumped on every scheduled debounced scroll. The debounced closure captures
+    // the value at schedule time and only fires if it still matches at fire time,
+    // so during launch count churn (20 -> 265 -> 20 -> 331 -> 22) the queued stale
+    // scrolls are coalesced and only the latest generation lands.
+    @State private var scrollGeneration = 0
 
     // Fetch messages for this session
     @FetchRequest private var messages: FetchedResults<CDMessage>
@@ -258,30 +263,38 @@ struct ConversationView: View {
                                 }
                             }
 
-                            // Auto-scroll to new messages if enabled
-                            guard newCount > oldCount else { return }
-
-                            // Suppress auto-scroll while the View Full sheet is open so the
-                            // background list does not move away from what the user is reading.
-                            guard fullMessageSnapshot == nil else {
-                                LogManager.shared.log("📨 Skipping auto-scroll (View Full sheet open)", category: "ConversationView")
+                            // Auto-scroll to new messages. Schedule-time gate: only on
+                            // growth, with auto-scroll enabled and the View Full sheet
+                            // closed (so the background list does not move away from what
+                            // the user is reading).
+                            guard AutoScrollDecision.shouldAutoScroll(
+                                    oldCount: oldCount,
+                                    newCount: newCount,
+                                    autoScrollEnabled: autoScrollEnabled,
+                                    isSheetOpen: fullMessageSnapshot != nil) else {
                                 return
                             }
 
-                            LogManager.shared.log("📨 New messages: \(oldCount) -> \(newCount), auto-scroll: \(self.autoScrollEnabled ? "enabled" : "disabled")", category: "ConversationView")
+                            // Coalesce concurrent schedules via a generation token so a
+                            // stale scroll (scheduled against an earlier message set during
+                            // launch churn) cannot fire against a later, different set.
+                            scrollGeneration += 1
+                            let scheduled = scrollGeneration
+                            LogManager.shared.log("📨 New messages: \(oldCount) -> \(newCount), scheduling scroll (gen \(scheduled))", category: "ConversationView")
 
-                            // Debounce scroll to avoid triggering during layout calculations
-                            if autoScrollEnabled {
-                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                                    // Re-check autoScrollEnabled and sheet state after delay in case
-                                    // the user disabled scroll or opened the View Full sheet meanwhile.
-                                    guard self.autoScrollEnabled,
-                                          self.fullMessageSnapshot == nil else { return }
-                                    LogManager.shared.log("📨 Scrolling to bottom anchor (debounced)", category: "ConversationView")
-                                    proxy.scrollTo(Self.bottomAnchorID, anchor: .bottom)
-                                }
-                            } else {
-                                LogManager.shared.log("📨 Skipping auto-scroll (disabled)", category: "ConversationView")
+                            // Debounce scroll to avoid triggering during layout calculations.
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                                // Superseded by a newer scroll → drop this one.
+                                guard AutoScrollDecision.isCurrent(
+                                        scheduledGeneration: scheduled,
+                                        currentGeneration: self.scrollGeneration) else { return }
+                                // Re-gate (no counts): the user may have toggled auto-scroll
+                                // off or opened the View Full sheet during the debounce window.
+                                guard AutoScrollDecision.shouldStillScroll(
+                                        autoScrollEnabled: self.autoScrollEnabled,
+                                        isSheetOpen: self.fullMessageSnapshot != nil) else { return }
+                                LogManager.shared.log("📨 Scrolling to bottom anchor (debounced, gen \(scheduled))", category: "ConversationView")
+                                proxy.scrollTo(Self.bottomAnchorID, anchor: .bottom)
                             }
                         }
                         .onChange(of: isLoading) { wasLoading, nowLoading in
