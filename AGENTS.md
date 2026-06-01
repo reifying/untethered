@@ -1,15 +1,15 @@
 # Agent Instructions
 
-This project uses **bd** (beads) for issue tracking. Run `bd prime` for full workflow context.
+This project uses **br** (beads) for issue tracking. Run `br help` for full workflow context.
 
 ## Quick Reference
 
 ```bash
-bd ready              # Find available work
-bd show <id>          # View issue details
-bd update <id> --claim  # Claim work atomically
-bd close <id>         # Complete work
-bd dolt push          # Push beads data to remote
+br ready              # Find available work
+br show <id>          # View issue details
+br update <id> --claim  # Claim work atomically
+br close <id>         # Complete work
+br sync --flush-only  # Export beads data to git-tracked issues.jsonl
 ```
 
 ## Non-Interactive Shell Commands
@@ -39,22 +39,21 @@ cp -rf source dest          # NOT: cp -r source dest
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:ca08a54f -->
 ## Beads Issue Tracker
 
-This project uses **bd (beads)** for issue tracking. Run `bd prime` to see full workflow context and commands.
+This project uses **br (beads)** for issue tracking. Run `br help` to see full workflow context and commands.
 
 ### Quick Reference
 
 ```bash
-bd ready              # Find available work
-bd show <id>          # View issue details
-bd update <id> --claim  # Claim work
-bd close <id>         # Complete work
+br ready              # Find available work
+br show <id>          # View issue details
+br update <id> --claim  # Claim work
+br close <id>         # Complete work
 ```
 
 ### Rules
 
-- Use `bd` for ALL task tracking — do NOT use TodoWrite, TaskCreate, or markdown TODO lists
-- Run `bd prime` for detailed command reference and session close protocol
-- Use `bd remember` for persistent knowledge — do NOT use MEMORY.md files
+- Use `br` for ALL task tracking — do NOT use TodoWrite, TaskCreate, or markdown TODO lists
+- Run `br help` for detailed command reference
 
 ## Session Completion
 
@@ -68,7 +67,6 @@ bd close <id>         # Complete work
 4. **PUSH TO REMOTE** - This is MANDATORY:
    ```bash
    git pull --rebase
-   bd dolt push
    git push
    git status  # MUST show "up to date with origin"
    ```
