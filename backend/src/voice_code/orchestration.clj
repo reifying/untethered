@@ -13,21 +13,50 @@
       str/trim))
 
 (defn find-json-block
-  "Find a JSON block in text. Tries multiple strategies:
-   1. Look for {...} patterns in the final lines
-   2. Try parsing the last line as JSON
-   3. Return nil if not found"
+  "Find the LAST JSON outcome block anywhere in agent response text.
+   Returns the JSON string (including braces) or nil if not found.
+
+   Detection is intentionally broad so a turn that DID emit the outcome is never
+   reported as missing. Candidates are gathered from the WHOLE response and the
+   one that appears LAST (by character position) wins, so a fenced example
+   earlier in the turn never shadows the real outcome the agent emits at the end.
+   Two candidate sources are merged:
+   - every ```json fenced block body (tolerates pretty-printed / multi-line JSON)
+   - every whole-line {...} object (not just the last 5 lines, so trailing
+     prose/blank lines after the outcome no longer hide it)
+
+   extract-orchestration-outcome still validates the parsed object against the
+   step's expected outcomes, so a stray {...} that is not a valid outcome is
+   rejected downstream rather than wrongly accepted here."
   [text]
-  (let [lines (str/split-lines text)
-        last-lines (take-last 5 lines)]
-    (loop [lines-to-check last-lines]
-      (if (empty? lines-to-check)
-        nil
-        (let [line (str/trim (first lines-to-check))]
-          (if (and (str/starts-with? line "{")
-                   (str/ends-with? line "}"))
-            line
-            (recur (rest lines-to-check))))))))
+  (when (and text (not (str/blank? text)))
+    (letfn [(json-object? [s]
+              (and (seq s)
+                   (str/starts-with? s "{")
+                   (str/ends-with? s "}")))]
+      (let [;; [start json-string] for each ```json fenced block body
+            fenced (let [m ^java.util.regex.Matcher
+                         (re-matcher #"(?s)```json\s*(.*?)```" text)]
+                     (loop [acc []]
+                       (if (.find m)
+                         (recur (conj acc [(.start m 1) (str/trim (.group m 1))]))
+                         acc)))
+            ;; [start json-string] for each whole line, tracking exact offsets
+            lined (loop [offset 0
+                         lines (str/split text #"\n" -1)
+                         acc []]
+                    (if (empty? lines)
+                      acc
+                      (let [line (first lines)]
+                        (recur (+ offset (count line) 1)
+                               (rest lines)
+                               (conj acc [offset (str/trim line)])))))]
+        ;; merge both candidate sources; the last outcome by position wins
+        (->> (concat fenced lined)
+             (filter (comp json-object? second))
+             (sort-by first)
+             last
+             second)))))
 
 (defn parse-json-safely
   "Parse JSON string, returning {:success true :data {...}} or {:success false :error \"...\"}

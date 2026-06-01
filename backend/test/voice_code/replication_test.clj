@@ -6185,6 +6185,36 @@
   (testing "Cursor: user record is not terminal"
     (is (false? (providers/turn-complete? :cursor {:role "user"})))))
 
+(deftest test-providers-assistant-tool-use-multimethod
+  (testing "Claude: tool_use stop_reason is a tool-using turn"
+    (is (true? (providers/assistant-tool-use? :claude
+                                              {:type "assistant"
+                                               :isSidechain false
+                                               :message {:stop_reason "tool_use"}}))))
+  (testing "Claude: content with a tool_use block is a tool-using turn"
+    (is (true? (providers/assistant-tool-use? :claude
+                                              {:type "assistant"
+                                               :isSidechain false
+                                               :message {:stop_reason "end_turn"
+                                                         :content [{:type "text" :text "ok"}
+                                                                   {:type "tool_use" :name "Bash"}]}}))))
+  (testing "Claude: text-only end_turn turn is not tool-using"
+    (is (false? (providers/assistant-tool-use? :claude
+                                               {:type "assistant"
+                                                :isSidechain false
+                                                :message {:stop_reason "end_turn"
+                                                          :content [{:type "text" :text "done"}]}}))))
+  (testing "Claude: sidechain tool_use is not counted"
+    (is (false? (providers/assistant-tool-use? :claude
+                                               {:type "assistant"
+                                                :isSidechain true
+                                                :message {:stop_reason "tool_use"}}))))
+  (testing "Claude: a user record is not a tool-using assistant turn"
+    (is (false? (providers/assistant-tool-use? :claude {:type "user" :message {:content "hi"}}))))
+  (testing "Other providers default to false (watcher layer gates intermediate writes)"
+    (is (false? (providers/assistant-tool-use? :copilot {:type "assistant.message"})))
+    (is (false? (providers/assistant-tool-use? :opencode {:type "text"})))))
+
 ;; ============================================================================
 ;; Cursor turn-complete detection (file-based, mtime stability)
 ;; ============================================================================

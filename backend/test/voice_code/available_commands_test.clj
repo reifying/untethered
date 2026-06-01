@@ -41,12 +41,12 @@
             (is (empty? (:project_commands available-cmd))
                 "project_commands should be empty when no directory set")
             (is (vector? (:general_commands available-cmd)))
-            (is (= 5 (count (:general_commands available-cmd)))
-                "Should have exactly 5 general commands")
+            (is (= 7 (count (:general_commands available-cmd)))
+                "Should have exactly 7 general commands")
 
             (let [cmd-ids (set (map :id (:general_commands available-cmd)))]
               (is (= #{"git.status" "git.push" "git.worktree.list"
-                       "bd.ready" "bd.list"}
+                       "bd.ready" "bd.list" "br.ready" "br.list"}
                      cmd-ids)))))))
     (reset! server/api-key nil)))
 
@@ -125,7 +125,7 @@
               "available_commands should be sent on new session creation")
           (is (= test-dir (:working_directory available-cmd)))
           (is (= 2 (count (:project_commands available-cmd))))
-          (is (= 5 (count (:general_commands available-cmd)))))))
+          (is (= 7 (count (:general_commands available-cmd)))))))
     (reset! server/api-key nil)))
 
 (deftest test-available-commands-sent-on-resumed-session
@@ -161,7 +161,7 @@
               "available_commands should be sent on session resume")
           (is (= session-workdir (:working_directory available-cmd)))
           (is (= 1 (count (:project_commands available-cmd))))
-          (is (= 5 (count (:general_commands available-cmd)))))))
+          (is (= 7 (count (:general_commands available-cmd)))))))
     (reset! server/api-key nil)))
 
 (deftest test-available-commands-message-format-snake-case
@@ -324,6 +324,6 @@
               "working_directory should match the session's directory")
           (is (= 2 (count (:project_commands available-cmd)))
               "project_commands should contain Makefile targets for the session's directory")
-          (is (= 5 (count (:general_commands available-cmd)))
+          (is (= 7 (count (:general_commands available-cmd)))
               "general_commands should always be present"))))
     (reset! server/api-key nil)))

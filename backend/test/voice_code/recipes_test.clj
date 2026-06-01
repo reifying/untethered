@@ -306,7 +306,8 @@
     (let [recipe (recipes/get-recipe :implement-and-review)
           prompt (get-in recipe [:steps :commit :prompt])]
       (is (re-find #"beads" prompt))
-      (is (re-find #"bd close" prompt))
+      (is (re-find #"br close" prompt))
+      (is (re-find #"br sync --flush-only" prompt))
       (is (re-find #"[Pp]ush" prompt))))
 
   (testing "committed outcome exits with changes-committed reason"

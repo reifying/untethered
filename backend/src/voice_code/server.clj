@@ -932,6 +932,14 @@
    {:id "bd.list"
     :label "Beads List"
     :description "List all beads tasks"
+    :type :command}
+   {:id "br.ready"
+    :label "Beads Ready (br)"
+    :description "Show tasks ready to work on (beads_rust)"
+    :type :command}
+   {:id "br.list"
+    :label "Beads List (br)"
+    :description "List all beads tasks (beads_rust)"
     :type :command}])
 
 (defn send-available-commands!
@@ -1051,7 +1059,9 @@
    Returns one of:
    - {:action :next-step :step-name keyword} - transition to next step
    - {:action :exit :reason string} - exit recipe
-   - {:action :retry :prompt string} - retry with reminder prompt (first failure only)"
+   - {:action :retry :prompt string} - retry with reminder prompt (up to the
+     recipe's :max-outcome-reminders consecutive missing-outcome turns, defaulting
+     to recipes/default-max-outcome-reminders)"
   [session-id orch-state recipe response-text channel]
   (let [current-step (:current-step orch-state)
         step (orch/get-current-step recipe current-step)
@@ -1108,14 +1118,22 @@
           :restart-new-session
           ;; Pass through to execute-recipe-step which handles the restart
           next-action))
-      ;; Failed to parse outcome - check if we should retry or exit
+      ;; Failed to parse outcome - remind up to max-outcome-reminders, then exit.
+      ;; A still-working turn (no outcome yet) must not abort the recipe; we nudge
+      ;; the agent up to the cap before declaring a genuine failure. Runaway is
+      ;; impossible: should-exit-recipe? still bounds max-step-visits/max-total-steps,
+      ;; and this per-step counter caps at max-outcome-reminders.
       (let [retry-count (get-in orch-state [:step-retry-counts current-step] 0)
+            ;; `or` (not get's default) so an explicit nil key falls back too; a
+            ;; legitimate 0 stays 0 (truthy in Clojure) for strict no-reminder recipes.
+            max-reminders (or (:max-outcome-reminders recipe) recipes/default-max-outcome-reminders)
             error-msg (:error outcome-result)]
-        (if (zero? retry-count)
-          ;; First failure - retry with reminder prompt
+        (if (< retry-count max-reminders)
+          ;; Still within reminder budget - nudge, do NOT abort
           (do
             (orch/log-orchestration-event "outcome-parse-retry" session-id (:recipe-id orch-state) current-step
-                                          {:error error-msg :retry-attempt 1})
+                                          {:error error-msg :retry-attempt (inc retry-count)
+                                           :max-reminders max-reminders})
             ;; Increment retry count in state
             (swap! session-orchestration-state update-in [session-id :step-retry-counts current-step] (fnil inc 0))
             (send-to-client! channel
@@ -1125,16 +1143,18 @@
                               :error error-msg})
             {:action :retry
              :prompt (orch/get-outcome-reminder-prompt current-step expected-outcomes error-msg)})
-          ;; Already retried - exit recipe
+          ;; Exhausted reminders - genuine failure, exit recipe
           (do
             (orch/log-orchestration-event "outcome-parse-error" session-id (:recipe-id orch-state) current-step
-                                          {:error error-msg :retry-attempts (inc retry-count)})
+                                          {:error error-msg :retry-attempts (inc retry-count)
+                                           :max-reminders max-reminders})
             (exit-recipe-for-session session-id "orchestration-error")
             (send-to-client! channel
                              {:type :recipe-exited
                               :session-id session-id
                               :reason "orchestration-error"
-                              :error (str "Agent failed to produce valid JSON outcome after retry. " error-msg)})
+                              :error (str "No valid JSON outcome after " max-reminders
+                                          " reminders. " error-msg)})
             {:action :exit :reason "orchestration-error"}))))))
 
 (defonce ^:private recipe-turn-callbacks
@@ -1144,35 +1164,51 @@
   ;; provider's terminal marker.
   (atom {}))
 
-(defn- last-assistant-message
-  "Read the session's JSONL via the provider's canonical parser and return the
-   last assistant message map (with :uuid and :text). Returns nil if the
-   session has no assistant messages or metadata cannot be located."
+(defn- last-assistant-turn
+  "Read the session's last assistant message and return trigger-gate metadata:
+     {:uuid <string> :text <string> :end-of-turn? <bool> :tool-use? <bool>}
+
+   :end-of-turn? is true only when the message is a GENUINE end-of-turn
+   assistant write (the provider's turn-complete? predicate over the raw
+   record), distinguishing it from an intermediate tool-use / partial write a
+   spurious turn-complete fire may observe before the agent writes its final
+   line. :tool-use? flags a turn that ended by invoking a tool (surfaced for
+   logging/observability so a still-working turn is recognizable).
+
+   Claude is read from the RAW .jsonl so stop_reason / tool_use blocks survive
+   (the canonical parser collapses them into display text). Other providers
+   fall back to the canonical parser and are treated as end-of-turn, because
+   their watcher layer already gates intermediate writes before on-turn-complete
+   fires (Copilot toolRequests lookback, Cursor mtime stability, OpenCode
+   step-finish). Returns nil when the session has no assistant message or its
+   metadata cannot be located."
   [session-id]
   (try
     (when-let [metadata (repl/get-session-metadata session-id)]
       (let [provider (:provider metadata)
             file-path (:file metadata)]
         (when (and provider file-path)
-          (let [messages (repl/parse-session-messages provider file-path)
-                assistant (filter #(= "assistant" (:role %)) messages)]
-            (last assistant)))))
+          (if (= :claude provider)
+            (when-let [raw (->> (repl/parse-jsonl-file file-path)
+                                (filter #(and (= "assistant" (:type %))
+                                              (not (:isSidechain %))))
+                                last)]
+              (let [canonical (providers/parse-message :claude raw)]
+                {:uuid (:uuid canonical)
+                 :text (:text canonical)
+                 :end-of-turn? (providers/turn-complete? :claude raw)
+                 :tool-use? (providers/assistant-tool-use? :claude raw)}))
+            (when-let [msg (->> (repl/parse-session-messages provider file-path)
+                                (filter #(= "assistant" (:role %)))
+                                last)]
+              {:uuid (:uuid msg)
+               :text (:text msg)
+               :end-of-turn? true
+               :tool-use? false})))))
     (catch Exception e
-      (log/warn e "Failed to read last assistant message"
+      (log/warn e "Failed to read last assistant turn"
                 {:session-id session-id})
       nil)))
-
-(defn- read-fresh-assistant-text
-  "Return the text of the session's last assistant message only if it is
-   strictly newer than since-uuid (the watermark captured at step dispatch).
-   Returns nil when there is no newer assistant message, so a spurious
-   turn-complete fire (e.g. triggered by a non-assistant JSONL write between
-   dispatch and the provider's actual response) does not hand stale text to
-   the orchestrator. since-uuid may be nil for the first step of a session."
-  [session-id since-uuid]
-  (when-let [msg (last-assistant-message session-id)]
-    (when (or (nil? since-uuid) (not= since-uuid (:uuid msg)))
-      (:text msg))))
 
 (defn dispatch-recipe-step-via-tmux!
   "Dispatch a recipe step prompt through tmux and register a turn-complete
@@ -1199,7 +1235,7 @@
   ;; on-turn-complete can distinguish a fresh response from a spurious fire
   ;; caused by non-assistant JSONL writes (interrupt markers, permission-mode
   ;; entries, etc.). See tmux-untethered-uqj.
-  (let [since-uuid (:uuid (last-assistant-message session-id))]
+  (let [since-uuid (:uuid (last-assistant-turn session-id))]
     (swap! recipe-turn-callbacks assoc session-id
            {:callback callback-fn :since-uuid since-uuid}))
   (try
@@ -1860,21 +1896,33 @@
 
    Always broadcasts `{:type :turn-complete :session-id X}` to every connected
    client subscribed to the session. Additionally, if a recipe step is waiting
-   on this turn, fires its callback with the last assistant message text —
-   but only if the text is strictly newer than the watermark captured at
-   dispatch. Spurious fires (no fresh assistant message) leave the callback
-   registered so a later, legitimate turn-complete can drain it."
+   on this turn, fires its callback with the last assistant message text — but
+   only when that message is a GENUINE end-of-turn assistant write (not an
+   intermediate tool-use / partial / non-assistant write) AND is strictly newer
+   than the watermark captured at dispatch. A fire that fails either guard is
+   treated as the agent still working: the callback stays registered so a
+   later, legitimate end-of-turn write drains it (no premature outcome check,
+   no recipe abort). This is the root-cause trigger gate — an intermediate
+   tool-use turn never reaches the orchestrator, so it cannot be misread as a
+   missing-outcome failure."
   [session-id]
   (log/info "Turn-complete callback invoked" {:session-id session-id})
   (when-let [{:keys [callback since-uuid]} (get @recipe-turn-callbacks session-id)]
-    (let [text (read-fresh-assistant-text session-id since-uuid)]
-      (if (nil? text)
-        (log/info "Turn-complete fire ignored: no fresh assistant message"
-                  {:session-id session-id :since-uuid since-uuid})
+    (let [turn (last-assistant-turn session-id)
+          fresh? (and turn
+                      (:end-of-turn? turn)
+                      (or (nil? since-uuid) (not= since-uuid (:uuid turn))))]
+      (if-not fresh?
+        (log/info "Turn-complete fire ignored: no fresh end-of-turn assistant message"
+                  {:session-id session-id
+                   :since-uuid since-uuid
+                   :last-uuid (:uuid turn)
+                   :end-of-turn? (:end-of-turn? turn)
+                   :tool-use? (:tool-use? turn)})
         (do
           (swap! recipe-turn-callbacks dissoc session-id)
           (try
-            (callback {:success true :result text :session-id session-id})
+            (callback {:success true :result (:text turn) :session-id session-id})
             (catch Throwable e
               (log/error e "Recipe turn-complete callback failed"
                          {:session-id session-id})))))))

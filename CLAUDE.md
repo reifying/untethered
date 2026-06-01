@@ -121,4 +121,4 @@ Logs are typically at backend/server.out
 
 ## Beads
 
-Issue tracking via `bd`. The SessionStart hook injects the full command reference and session-close protocol on each session — no need to repeat it here. Run `bd prime` if the hook output isn't visible.
+Issue tracking via `br`. The SessionStart hook runs `br help` to inject the command reference on each session. Run `br help` if the hook output isn't visible.

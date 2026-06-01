@@ -109,7 +109,7 @@
           orch-state {:recipe-id :implement-and-review :current-step :implement}
           prompt (server/get-next-step-prompt "test-session" orch-state recipe)]
       (is (string? prompt))
-      (is (str/includes? prompt "Run `bd ready --limit 1 --exclude-type epic` and `bd show <task-id>` to see the task details"))
+      (is (str/includes? prompt "Run `br ready --limit 1 --type task --type bug --type feature --type chore --type docs --type question` and `br show <task-id>` to see the task details"))
       (is (str/includes? prompt "outcome"))
       (is (str/includes? prompt "complete"))))
 
@@ -440,9 +440,12 @@
                     tmux/start-window! (fn [_] nil)
                     replication/get-session-metadata
                     (constantly {:provider :claude :file "/tmp/fake.jsonl"})
-                    replication/parse-session-messages
-                    (constantly [{:role "user" :uuid "u-1"}
-                                 {:role "assistant" :uuid "a-1" :text "prior"}])]
+                    replication/parse-jsonl-file
+                    (constantly [{:type "user" :uuid "u-1"
+                                  :message {:content "go"}}
+                                 {:type "assistant" :uuid "a-1" :isSidechain false
+                                  :message {:content [{:type "text" :text "prior"}]
+                                            :stop_reason "end_turn"}}])]
         (server/dispatch-recipe-step-via-tmux!
          {:provider :claude
           :session-id session-id
@@ -470,8 +473,20 @@
         (is (nil? (get @@(resolve 'voice-code.server/recipe-turn-callbacks) session-id))
             "Callback should be unregistered on failure")))))
 
+;; Raw Claude .jsonl record builders for the on-turn-complete trigger gate.
+;; The gate reads the RAW transcript (so stop_reason / tool_use survive), not
+;; the canonical parser, hence these mock `replication/parse-jsonl-file`.
+(defn- raw-end-turn-msg [uuid text]
+  {:type "assistant" :uuid uuid :isSidechain false
+   :message {:content [{:type "text" :text text}] :stop_reason "end_turn"}})
+
+(defn- raw-tool-use-msg [uuid tool]
+  {:type "assistant" :uuid uuid :isSidechain false
+   :message {:content [{:type "tool_use" :name tool :input {}}]
+             :stop_reason "tool_use"}})
+
 (deftest on-turn-complete-fires-recipe-callback-test
-  (testing "on-turn-complete invokes callback when a newer assistant message exists"
+  (testing "on-turn-complete invokes callback on a genuine newer end-of-turn message"
     (let [session-id "turn-complete-test"
           callback-response (atom nil)]
       (swap! @(resolve 'voice-code.server/recipe-turn-callbacks)
@@ -480,9 +495,9 @@
               :since-uuid "a-prev"})
       (with-redefs [replication/get-session-metadata
                     (constantly {:provider :claude :file "/tmp/fake.jsonl"})
-                    replication/parse-session-messages
-                    (constantly [{:role "user" :uuid "u-1" :text "prompt"}
-                                 {:role "assistant" :uuid "a-new" :text "final response"}])
+                    replication/parse-jsonl-file
+                    (constantly [{:type "user" :uuid "u-1" :message {:content "prompt"}}
+                                 (raw-end-turn-msg "a-new" "final response")])
                     org.httpkit.server/send! (fn [_ _] nil)]
         (server/on-turn-complete session-id)
         (is (= true (:success @callback-response)))
@@ -496,6 +511,27 @@
       (with-redefs [org.httpkit.server/send! (fn [_ _] nil)]
         (is (nil? (server/on-turn-complete session-id))))))
 
+  (testing "intermediate tool-use write does NOT fire; callback stays registered"
+    ;; Root-cause gate (tmux-untethered-65c.3): a spurious turn-complete fire that
+    ;; lands while the agent's latest write is a tool_use (still working, no final
+    ;; line yet) must not hand premature text to the orchestrator.
+    (let [session-id "turn-complete-tooluse-test"
+          callback-fires (atom 0)
+          cb (fn [_] (swap! callback-fires inc))]
+      (swap! @(resolve 'voice-code.server/recipe-turn-callbacks)
+             assoc session-id
+             {:callback cb :since-uuid "a-prev"})
+      (with-redefs [replication/get-session-metadata
+                    (constantly {:provider :claude :file "/tmp/fake.jsonl"})
+                    replication/parse-jsonl-file
+                    (constantly [(raw-tool-use-msg "a-tool" "Bash")])
+                    org.httpkit.server/send! (fn [_ _] nil)]
+        (server/on-turn-complete session-id)
+        (is (zero? @callback-fires)
+            "Callback must not fire on an intermediate tool-use (non-end-of-turn) write")
+        (is (some? (get @@(resolve 'voice-code.server/recipe-turn-callbacks) session-id))
+            "Callback should remain registered to await the genuine end-of-turn write"))))
+
   (testing "spurious fire (no newer assistant message) leaves the callback registered"
     ;; Regression for tmux-untethered-uqj: a stale :review response must not
     ;; be re-delivered to the :fix-step callback.
@@ -507,8 +543,8 @@
              {:callback cb :since-uuid "a-stale"})
       (with-redefs [replication/get-session-metadata
                     (constantly {:provider :claude :file "/tmp/fake.jsonl"})
-                    replication/parse-session-messages
-                    (constantly [{:role "assistant" :uuid "a-stale" :text "prior turn"}])
+                    replication/parse-jsonl-file
+                    (constantly [(raw-end-turn-msg "a-stale" "prior turn")])
                     org.httpkit.server/send! (fn [_ _] nil)]
         (server/on-turn-complete session-id)
         (is (zero? @callback-fires)
@@ -525,8 +561,8 @@
               :since-uuid nil})
       (with-redefs [replication/get-session-metadata
                     (constantly {:provider :claude :file "/tmp/fake.jsonl"})
-                    replication/parse-session-messages
-                    (constantly [{:role "assistant" :uuid "a-first" :text "first reply"}])
+                    replication/parse-jsonl-file
+                    (constantly [(raw-end-turn-msg "a-first" "first reply")])
                     org.httpkit.server/send! (fn [_ _] nil)]
         (server/on-turn-complete session-id)
         (is (true? (:success @callback-response)))

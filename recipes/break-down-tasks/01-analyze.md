@@ -3,7 +3,7 @@
 Analyze the design document to understand the implementation scope.
 
 ## Prerequisites
-1. Run `bd quickstart` to understand beads workflow if unfamiliar
+1. Run `br robot-docs guide` to understand beads workflow if unfamiliar
 2. Locate the design document for this feature
 3. Read the design document thoroughly
 

@@ -25,15 +25,15 @@ Review the task breakdown for completeness and quality.
 ### Dependency Links (Critical)
 Run these commands to verify dependency links are properly set up:
 
-1. **Check blocked tasks:** `bd blocked`
+1. **Check blocked tasks:** `br blocked`
    - Tasks with prerequisites should appear here
    - If nothing is blocked but tasks have dependencies, links are missing
 
-2. **Check epic dependencies:** `bd show <epic-id>`
+2. **Check epic dependencies:** `br show <epic-id>`
    - Epic should show "Depends on" section listing ALL child tasks
    - If missing, epic will show as "ready" before children complete
 
-3. **Check ready tasks:** `bd ready`
+3. **Check ready tasks:** `br ready`
    - Only foundation tasks (no prerequisites) should appear
    - If all tasks appear, dependency links are missing
 
@@ -42,7 +42,7 @@ Run these commands to verify dependency links are properly set up:
 - [ ] Each task references the relevant design section
 - [ ] Acceptance criteria map back to design
 
-Run `bd list` to see the created structure.
+Run `br list` to see the created structure.
 
 Report any issues found.
 
