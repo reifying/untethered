@@ -209,6 +209,36 @@ This requires the caller to derive `:tool-use?` from the turn's transcript block
 listed as a follow-up only because it adds caller plumbing and a new action the
 caller must route; the core fix lands without it.
 
+**Implementation note (confirmed in tmux-untethered-65c.3).** Confirming the
+trigger wiring against the running code (as this section invited) showed the
+`:wait`-inside-`process-orchestration-response` shape above is the *wrong layer*
+for the tmux execution model, and the equivalent goal is met one layer earlier:
+
+- The Claude watcher (`check-claude-turn-complete!`, replication.clj) already
+  fires `on-turn-complete` only when `providers/turn-complete? :claude` is true
+  (`stop_reason` ∈ `{end_turn, stop_sequence}`). The defect was that
+  `on-turn-complete` then *re-read the last assistant message via the canonical
+  parser*, which discards `stop_reason`/`tool_use`, so a spurious/intermediate
+  re-read could hand premature text to the orchestrator.
+- The fix gates `on-turn-complete` itself: `last-assistant-turn` reads the RAW
+  `.jsonl` and exposes `{:end-of-turn? :tool-use? :uuid :text}`; the callback
+  fires only when the latest write is a genuine end-of-turn assistant message
+  **and** newer than the dispatch watermark. An intermediate/tool-use/partial
+  write leaves the callback registered (the agent is still working) and never
+  reaches `process-orchestration-response`.
+- Because of this gate, `process-orchestration-response` only ever receives a
+  genuine `end_turn` turn, and that final message is text-only (the turn's
+  `tool_use` blocks live in earlier `stop_reason: "tool_use"` messages). So a
+  `:tool-use? → :wait` branch *there* would be unreachable; and if it instead
+  keyed on "did this turn use tools at all," it would be actively harmful —
+  after `end_turn` the tmux agent has **stopped**, so `:wait` would stall the
+  recipe and defeat the forgiving reminder policy from tmux-untethered-65c.2.
+- `:tool-use?` is therefore surfaced for logging/observability (so a still-working
+  turn is recognizable in the trigger log) rather than to drive a `:wait` action.
+  AC #8's required behavior ("fire only on a genuine end-of-turn write") is met
+  by the trigger-layer gate; no `process-orchestration-response` signature or
+  action change is needed.
+
 ### Component Interactions
 
 ```
@@ -288,9 +318,13 @@ optional `:wait` action is internal.
    retry policy.
 8. `on-turn-complete` fires the recipe callback only on a genuine end-of-turn
    assistant message, not on intermediate/spurious transcript writes. (This is the
-   root-cause trigger fix; the `:tool-use?` / `:wait` work described under "Optional
-   enhancement" above is the concrete vehicle for it and is promoted from optional
-   to required by this criterion.)
+   root-cause trigger fix. The confirmed vehicle is a trigger-layer gate in
+   `on-turn-complete` that reads the RAW transcript and checks the provider's
+   `turn-complete?` predicate plus the dispatch watermark — see "Implementation
+   note (confirmed)" under the Optional enhancement above for why this supersedes
+   the `:tool-use? → :wait` shape inside `process-orchestration-response`, which
+   would be unreachable-or-harmful in the tmux model. `:tool-use?` turn metadata
+   is surfaced for observability.)
 
 ## Alternatives Considered
 

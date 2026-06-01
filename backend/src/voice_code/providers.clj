@@ -131,6 +131,24 @@
    Returns: boolean"
   (fn [provider _raw-msg] provider))
 
+(defmulti assistant-tool-use?
+  "Returns true when raw-msg is an assistant turn that ended by invoking a tool
+   (rather than producing a final answer). Per-message predicate, mirroring
+   `turn-complete?`. Surfaced so the recipe trigger can expose turn metadata and
+   treat a still-working (tool-using) turn as in-progress rather than a final
+   answer carrying an outcome.
+
+   Args:
+   - provider: Provider keyword (:claude, :copilot, :cursor, :opencode)
+   - raw-msg:  Parsed JSON record from the provider's JSONL / part file
+
+   Returns: boolean"
+  (fn [provider _raw-msg] provider))
+
+;; Providers without a tool-use predicate default to false; their watcher layer
+;; already gates intermediate writes before on-turn-complete fires.
+(defmethod assistant-tool-use? :default [_ _] false)
+
 ;; ============================================================================
 ;; Claude Provider Implementation (:claude)
 ;; ============================================================================
@@ -284,6 +302,15 @@
        (not (:isSidechain raw-msg))
        (contains? #{"end_turn" "stop_sequence"}
                   (get-in raw-msg [:message :stop_reason]))))
+
+(defmethod assistant-tool-use? :claude [_ raw-msg]
+  (boolean
+   (and (= "assistant" (:type raw-msg))
+        (not (:isSidechain raw-msg))
+        (let [content (get-in raw-msg [:message :content])]
+          (or (= "tool_use" (get-in raw-msg [:message :stop_reason]))
+              (and (sequential? content)
+                   (some #(= "tool_use" (:type %)) content)))))))
 
 ;; ============================================================================
 ;; Copilot Provider Implementation (:copilot)
