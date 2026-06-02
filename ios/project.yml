@@ -159,6 +159,7 @@ targets:
         NSMicrophoneUsageDescription: Untethered needs microphone access for voice input to control Claude.
         NSSpeechRecognitionUsageDescription: Untethered needs speech recognition to transcribe your voice commands.
         NSLocalNetworkUsageDescription: Untethered needs to connect to your backend server on your local network.
+        NSBluetoothAlwaysUsageDescription: Untethered uses Bluetooth to connect to your BlueParrott headset for hands-free voice control.
         CFBundleURLTypes:
           - CFBundleURLSchemes:
               - voicecode
@@ -169,6 +170,7 @@ targets:
         com.apple.security.app-sandbox: true
         com.apple.security.network.client: true
         com.apple.security.device.audio-input: true
+        com.apple.security.device.bluetooth: true
         com.apple.security.files.user-selected.read-write: true
     settings:
       base:

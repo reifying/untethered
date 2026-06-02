@@ -20,24 +20,26 @@
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
 	<string>$(MARKETING_VERSION)</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>dev.910labs.voice-code-mac</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>voicecode</string>
+			</array>
+		</dict>
+	</array>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>Untethered uses Bluetooth to connect to your BlueParrott headset for hands-free voice control.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Untethered needs to connect to your backend server on your local network.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Untethered needs microphone access for voice input to control Claude.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>Untethered needs speech recognition to transcribe your voice commands.</string>
-	<key>CFBundleURLTypes</key>
-	<array>
-		<dict>
-			<key>CFBundleURLSchemes</key>
-			<array>
-				<string>voicecode</string>
-			</array>
-			<key>CFBundleURLName</key>
-			<string>dev.910labs.voice-code-mac</string>
-		</dict>
-	</array>
 </dict>
 </plist>
