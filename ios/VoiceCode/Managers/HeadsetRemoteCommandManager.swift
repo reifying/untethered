@@ -606,6 +606,11 @@ extension HeadsetRemoteCommandManager {
 
     func startBlueParrott() {
         guard blueParrottManager == nil else { return }
+        #if DEBUG && os(iOS)
+        // Phase A1 collector: capture the SDK's GATT traffic (App-Mode enable
+        // write + per-gesture notification bytes) for the macOS reimplementation.
+        BPSniffer.install()
+        #endif
         let bp = BlueParrottButtonManager()
         bp.delegate = self
         bp.start()
