@@ -23,12 +23,18 @@ private final class FakeBLECentral: BLECentral {
     var scanCount = 0
     var stopScanCount = 0
     var cancelCount = 0
+    var subscribeCount = 0
+    /// Records every App-Mode enable payload written (empty when none — the
+    /// persistent path must never write).
+    var enableWrites: [Data] = []
 
     init(state: CBManagerState = .poweredOn) { managerState = state }
 
     func scanForButtonService() { scanCount += 1 }
     func stopScan() { stopScanCount += 1 }
     func cancelConnection() { cancelCount += 1 }
+    func subscribeToButtonEvents() { subscribeCount += 1 }
+    func writeAppModeEnable(_ payload: Data) { enableWrites.append(payload) }
 }
 
 /// Captures scheduled connect work so tests fire it synchronously instead of
@@ -45,12 +51,15 @@ private final class ScheduleRecorder {
     func fireLatest() { scheduled.last?.work.perform() }
 }
 
+/// Records the ordered sequence of delegate calls so a parsed gesture can be
+/// matched to exactly one dispatched method.
 private final class DelegateSpy: BlueParrottButtonDelegate {
-    func blueParrottButtonDown() {}
-    func blueParrottButtonUp() {}
-    func blueParrottTap() {}
-    func blueParrottDoubleTap() {}
-    func blueParrottLongPress() {}
+    private(set) var calls: [BlueParrottButtonEvent] = []
+    func blueParrottButtonDown() { calls.append(.down) }
+    func blueParrottButtonUp() { calls.append(.up) }
+    func blueParrottTap() { calls.append(.tap) }
+    func blueParrottDoubleTap() { calls.append(.doubleTap) }
+    func blueParrottLongPress() { calls.append(.longPress) }
 }
 
 final class BlueParrottBLEManagerTests: XCTestCase {
@@ -291,6 +300,127 @@ final class BlueParrottBLEManagerTests: XCTestCase {
         central.centralDelegate?.bleDidUpdateState(.resetting)
 
         XCTAssertFalse(manager.isConnected)
+    }
+
+    // MARK: - Connect: subscribe + conditional App-Mode enable
+
+    func testConnect_subscribesToButtonEvents() {
+        let (manager, central, _) = makeManager(state: .poweredOn)
+        manager.start()
+
+        central.centralDelegate?.bleDidConnect()
+
+        XCTAssertEqual(central.subscribeCount, 1, "connect should subscribe to the button-event characteristic")
+        XCTAssertTrue(manager.isSDKModeEnabled)
+    }
+
+    func testConnect_whenAppModePersistent_doesNotWriteEnable() {
+        let (manager, central, _) = makeManager(state: .poweredOn)
+        XCTAssertTrue(manager.appModePersistent, "default reflects the b4i.3 experiment (persistent)")
+        manager.start()
+
+        central.centralDelegate?.bleDidConnect()
+
+        XCTAssertTrue(central.enableWrites.isEmpty,
+                      "persistent App Mode must skip the enable write (it already streams events)")
+    }
+
+    func testConnect_whenAppModeNotPersistent_writesEnablePayload() {
+        let (manager, central, _) = makeManager(state: .poweredOn)
+        manager.appModePersistent = false
+        manager.start()
+
+        central.centralDelegate?.bleDidConnect()
+
+        XCTAssertEqual(central.enableWrites, [BPGatt.appModeEnablePayload],
+                       "a never-enabled headset must receive the \"sdk\" enable payload exactly once")
+    }
+
+    func testConnect_whenAppModeNotPersistent_doesNotClaimSDKModeEnabled() {
+        let (manager, central, _) = makeManager(state: .poweredOn)
+        manager.appModePersistent = false
+        manager.start()
+
+        central.centralDelegate?.bleDidConnect()
+
+        XCTAssertFalse(manager.isSDKModeEnabled,
+                       "the unconfirmed fallback enable write must not optimistically report App Mode active")
+    }
+
+    func testDisconnect_clearsSDKModeEnabled() {
+        let (manager, central, _) = makeManager(state: .poweredOn)
+        manager.start()
+        central.centralDelegate?.bleDidConnect()
+        XCTAssertTrue(manager.isSDKModeEnabled)
+
+        central.centralDelegate?.bleDidDisconnect()
+
+        XCTAssertFalse(manager.isSDKModeEnabled)
+    }
+
+    // MARK: - Button value → parse → dispatch
+
+    func testButtonDown_dispatchesDownToDelegate() {
+        let (manager, central, _) = makeManager(state: .poweredOn)
+        let spy = DelegateSpy()
+        manager.delegate = spy
+        manager.start()
+        central.centralDelegate?.bleDidConnect()
+
+        central.centralDelegate?.bleDidUpdateButtonValue(Data([0x01])) // down
+        flushMainQueue()
+
+        XCTAssertEqual(spy.calls, [.down])
+    }
+
+    func testEachGesture_dispatchesMatchingDelegateMethodInOrder() {
+        let (manager, central, _) = makeManager(state: .poweredOn)
+        let spy = DelegateSpy()
+        manager.delegate = spy
+        manager.start()
+        central.centralDelegate?.bleDidConnect()
+
+        // Captured opcodes (firmware 2.6.4): down, up, tap, double-tap, long-press.
+        for byte in [0x01, 0x00, 0x02, 0x03, 0x04] as [UInt8] {
+            central.centralDelegate?.bleDidUpdateButtonValue(Data([byte]))
+        }
+        flushMainQueue()
+
+        XCTAssertEqual(spy.calls, [.down, .up, .tap, .doubleTap, .longPress])
+    }
+
+    func testUnknownAndEmptyPayloads_areDroppedNotMisclassified() {
+        let (manager, central, _) = makeManager(state: .poweredOn)
+        let spy = DelegateSpy()
+        manager.delegate = spy
+        manager.start()
+        central.centralDelegate?.bleDidConnect()
+
+        central.centralDelegate?.bleDidUpdateButtonValue(Data([0xFF])) // unknown opcode
+        central.centralDelegate?.bleDidUpdateButtonValue(Data())       // empty payload
+        flushMainQueue()
+
+        XCTAssertTrue(spy.calls.isEmpty, "unknown/empty payloads must be dropped, never guessed at")
+    }
+
+    func testNoDelegate_unknownPayload_doesNotCrash() {
+        let (manager, central, _) = makeManager(state: .poweredOn)
+        manager.start()
+        central.centralDelegate?.bleDidConnect()
+
+        central.centralDelegate?.bleDidUpdateButtonValue(Data([0x01]))
+        flushMainQueue()
+        // No delegate set — reaching here without a crash is the assertion.
+    }
+
+    // MARK: - Helpers
+
+    /// Drain the main queue so `dispatch(_:)`'s async delegate hop has run before
+    /// asserting. FIFO ordering guarantees prior async work runs before this.
+    private func flushMainQueue() {
+        let exp = expectation(description: "main queue drained")
+        DispatchQueue.main.async { exp.fulfill() }
+        wait(for: [exp], timeout: 1.0)
     }
 }
 
