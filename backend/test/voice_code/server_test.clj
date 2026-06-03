@@ -4438,3 +4438,142 @@
     (is (empty? @callbacks-atom) "callback under resolved uuid cleared")
     (reset! aliases-atom {})
     (reset! callbacks-atom {})))
+
+;; ============================================================================
+;; Auto-close of recipe windows on iteration / recipe end
+;; ============================================================================
+
+(def ^:private windows-atom @#'server/recipe-windows)
+
+(defn- reset-recipe-atoms! []
+  (reset! aliases-atom {})
+  (reset! callbacks-atom {})
+  (reset! windows-atom {}))
+
+(deftest close-recipe-windows!-test
+  (testing "closes every owned window (resolving aliases) and clears registry/alias/callback"
+    (reset-recipe-atoms!)
+    (reset! aliases-atom {"main" "real-main" "rev" "real-rev"})
+    (reset! callbacks-atom {"real-rev" {:callback (fn [_]) :since-uuid nil}})
+    (reset! windows-atom {"main" #{"main" "rev"}})
+    (let [closed (atom [])]
+      (with-redefs [tmux/close-window-by-uuid! (fn [u] (swap! closed conj u) true)]
+        (#'server/close-recipe-windows! "main"))
+      (is (= #{"real-main" "real-rev"} (set @closed))
+          "both primary and review windows closed by their resolved (real) uuid")
+      (is (not (contains? @windows-atom "main")) "registry entry cleared")
+      (is (not (contains? @aliases-atom "rev")) "review/aux alias cleared")
+      (is (empty? @callbacks-atom) "review/aux callback cleared"))
+    (reset-recipe-atoms!))
+
+  (testing "no-op when the recipe owns no windows (attached to a pre-existing session)"
+    (reset-recipe-atoms!)
+    (let [closed (atom [])]
+      (with-redefs [tmux/close-window-by-uuid! (fn [u] (swap! closed conj u) true)]
+        (#'server/close-recipe-windows! "unregistered"))
+      (is (empty? @closed) "closes nothing when the recipe created no windows"))))
+
+(deftest exit-recipe-for-session-auto-close-test
+  (testing "exit closes the recipe's own primary window"
+    (reset-recipe-atoms!)
+    (swap! server/session-orchestration-state assoc "sess"
+           {:recipe-id :review-and-commit :current-step :code-review :step-count 1})
+    (reset! windows-atom {"sess" #{"sess"}})
+    (let [closed (atom [])]
+      (with-redefs [tmux/close-window-by-uuid! (fn [u] (swap! closed conj u) true)]
+        (server/exit-recipe-for-session "sess" "changes-committed"))
+      (is (= ["sess"] @closed) "primary window closed on recipe exit")
+      (is (not (contains? @windows-atom "sess")) "registry cleared on exit"))
+    (swap! server/session-orchestration-state dissoc "sess")
+    (reset-recipe-atoms!))
+
+  (testing "exit does NOT close a window the recipe did not create"
+    (reset-recipe-atoms!)
+    (swap! server/session-orchestration-state assoc "attached"
+           {:recipe-id :review-and-commit :current-step :code-review :step-count 1})
+    (let [closed (atom [])]
+      (with-redefs [tmux/close-window-by-uuid! (fn [u] (swap! closed conj u) true)]
+        (server/exit-recipe-for-session "attached" "done"))
+      (is (empty? @closed) "no window closed when attached to a pre-existing session"))
+    (swap! server/session-orchestration-state dissoc "attached")
+    (reset-recipe-atoms!)))
+
+(deftest dispatch-registers-recipe-owned-primary-window-test
+  (testing "window-creating branch (session-created? false WITH orch state) registers the primary"
+    (reset-recipe-atoms!)
+    (swap! server/session-orchestration-state assoc "newsess"
+           {:recipe-id :review-and-commit :current-step :code-review
+            :step-count 0 :session-created? false :provider :claude})
+    (with-redefs [tmux/start-window! (fn [_] nil)
+                  tmux/deliver! (fn [_ _] nil)
+                  repl/get-session-metadata (constantly nil)]
+      (server/dispatch-recipe-step-via-tmux!
+       {:provider :claude :session-id "newsess" :session-created? false
+        :prompt-text "p" :working-dir "/wd"}
+       (fn [_] nil)))
+    (is (contains? (get @windows-atom "newsess") "newsess")
+        "the created primary window is registered as recipe-owned")
+    (swap! server/session-orchestration-state dissoc "newsess")
+    (reset-recipe-atoms!))
+
+  (testing "deliver branch (session-created? true, attached) does NOT register"
+    (reset-recipe-atoms!)
+    (swap! server/session-orchestration-state assoc "attached"
+           {:recipe-id :review-and-commit :current-step :code-review
+            :step-count 0 :session-created? true :provider :claude})
+    (with-redefs [tmux/start-window! (fn [_] nil)
+                  tmux/deliver! (fn [_ _] nil)
+                  repl/get-session-metadata (constantly nil)]
+      (server/dispatch-recipe-step-via-tmux!
+       {:provider :claude :session-id "attached" :session-created? true
+        :prompt-text "p" :working-dir "/wd"}
+       (fn [_] nil)))
+    (is (nil? (get @windows-atom "attached")) "attached pre-existing window is not registered")
+    (swap! server/session-orchestration-state dissoc "attached")
+    (reset-recipe-atoms!))
+
+  (testing "no orch state (ephemeral review agent) does NOT self-register"
+    (reset-recipe-atoms!)
+    (with-redefs [tmux/start-window! (fn [_] nil)
+                  tmux/deliver! (fn [_ _] nil)
+                  repl/get-session-metadata (constantly nil)]
+      (server/dispatch-recipe-step-via-tmux!
+       {:provider :claude :session-id "ephemeral-review" :session-created? false
+        :prompt-text "p" :working-dir "/wd"}
+       (fn [_] nil)))
+    (is (nil? (get @windows-atom "ephemeral-review"))
+        "an ephemeral review dispatch self-registers nothing (registered under main instead)")
+    (reset-recipe-atoms!)))
+
+(deftest execute-external-review!-closes-review-window-test
+  (testing "registers the review window under main, auto-closes it on completion, resumes main"
+    (reset-recipe-atoms!)
+    (swap! server/session-orchestration-state assoc "main"
+           {:recipe-id :example-review-recipe :current-step :verify
+            :step-count 1 :step-visit-counts {} :provider :claude})
+    (let [closed     (atom [])
+          dispatched (atom nil)
+          resumed    (atom nil)
+          recipe     {:id :test-recipe :steps {:apply-review {:prompt "APPLY"}}}]
+      (with-redefs [server/dispatch-recipe-step-via-tmux!
+                    (fn [opts cb]
+                      (reset! dispatched opts)
+                      ;; simulate the review agent finishing its turn
+                      (cb {:success true :result "REVIEW-OUTPUT"}))
+                    tmux/close-window-by-uuid! (fn [u] (swap! closed conj u) true)
+                    server/execute-recipe-step (fn [_ sid _ _ _ prompt]
+                                                 (reset! resumed {:sid sid :prompt prompt}))]
+        (#'server/execute-external-review! nil "main" "/wd"
+                                           (server/get-session-recipe-state "main")
+                                           recipe :apply-review "REVIEW-PROMPT"))
+      (let [review-id (:session-id @dispatched)]
+        (is (some? review-id) "a separate review agent session was dispatched")
+        (is (not= review-id "main") "review runs in its own session, not the main one")
+        (is (= [review-id] @closed) "the review window is closed when its review completes")
+        (is (not (contains? (get @windows-atom "main") review-id))
+            "review window removed from main's owned set after close"))
+      (is (= "REVIEW-OUTPUT\n---\n\nAPPLY" (:prompt @resumed))
+          "main resumed with the review output prepended to the apply-review prompt")
+      (is (= "main" (:sid @resumed)) "main session resumed"))
+    (swap! server/session-orchestration-state dissoc "main")
+    (reset-recipe-atoms!)))

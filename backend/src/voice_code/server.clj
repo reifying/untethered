@@ -999,7 +999,8 @@
       (log/error "Recipe not found" {:recipe-id recipe-id :session-id session-id})
       nil)))
 
-(declare recipe-turn-callbacks recipe-session-uuid-aliases resolve-session-uuid)
+(declare recipe-turn-callbacks recipe-session-uuid-aliases resolve-session-uuid
+         recipe-windows close-recipe-windows!)
 
 (defn exit-recipe-for-session
   "Exit orchestration for a session.
@@ -1016,6 +1017,14 @@
             :step-count (:step-count state)
             :completed-at (System/currentTimeMillis)})
     (swap! session-orchestration-state dissoc session-id))
+  ;; Proactively close the recipe's own tmux windows (primary + any review/aux
+  ;; agents) at this exit / iteration-end transition. This is post-turn for every
+  ;; recipe-driven exit (and an explicit user cancel), so it never kills a window
+  ;; mid-turn. Only windows the recipe CREATED are registered/closed, so a recipe
+  ;; attached to a pre-existing user session never closes that user's window.
+  ;; Runs before the alias is cleared below so resolve-session-uuid still maps
+  ;; copilot's public id to its real (re-keyed) window uuid.
+  (close-recipe-windows! session-id)
   ;; Drop any orphaned turn-complete callback so the atom doesn't leak entries
   ;; when a recipe exits mid-flight (e.g., tmux window killed externally,
   ;; restart-new-session handoff). For copilot the callback was re-keyed onto the
@@ -1121,7 +1130,14 @@
 
           :restart-new-session
           ;; Pass through to execute-recipe-step which handles the restart
-          next-action))
+          next-action
+
+          :external-review
+          ;; Pass through to execute-recipe-step, which launches the review agent
+          ;; and resumes the main session at :next-step. Merge any test-file from
+          ;; the outcome JSON so the review prompt can name the file unambiguously.
+          (cond-> next-action
+            (:test-file outcome-result) (assoc :test-file (:test-file outcome-result)))))
       ;; Failed to parse outcome - remind up to max-outcome-reminders, then exit.
       ;; A still-working turn (no outcome yet) must not abort the recipe; we nudge
       ;; the agent up to the cap before declaring a genuine failure. Runaway is
@@ -1187,6 +1203,45 @@
    it unchanged when no alias exists (claude, or pre-discovery copilot)."
   [session-id]
   (get @recipe-session-uuid-aliases session-id session-id))
+
+(defonce ^:private recipe-windows
+  ;; main-session-id -> #{public session-ids whose tmux windows THIS recipe
+  ;; created and is responsible for closing}. Always includes the main session's
+  ;; own primary window (registered by dispatch-recipe-step-via-tmux! only on the
+  ;; window-creating branch — never when a recipe attaches to a pre-existing
+  ;; session) plus any review/aux agent windows spawned for the current iteration
+  ;; (registered by execute-external-review!). Drained at the iteration-end /
+  ;; recipe-exit transition by close-recipe-windows!. Membership is the guard that
+  ;; keeps auto-close from ever killing a window the recipe did not create.
+  (atom {}))
+
+(defn- register-recipe-window!
+  "Record that the recipe driving `main-session-id` created the tmux window for
+   `owned-session-id` (the primary itself, or a review/aux agent), so it is
+   auto-closed at the iteration-end / recipe-exit transition."
+  [main-session-id owned-session-id]
+  (swap! recipe-windows update main-session-id (fnil conj #{}) owned-session-id))
+
+(defn- close-recipe-windows!
+  "Close every tmux window the recipe driving `session-id` created — its primary
+   agent window and any review/aux agent windows — and clear their registry,
+   alias, and turn-callback entries. Resolves each public id to the provider's
+   real window uuid first (copilot windows are re-keyed onto their real uuid by
+   reconcile-copilot-session-uuid!). No-op when nothing was registered (e.g. a
+   recipe attached to a pre-existing user session), which is what keeps this from
+   ever closing a window the recipe did not create."
+  [session-id]
+  (let [owned (get @recipe-windows session-id)]
+    (doseq [owned-id owned]
+      (let [resolved (resolve-session-uuid owned-id)]
+        (tmux/close-window-by-uuid! resolved)
+        ;; Aux/review ids get their own alias+callback during dispatch; drop them
+        ;; so the atoms don't leak. (The primary's are cleared by the caller,
+        ;; exit-recipe-for-session, right after this.)
+        (when (not= owned-id session-id)
+          (swap! recipe-turn-callbacks dissoc owned-id resolved)
+          (swap! recipe-session-uuid-aliases dissoc owned-id))))
+    (swap! recipe-windows dissoc session-id)))
 
 (defn- last-assistant-turn
   "Read the session's last assistant message and return trigger-gate metadata:
@@ -1352,12 +1407,24 @@
                     ;; must address it by the resolved uuid or deliver! would miss
                     ;; live-windows and spuriously respawn.
                     (tmux/deliver! (resolve-session-uuid session-id) prompt-text)
-                    (tmux/start-window! {:session-uuid session-id
-                                         :session-name (:name (repl/get-session-metadata session-id))
-                                         :provider provider
-                                         :workdir working-dir
-                                         :initial-prompt prompt-text
-                                         :resume? false}))
+                    (do
+                      (tmux/start-window! {:session-uuid session-id
+                                           :session-name (:name (repl/get-session-metadata session-id))
+                                           :provider provider
+                                           :workdir working-dir
+                                           :initial-prompt prompt-text
+                                           :resume? false})
+                      ;; The recipe just CREATED this window (the start-window!
+                      ;; branch runs only for a not-yet-created session), so it
+                      ;; owns it and must auto-close it at the iteration-end /
+                      ;; recipe-exit transition. The deliver! branch (attached to
+                      ;; a pre-existing window) deliberately does NOT register.
+                      ;; Gated on orchestration state so an ephemeral review agent
+                      ;; dispatched through this same path (no orch state of its
+                      ;; own) is registered by execute-external-review! under the
+                      ;; MAIN session's key instead, not self-registered here.
+                      (when (get-session-recipe-state session-id)
+                        (register-recipe-window! session-id session-id))))
                   true)))]
         ;; Fresh-start copilot: the prompt is now delivered and the turn is
         ;; beginning, so copilot has (or is about to) create its own session-state
@@ -1376,7 +1443,7 @@
         (callback-fn {:success false
                       :error (str "tmux dispatch failed: " (.getMessage e))})))))
 
-(declare execute-recipe-step)
+(declare execute-recipe-step execute-external-review!)
 
 (defn execute-recipe-step
   "Execute a single step of a recipe and handle the response.
@@ -1538,6 +1605,18 @@
                                                {:type :error
                                                 :message (str "Recipe not found: " (name new-recipe-id))}))))
 
+                        :external-review
+                        (let [test-file (:test-file result)
+                              review-prompt (if test-file
+                                              (str "Test file to review: " test-file "\n\n" (:review-prompt result))
+                                              (:review-prompt result))]
+                          (execute-external-review!
+                           channel session-id working-dir
+                           (get-session-recipe-state session-id)
+                           recipe
+                           (:next-step result)
+                           review-prompt))
+
                         (do
                           (log/error "Unexpected orchestration action"
                                      {:action (:action result)})
@@ -1585,6 +1664,98 @@
          (send-to-client! channel
                           {:type :turn-complete
                            :session-id session-id}))))))
+
+(defn- close-review-agent!
+  "Tear down a finished review/aux agent: close its tmux window (resolving
+   copilot's public->real alias), drop it from the main session's owned-window
+   set, and clear its alias + turn-callback. Idempotent. Called when the review
+   turn completes — post-turn, so the window is never closed mid-turn."
+  [main-session-id review-session-id]
+  (let [resolved (resolve-session-uuid review-session-id)]
+    (tmux/close-window-by-uuid! resolved)
+    (swap! recipe-windows update main-session-id disj review-session-id)
+    (swap! recipe-turn-callbacks dissoc review-session-id resolved)
+    (swap! recipe-session-uuid-aliases dissoc review-session-id)))
+
+(defn execute-external-review!
+  "Launch an external review agent in its own throwaway recipe session, then
+   resume the main session at next-step with the review output prepended to its
+   prompt.
+
+   Called when a recipe step transitions with {:action :external-review
+   :review-prompt <string> :next-step <keyword>} (e.g. a verify step whose
+   :passing outcome launches a review before an apply-review step). The review
+   runs as a SEPARATE agent window in the
+   same working dir (so it shares the per-recipe window pool). It is registered as
+   a window the main recipe owns, and is auto-closed the instant its review turn
+   completes (close-review-agent!) — the recipe never leaves the review agent
+   running to be reaped later by cap-eviction or the idle sweeper. The main
+   session's owned-window set also retains it as a backstop until then, so an exit
+   between launch and completion still closes it via close-recipe-windows!.
+
+   Spawning the review window mid-iteration can push the session to its window
+   cap; with the uuid-propagation + protect-unknown fixes the busy primary and the
+   busy review agent are both protected by real activity, and only genuinely-idle
+   windows are evicted."
+  [channel main-session-id working-dir main-orch-state recipe next-step-name review-prompt]
+  (let [review-session-id (str (java.util.UUID/randomUUID))
+        apply-prompt (get-in recipe [:steps next-step-name :prompt])
+        provider (:provider main-orch-state)
+        current-step (:current-step main-orch-state)]
+    ;; Register the review window under the MAIN session up front so an exit
+    ;; before completion still reaps it (close-recipe-windows!).
+    (register-recipe-window! main-session-id review-session-id)
+    ;; Advance main session state to next-step now, before the async review.
+    (swap! session-orchestration-state update main-session-id
+           (fn [s]
+             (-> s
+                 (assoc :current-step next-step-name)
+                 (update :step-count inc)
+                 (update-in [:step-visit-counts next-step-name] (fnil inc 0)))))
+    (send-to-client! channel
+                     {:type :recipe-step-transition
+                      :session-id main-session-id
+                      :from-step current-step
+                      :to-step next-step-name})
+    (log/info "Dispatching external review agent"
+              {:main-session-id main-session-id
+               :review-session-id review-session-id
+               :provider provider
+               :next-step next-step-name})
+    (dispatch-recipe-step-via-tmux!
+     {:provider provider
+      :session-id review-session-id
+      :session-created? false
+      :prompt-text review-prompt
+      :working-dir working-dir}
+     (fn [response]
+       ;; The review turn has completed (or errored): capture its output, close
+       ;; the review window, then resume the main session.
+       (try
+         (let [review-text (if (:success response)
+                             (:result response)
+                             (str "(External review agent failed: " (:error response) ")"))
+               combined-prompt (str review-text "\n---\n\n" apply-prompt)
+               updated-orch-state (get-session-recipe-state main-session-id)]
+           (close-review-agent! main-session-id review-session-id)
+           (if updated-orch-state
+             (execute-recipe-step channel main-session-id working-dir
+                                  updated-orch-state recipe combined-prompt)
+             (do
+               (log/warn "Main session recipe state gone when external review completed"
+                         {:main-session-id main-session-id :review-session-id review-session-id})
+               (send-to-client! channel {:type :turn-complete :session-id main-session-id}))))
+         (catch Exception e
+           (log/error e "External review callback failed"
+                      {:main-session-id main-session-id :review-session-id review-session-id})
+           (close-review-agent! main-session-id review-session-id)
+           (exit-recipe-for-session main-session-id "external-review-error")
+           (send-to-client! channel
+                            {:type :recipe-exited
+                             :session-id main-session-id
+                             :reason "external-review-error"
+                             :error (str "External review failed: " (ex-message e))})
+           (send-to-client! channel {:type :turn-complete :session-id main-session-id})))))))
 
 ;; Filesystem watcher callbacks
 

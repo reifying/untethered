@@ -425,6 +425,38 @@
               "expected the swept copilot window to be gone from tmux"))))))
 
 ;; ============================================================================
+;; close-window-by-uuid! — proactive recipe-window teardown against real tmux
+;; ============================================================================
+
+(deftest close-window-by-uuid!-kills-real-window-test
+  (reset! tmux/live-windows {})
+  (let [uuid         (str/lower-case (str (random-uuid)))
+        keep-uuid    (str/lower-case (str (random-uuid)))
+        workdir      (System/getProperty "java.io.tmpdir")
+        tmux-session (tmux/sanitize-session-name workdir)]
+    (with-redefs [tmux/build-provider-command mock-build-provider-command
+                  providers/session-metadata (constantly nil)]
+      (tmux/start-window! {:session-uuid uuid :session-name "Doomed"
+                           :provider :claude :workdir workdir :initial-prompt nil})
+      (tmux/start-window! {:session-uuid keep-uuid :session-name "Keeper"
+                           :provider :claude :workdir workdir :initial-prompt nil}))
+    (let [doomed-win (get-in @tmux/live-windows [uuid :tmux-window])
+          keep-win   (get-in @tmux/live-windows [keep-uuid :tmux-window])]
+
+      (is (true? (tmux/close-window-by-uuid! uuid)))
+
+      (testing "closed window removed from live-windows; other remains"
+        (is (not (contains? @tmux/live-windows uuid)))
+        (is (contains? @tmux/live-windows keep-uuid)))
+
+      (testing "closed tmux window gone; the other still alive"
+        (let [wins (str/split-lines (str/trim (:out (tmux-cmd "list-windows"
+                                                              "-t" (str "=" tmux-session)
+                                                              "-F" "#{window_name}"))))]
+          (is (not (some #{doomed-win} wins)) "doomed window killed")
+          (is (some #{keep-win} wins) "keeper window survives"))))))
+
+;; ============================================================================
 ;; sweep! — stale windows killed; fresh windows preserved
 ;; ============================================================================
 

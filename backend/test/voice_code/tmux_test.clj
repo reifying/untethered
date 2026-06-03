@@ -583,6 +583,35 @@
       (is (= {uuid desc} @tmux/live-windows)))))
 
 ;; ============================================================================
+;; close-window-by-uuid! — proactive recipe-window teardown
+;; ============================================================================
+
+(deftest close-window-by-uuid!-test
+  (testing "kills the tracked window and drops it from live-windows"
+    (let [uuid    "aaaaaaaa-0000-0000-0000-000000000000"
+          desc    {:tmux-session "proj" :tmux-window "session-aaaaaa" :provider :copilot}
+          calls   (atom [])
+          invoker (fn [& args] (swap! calls conj (vec args)) {:exit 0 :out "" :err ""})]
+      (reset! tmux/live-windows {uuid desc "other" {:tmux-session "p" :tmux-window "w"}})
+      (binding [tmux/*tmux-invoker* invoker]
+        (is (true? (tmux/close-window-by-uuid! uuid)) "returns true when a window was closed"))
+      (is (not (contains? @tmux/live-windows uuid)) "closed window dropped from live-windows")
+      (is (contains? @tmux/live-windows "other") "other windows untouched")
+      (is (some #(and (= "tmux" (first %))
+                      (= "kill-window" (second %))
+                      (some #{"=proj:=session-aaaaaa"} %))
+                @calls)
+          "expected tmux kill-window targeting the window")))
+
+  (testing "no-op (returns false, no tmux call) when uuid is not tracked"
+    (let [calls   (atom [])
+          invoker (fn [& args] (swap! calls conj (vec args)) {:exit 0 :out "" :err ""})]
+      (reset! tmux/live-windows {})
+      (binding [tmux/*tmux-invoker* invoker]
+        (is (false? (tmux/close-window-by-uuid! "absent"))))
+      (is (empty? @calls) "no tmux calls for an untracked uuid"))))
+
+;; ============================================================================
 ;; parse-show-environment
 ;; ============================================================================
 

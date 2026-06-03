@@ -348,6 +348,28 @@
   [tmux-session window]
   (sh "tmux" "kill-window" "-t" (format "=%s:=%s" tmux-session window)))
 
+(defn close-window-by-uuid!
+  "Proactively close the live window tracked under `uuid`: kill its tmux window
+   and drop it from live-windows. No-op (returns false) when `uuid` is not
+   tracked. Returns true when a window was closed.
+
+   Used by recipe orchestration to reap a recipe's own windows at the
+   iteration-end / recipe-exit transition (primary + review agents) instead of
+   waiting for cap-eviction or the idle sweeper. Callers pass the window's
+   CURRENT live-windows key — for copilot that is the real uuid after
+   reassign-session-uuid!, so the caller resolves any public->real alias first.
+   Serialized via eviction-lock so the close is atomic w.r.t. eviction/start."
+  [uuid]
+  (locking eviction-lock
+    (if-let [{:keys [tmux-session tmux-window]} (get @live-windows uuid)]
+      (do
+        (log/info "Closing recipe window"
+                  {:session-uuid uuid :tmux-session tmux-session :window tmux-window})
+        (kill-window! tmux-session tmux-window)
+        (swap! live-windows dissoc uuid)
+        true)
+      false)))
+
 (defn capture-pane
   "Capture the last `lines` of output from a tmux pane. Returns the string
    content, or nil if the pane/window doesn't exist."
