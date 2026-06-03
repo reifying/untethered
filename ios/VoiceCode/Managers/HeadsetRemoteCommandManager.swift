@@ -29,6 +29,12 @@ class HeadsetRemoteCommandManager: ObservableObject {
     #if os(macOS)
     private var bluetoothMonitor: BluetoothAudioMonitor?
     #endif
+    #if DEBUG && os(macOS)
+    // Phase A2 GATT explorer: runs alongside the CoreAudio mute proxy in debug
+    // macOS builds to observe the BlueParrott control service over CoreBluetooth
+    // (the App-Mode persistence experiment). Diagnostic only; never ships.
+    private var gattExplorer: BPGattExplorer?
+    #endif
     private var keepAlivePlayer: AVAudioPlayer?
     #if os(iOS)
     private var interruptionObserver: NSObjectProtocol?
@@ -164,6 +170,9 @@ class HeadsetRemoteCommandManager: ObservableObject {
         #if os(macOS)
         if settings.headsetPTTEnabled { startPTTMonitoring() }
         startKeepAlive()
+        #if DEBUG
+        startGattExplorer()
+        #endif
         #elseif os(iOS)
         activateAudioSession()
         interruptionObserver = NotificationCenter.default.addObserver(
@@ -206,6 +215,9 @@ class HeadsetRemoteCommandManager: ObservableObject {
         #if os(macOS)
         stopPTTMonitoring()
         stopKeepAlive()
+        #if DEBUG
+        stopGattExplorer()
+        #endif
         #endif
         unregisterRemoteCommands()
         #if os(iOS)
@@ -695,6 +707,23 @@ extension HeadsetRemoteCommandManager {
         bluetoothMonitor?.stopMonitoring()
         bluetoothMonitor = nil
     }
+
+    #if DEBUG
+    // Phase A2: launch the CoreBluetooth GATT explorer for the App-Mode
+    // persistence experiment. DEBUG-only; logs to category "BPExplore".
+    func startGattExplorer() {
+        guard gattExplorer == nil else { return }
+        let explorer = BPGattExplorer()
+        explorer.start()
+        gattExplorer = explorer
+        hLog("Headset: BPGattExplorer started (Phase A2 — macOS)")
+    }
+
+    func stopGattExplorer() {
+        gattExplorer?.stop()
+        gattExplorer = nil
+    }
+    #endif
 }
 #endif
 

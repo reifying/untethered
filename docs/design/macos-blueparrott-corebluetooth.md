@@ -150,12 +150,15 @@ enum BlueParrottButtonEvent: Equatable {
 enum BPGatt {
     static let service = CBUUID(string: "95665a00-8704-11e5-960c-0002a5d5c51b")
     /// Notifies on button gestures (subscribe → receive event payloads).
-    static let buttonEvent = CBUUID(string: "95665a01-8704-11e5-960c-0002a5d5c51b")
-    /// Written to enable App/SDK mode (only needed if mode is not persistent).
-    static let appModeControl = CBUUID(string: "95665a02-8704-11e5-960c-0002a5d5c51b")
-    /// Byte blob written to `appModeControl` to enable App Mode (NOT a UUID).
-    /// Captured from the Phase A handshake; empty placeholder until then.
-    static let appModeEnablePayload = Data()
+    /// Captured in Phase A2 (firmware 2.6.4).
+    static let buttonEvent = CBUUID(string: "66339E60-D55A-11E5-B7CB-0002A5D5C51B")
+    /// App/SDK mode (read/write). Holds "sdk" when App Mode is active; only
+    /// written if mode is NOT already set (it persists — see §3 experiment).
+    static let mode = CBUUID(string: "D24B6EC0-D55A-11E5-8476-0002A5D5C51B")
+    /// App-mode owner name (read/write); the iOS SDK sets it to "Untethered".
+    static let appName = CBUUID(string: "C3356EE0-D55A-11E5-8C19-0002A5D5C51B")
+    /// Fallback enable (only for a never-enabled headset): write "sdk" to `mode`.
+    static let appModeEnablePayload = Data("sdk".utf8)
 }
 ```
 
@@ -367,12 +370,13 @@ enum BlueParrottEventParser {
     /// Returns nil for unrecognized payloads — callers log and drop.
     static func parse(_ data: Data) -> BlueParrottButtonEvent? {
         guard let opcode = data.first else { return nil } // edge: empty payload
+        // Opcodes captured in Phase A2 on firmware 2.6.4 (char 66339E60-…).
         switch opcode {
         case 0x01: return .down
-        case 0x02: return .up
-        case 0x03: return .tap
-        case 0x04: return .doubleTap
-        case 0x05: return .longPress
+        case 0x00: return .up
+        case 0x02: return .tap
+        case 0x03: return .doubleTap
+        case 0x04: return .longPress
         default:   return nil                              // edge: unknown opcode
         }
     }
@@ -438,6 +442,57 @@ explorer from macOS) whether button notifications still flow with no re-handshak
 - **Not persistent** → replay the captured enable payload; own App-Mode
   arbitration (see Risks #2).
 
+**Experiment procedure (manual, hardware required).** The A2 harness is
+`BPGattExplorer` (`BPGattExplorer.swift`, `#if DEBUG`, cross-platform). In a DEBUG
+macOS build it auto-starts from `HeadsetRemoteCommandManager.activate()` and logs
+to `LogManager` category "BPExplore".
+
+1. On the **iOS** app (DEBUG), enable BlueParrott so the `BPHeadset` SDK runs
+   `enableSDKMode("Untethered")` once — this puts the headset in App Mode. Confirm
+   button events arrive on iOS.
+2. Quit the iOS app and **power-cycle** the headset (or just let it reconnect to
+   the Mac), so no app is actively setting App Mode.
+3. Launch the **macOS** DEBUG build and enable headset mode. `BPGattExplorer`
+   connects to service `95665a00-…`, logs the discovered characteristics with
+   their properties, and subscribes to every notifier — **without** writing any
+   App-Mode enable payload.
+4. Press the headset button and watch the "BPExplore" logs:
+   - If `NOTIFY …` lines appear for button gestures with **no** prior write →
+     App Mode **persists** on the hardware.
+   - If no notifications arrive until App Mode is re-enabled → **not persistent**.
+
+**Decision: PERSISTENT** (observed 2026-06-02; see `…-b4i.3`). The Mac connected
+fresh and the A2 explorer only subscribed/read — it never wrote an enable
+payload — yet the headset reported mode `"sdk"` + owner `"Untethered"` and
+streamed button events. So App Mode survives the phone→Mac handoff on the
+hardware. **Phase B macOS client = connect + subscribe + parse; set
+`BlueParrottBLEManager.appModePersistent = true` and skip the enable write in the
+normal path.** Keep the conditional `writeAppModeEnable` only as a fallback for a
+never-enabled / factory-reset headset (write `"sdk"` to the mode characteristic +
+the app name) — see the captured constants below.
+
+**Phase A2 capture results (target firmware 2.6.4).** Frozen from the on-hardware
+log; these replace the illustrative placeholders elsewhere in this doc.
+
+| Characteristic UUID | Props | Meaning | Observed value |
+|---|---|---|---|
+| `66339E60-D55A-11E5-B7CB-0002A5D5C51B` | read,notify | **button events** | `01`=down, `00`=up, `02`=tap, `03`=double-tap, `04`=long-press (fires ~1s after down) |
+| `D24B6EC0-D55A-11E5-8476-0002A5D5C51B` | read,write | **mode** | `"sdk"` (`73 64 6b`) — write to enable App Mode |
+| `C3356EE0-D55A-11E5-8C19-0002A5D5C51B` | read,write | **app-mode owner name** | `"Untethered"` |
+| `F3F8A600-D55A-11E5-89FD-0002A5D5C51B` | read | firmware version | `"2.6.4"` |
+| `E068B6C0-D55A-11E5-B756-0002A5D5C51B` | read | (device id?) | `"0025"` |
+| `4A2B5193-640D-4398-8D4A-491EB95DC51B` | read | (version?) | `"1.08"` |
+
+Notes for Phase B: (1) **down/up bracket every gesture** — a tap emits `01,00,02`,
+a double emits `01,00,01,00,03`, and a hold emits `01,04,00` (long-press fires
+~1s after down). So the dispatcher must drive behavior off **either** down/up
+(PTT) **or** the gesture codes (tap/double/long), never both, or it will
+double-drive the state machine (e.g. a PTT hold would also fire long-press →
+interrupt mid-recording). (2) `setNotifyValue` on these characteristics logged
+"attribute could not be found" when issued as a burst, yet `66339E60` still
+notified; subscribe to just the button characteristic and verify `isNotifying`
+(discover the CCCD if the error recurs).
+
 ## 4. Verification Strategy
 
 ### Testing Approach
@@ -475,12 +530,12 @@ here — it is iOS-only and is itself listed in the macOS `VoiceCodeMacTests`
 
 ```swift
 final class BlueParrottEventParserTests: XCTestCase {
-    func testDecodesEachGesture() {
+    func testDecodesEachGesture() {  // captured opcodes, firmware 2.6.4
         XCTAssertEqual(BlueParrottEventParser.parse(Data([0x01])), .down)
-        XCTAssertEqual(BlueParrottEventParser.parse(Data([0x02])), .up)
-        XCTAssertEqual(BlueParrottEventParser.parse(Data([0x03])), .tap)
-        XCTAssertEqual(BlueParrottEventParser.parse(Data([0x04])), .doubleTap)
-        XCTAssertEqual(BlueParrottEventParser.parse(Data([0x05])), .longPress)
+        XCTAssertEqual(BlueParrottEventParser.parse(Data([0x00])), .up)
+        XCTAssertEqual(BlueParrottEventParser.parse(Data([0x02])), .tap)
+        XCTAssertEqual(BlueParrottEventParser.parse(Data([0x03])), .doubleTap)
+        XCTAssertEqual(BlueParrottEventParser.parse(Data([0x04])), .longPress)
     }
 
     func testEmptyPayloadReturnsNil() {
@@ -614,12 +669,14 @@ so it carries no release-rollback risk.
 
 | File | Change |
 |------|--------|
-| `ios/VoiceCode/Managers/BPSniffer.swift` (new, `#if DEBUG && os(iOS)`) | CoreBluetooth swizzle collector (A1) + GATT explorer (A2); logs via `LogManager` "BPSniff" |
+| `ios/VoiceCode/Managers/BPSniffer.swift` (new, `#if DEBUG && os(iOS)`) | CoreBluetooth swizzle collector (A1); logs via `LogManager` "BPSniff" |
+| `ios/VoiceCode/Managers/BPGattExplorer.swift` (new, `#if DEBUG`, **cross-platform**) | Standalone `CBCentralManager` GATT explorer (A2): scans svc `95665a00-…`, enumerates services/characteristics + properties, subscribes to all notifiers, logs notification hex via `LogManager` "BPExplore". Compiled into **both** the iOS and macOS targets so the persistence experiment can be observed from macOS; launched in DEBUG macOS builds from `HeadsetRemoteCommandManager.activate()`/`deactivate()` |
 | `ios/VoiceCode/Managers/BlueParrottBLEManager.swift` (new, `#if os(macOS)`) | CoreBluetooth client, byte parser, connect/retry/re-arm, emits `BlueParrottButtonDelegate` |
 | `ios/VoiceCode/Managers/HeadsetRemoteCommandManager.swift` | macOS: drive `BlueParrottBLEManager` instead of `BluetoothAudioMonitor` (mapping `:626–665` unchanged) |
 | `ios/VoiceCode/Managers/BluetoothAudioMonitor.swift` | Retire as button trigger once parity proven |
 | `ios/VoiceCodeMac/VoiceCodeMac.entitlements` | Add `com.apple.security.device.bluetooth` |
 | `ios/project.yml` | macOS `NSBluetoothAlwaysUsageDescription`; **add `BlueParrottBLEManagerTests.swift` to the iOS `VoiceCodeTests` target's `excludes`** (macOS-only test, mirrors `BluetoothAudioMonitorTests.swift`) |
+| `ios/VoiceCodeTests/BPGattExplorerTests.swift` (new, `#if DEBUG`, **cross-platform**) | Unit tests for the A2 explorer's pure helpers (hex, property description, subscribable classification, log-line formatting) + construction/teardown safety. Not excluded from either target, so it runs under **both** `make test` and `make test-mac`. The CoreBluetooth plumbing is exercised by the manual persistence experiment, not unit tests |
 | `ios/VoiceCodeTests/BlueParrottBLEManagerTests.swift` (new, `#if os(macOS)`) | Byte-parser + connect-state-machine tests + macOS delegate→state-machine case; runs under the `VoiceCodeMac` scheme (`make test-mac`) |
 
 ### Build Verification
