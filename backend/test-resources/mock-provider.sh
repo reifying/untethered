@@ -11,7 +11,8 @@ case "$PROVIDER" in
     echo "? for shortcuts · bypass permissions"
     ;;
   copilot)
-    echo "Type @ to mention a file"
+    # Copilot v1.0.57 ready-state footer (replaced the old "Type @ to mention" hint).
+    echo " / commands · ? help"
     ;;
   cursor)
     echo "Press any key to continue"

@@ -109,14 +109,27 @@
   (str/replace window \- \_))
 
 (defn readiness-predicate
-  "Returns a (fn [pane-contents] -> boolean) for a provider."
+  "Returns a (fn [pane-contents] -> boolean) for a provider. The TUI is ready
+   once ANY of the provider's marker substrings appears in the captured pane.
+
+   Multiple markers per provider make detection resilient to TUI wording drift
+   across CLI versions. Copilot v1.0.57 dropped the old 'Type @ to mention'
+   hint in favor of a '/ commands · ? help' footer; the single hard-coded
+   needle silently stopped matching, so wait-for-ready timed out, the initial
+   prompt was never delivered, and recipe launches errored
+   (:wait-for-ready-timeout). The two footer tokens are matched independently so
+   a reword of one ('/ commands · ? for help', etc.) still leaves the other to
+   catch readiness. The bare chevron prompt '❯' is deliberately NOT a marker:
+   it also appears in Claude's resume/trust selection dialogs, so it would
+   false-positive a not-yet-ready pane."
   [provider]
-  (let [needle (case provider
-                 :claude "bypass permissions"
-                 :copilot "Type @ to mention"
-                 :cursor "Press any key"
-                 :opencode "Ask anything")]
-    (fn [content] (str/includes? content needle))))
+  (let [needles (case provider
+                  :claude ["bypass permissions"]
+                  :copilot ["? help" "/ commands"]
+                  :cursor ["Press any key"]
+                  :opencode ["Ask anything"])]
+    (fn [content]
+      (boolean (some #(str/includes? (or content "") %) needles)))))
 
 (def ^:private claude-resume-dialog-needle
   "Substring present in the `claude --resume` confirmation dialog shown for

@@ -4354,3 +4354,87 @@
               "matching-sig reply has no :is_complete"))))
     (reset! server/api-key nil)
     (reset! server/connected-clients {})))
+
+;; ============================================================================
+;; Copilot recipe session-UUID reconciliation (BUG 2)
+;; ============================================================================
+;;
+;; Copilot has no fresh-start --session-id flag, so its transcript lands under
+;; copilot's own uuid and the watcher fires on-turn-complete / indexes under THAT
+;; uuid, not the recipe's public session_id. dispatch reconciles: discovers the
+;; real uuid and re-keys the turn-complete callback onto it, keeping the public id
+;; stable. Claude (which forces its uuid via --session-id) must never get an alias.
+
+(def ^:private aliases-atom @#'server/recipe-session-uuid-aliases)
+(def ^:private callbacks-atom @#'server/recipe-turn-callbacks)
+
+(deftest resolve-session-uuid-test
+  (reset! aliases-atom {})
+  (testing "identity when no alias (claude / pre-discovery copilot)"
+    (is (= "pub-1" (#'server/resolve-session-uuid "pub-1"))))
+  (testing "maps a public id to the provider's real uuid when aliased"
+    (reset! aliases-atom {"pub-1" "cop-1"})
+    (is (= "cop-1" (#'server/resolve-session-uuid "pub-1")))
+    (is (= "unaliased" (#'server/resolve-session-uuid "unaliased"))))
+  (reset! aliases-atom {}))
+
+(deftest reconcile-copilot-session-uuid-test
+  (testing "discovery success: re-keys callback onto copilot's uuid, sets alias, preserves since-uuid"
+    (reset! aliases-atom {})
+    (reset! callbacks-atom {})
+    ;; step-1 dispatch registered the callback under the public id (fresh => since-uuid nil)
+    (swap! callbacks-atom assoc "pub-1" {:callback (fn [_]) :since-uuid nil})
+    (with-redefs [voice-code.providers/discover-session-uuid (fn [& _] "cop-1")]
+      (is (= "cop-1" (#'server/reconcile-copilot-session-uuid! "pub-1" "/work/proj" 1000))))
+    (is (= "cop-1" (#'server/resolve-session-uuid "pub-1")) "alias recorded")
+    (is (contains? @callbacks-atom "cop-1") "callback moved onto copilot's uuid")
+    (is (not (contains? @callbacks-atom "pub-1")) "callback no longer under public id")
+    (is (nil? (:since-uuid (get @callbacks-atom "cop-1"))) "fresh-session watermark preserved as nil")
+    (reset! aliases-atom {})
+    (reset! callbacks-atom {}))
+
+  (testing "discovery failure: no alias, callback left under public id, returns nil"
+    (reset! aliases-atom {})
+    (reset! callbacks-atom {})
+    (swap! callbacks-atom assoc "pub-2" {:callback (fn [_]) :since-uuid nil})
+    ;; shrink the poll budget so the failure path doesn't burn the real ~15s timeout
+    (with-redefs [voice-code.providers/discover-session-uuid (fn [& _] nil)
+                  voice-code.server/copilot-uuid-discover-timeout-ms 40
+                  voice-code.server/copilot-uuid-discover-poll-ms 10]
+      (is (nil? (#'server/reconcile-copilot-session-uuid! "pub-2" "/work/proj" 1000))))
+    (is (empty? @aliases-atom) "no alias on discovery failure")
+    (is (contains? @callbacks-atom "pub-2") "callback untouched under public id")
+    (reset! callbacks-atom {})))
+
+(deftest copilot-recipe-turn-complete-fires-after-reconcile-test
+  (testing "watcher firing on-turn-complete with copilot's uuid drains the re-keyed callback"
+    (reset! aliases-atom {})
+    (reset! callbacks-atom {})
+    (let [fired (atom nil)]
+      (swap! callbacks-atom assoc "pub-1" {:callback (fn [r] (reset! fired r)) :since-uuid nil})
+      (with-redefs [voice-code.providers/discover-session-uuid (fn [& _] "cop-1")]
+        (#'server/reconcile-copilot-session-uuid! "pub-1" "/work/proj" 1000))
+      ;; The filesystem watcher observes copilot's terminal marker and calls
+      ;; on-turn-complete with COPILOT's uuid; copilot's transcript has a fresh
+      ;; end-of-turn assistant message.
+      (with-redefs [voice-code.server/last-assistant-turn
+                    (fn [id]
+                      (when (= id "cop-1")
+                        {:uuid "msg-1" :text "{\"outcome\": \"complete\"}"
+                         :end-of-turn? true :tool-use? false}))]
+        (server/on-turn-complete "cop-1"))
+      (is (= {:success true :result "{\"outcome\": \"complete\"}" :session-id "cop-1"} @fired)
+          "callback fired with the outcome from copilot's transcript")
+      (is (not (contains? @callbacks-atom "cop-1")) "callback drained after firing"))
+    (reset! aliases-atom {})
+    (reset! callbacks-atom {})))
+
+(deftest exit-recipe-clears-copilot-alias-test
+  (testing "exit cleans up the alias and the callback keyed on the resolved uuid"
+    (reset! aliases-atom {"pub-1" "cop-1"})
+    (reset! callbacks-atom {"cop-1" {:callback (fn [_]) :since-uuid nil}})
+    (server/exit-recipe-for-session "pub-1" "error")
+    (is (not (contains? @aliases-atom "pub-1")) "alias cleared")
+    (is (empty? @callbacks-atom) "callback under resolved uuid cleared")
+    (reset! aliases-atom {})
+    (reset! callbacks-atom {})))

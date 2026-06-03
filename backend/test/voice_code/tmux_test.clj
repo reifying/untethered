@@ -1,7 +1,8 @@
 (ns voice-code.tmux-test
   "Unit tests for pure helpers in voice-code.tmux.
    No tmux server required — all tested functions are pure or use rebindable state."
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [clojure.string :as str]
+            [clojure.test :refer [deftest is testing]]
             [voice-code.tmux :as tmux]))
 
 ;; ============================================================================
@@ -138,10 +139,26 @@
       (is (false? (ready? "starting up...")))
       (is (false? (ready? "")))))
 
-  (testing "copilot ready after 'Type @ to mention' appears"
-    (let [ready? (tmux/readiness-predicate :copilot)]
-      (is (true? (ready? "Welcome to Copilot CLI\nType @ to mention a file")))
-      (is (false? (ready? "Loading...")))))
+  (testing "copilot ready on the v1.0.57 '/ commands · ? help' footer + chevron"
+    (let [ready? (tmux/readiness-predicate :copilot)
+          ;; Exact ready-state pane captured from Copilot v1.0.57 (the TUI that
+          ;; broke the old 'Type @ to mention' needle and timed out recipe
+          ;; launches; see readiness-predicate docstring / :wait-for-ready-timeout).
+          v1057-ready (str "  ╭─╮╭─╮\n  ╰─╯╰─╯  Copilot v1.0.57 uses AI.\n"
+                           "● No copilot-instructions.md found. Run /init to generate.\n\n"
+                           " ~/code/mck/x [⎇ main]                         AI Credits: 0\n"
+                           "──────────\n❯\n──────────\n"
+                           " / commands · ? help                          Claude Sonnet 4.6\n")]
+      (is (true? (ready? v1057-ready)))
+      ;; The fix must not depend on the now-absent legacy hint.
+      (is (false? (str/includes? v1057-ready "Type @ to mention")))
+      ;; Footer hint alone is sufficient (chevron may be off-screen in a short capture).
+      (is (true? (ready? "blah\n / commands · ? help")))
+      ;; Banner-only boot state is NOT ready (no input box / footer yet).
+      (is (false? (ready? "  ╭─╮╭─╮  Copilot v1.0.57 uses AI.\nLoading...")))
+      (is (false? (ready? "Loading...")))
+      ;; nil content must not throw.
+      (is (false? (ready? nil)))))
 
   (testing "cursor ready after 'Press any key' appears"
     (let [ready? (tmux/readiness-predicate :cursor)]
