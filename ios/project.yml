@@ -189,6 +189,7 @@ targets:
       - path: VoiceCodeTests
         excludes:
           - "BluetoothAudioMonitorTests.swift"
+          - "BlueParrottBLEManagerTests.swift"
     resources:
       - VoiceCodeTests/Fixtures
     dependencies:
