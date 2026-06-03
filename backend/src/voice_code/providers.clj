@@ -594,6 +594,81 @@
          (= "stop" reason))))
 
 ;; ============================================================================
+;; Fresh-session UUID discovery
+;; ============================================================================
+;;
+;; Some providers (copilot) have no fresh-start "use THIS session id" flag — they
+;; mint their own UUID and create ~/.copilot/session-state/<uuid>/ only once the
+;; first turn begins. When the backend launched such a session under an id IT
+;; chose (e.g. the recipe-invocation API's session_id), the provider's transcript
+;; lands under a DIFFERENT uuid. discover-session-uuid recovers the real uuid by
+;; matching the working dir of a session created right after the launch instant.
+
+(defn- file-creation-ms
+  "Filesystem creation time of `f` in ms since epoch, or nil if unavailable.
+   macOS reports this at ~second granularity, so callers must tolerate skew."
+  [^java.io.File f]
+  (try
+    (-> (java.nio.file.Files/readAttributes
+         (.toPath f)
+         java.nio.file.attribute.BasicFileAttributes
+         (into-array java.nio.file.LinkOption []))
+        .creationTime
+        .toMillis)
+    (catch Exception _ nil)))
+
+(defn- canonical-path
+  "Canonical absolute path for `p` (resolves symlinks + trailing slashes) so two
+   spellings of the same dir compare equal. Falls back to a trailing-slash-stripped
+   string if canonicalization fails (e.g. path does not exist)."
+  [p]
+  (when (and p (not (str/blank? p)))
+    (try (.getCanonicalPath (io/file p))
+         (catch Exception _ (str/replace p #"/+$" "")))))
+
+(defn discover-session-uuid
+  "Discover the provider session UUID for a session the provider just created
+   under its OWN id (the backend launched it under a different id). Returns the
+   session-id string, or nil if none matches yet.
+
+   Selection: among the provider's sessions, keep those whose dir was created at
+   or after (launch-ms - skew-ms), whose canonical working dir == workdir, and
+   whose id is NOT in `exclude` (ids already claimed by other in-flight launches).
+   Returns the EARLIEST such id — the session we just launched is the first new
+   dir to appear after the launch instant. >1 survivor is logged and the earliest
+   is chosen (genuinely-concurrent same-workdir launches are inherently ambiguous;
+   `exclude` keeps already-claimed sessions out so each launch claims a distinct
+   dir). skew-ms tolerates the second-granularity creation timestamps.
+
+   Reuses the per-provider find-session-files / session-id-from-file /
+   extract-working-dir multimethods, so it is provider-generic."
+  [provider workdir launch-ms & {:keys [skew-ms exclude] :or {skew-ms 2000 exclude #{}}}]
+  (let [want (canonical-path workdir)
+        threshold (- launch-ms skew-ms)
+        candidates (->> (find-session-files provider)
+                        (keep (fn [f]
+                                (when-let [id (session-id-from-file provider f)]
+                                  (let [created (file-creation-ms f)]
+                                    (when (and created
+                                               (>= created threshold)
+                                               (not (contains? exclude id)))
+                                      {:id id
+                                       :created created
+                                       :cwd (canonical-path (extract-working-dir provider f))})))))
+                        (filter (fn [{:keys [cwd]}] (and want cwd (= want cwd)))))]
+    (case (count candidates)
+      0 nil
+      1 (:id (first candidates))
+      (let [chosen (apply min-key :created candidates)]
+        (log/warn "discover-session-uuid: multiple new sessions match workdir; choosing earliest after launch"
+                  {:provider provider
+                   :workdir workdir
+                   :launch-ms launch-ms
+                   :candidates (mapv #(select-keys % [:id :created]) candidates)
+                   :chosen (:id chosen)})
+        (:id chosen)))))
+
+;; ============================================================================
 ;; Provider Resolution
 ;; ============================================================================
 

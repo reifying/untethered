@@ -1520,3 +1520,70 @@ another_key: another value
   (testing "returns nil when session not in index"
     (with-redefs [voice-code.replication/get-session-metadata (fn [_] nil)]
       (is (nil? (providers/session-metadata "no-such-uuid"))))))
+
+;; ============================================================================
+;; discover-session-uuid — fresh-session UUID reconciliation (copilot recipes)
+;; ============================================================================
+
+(deftest discover-session-uuid-real-fs-test
+  (testing "discovers copilot's self-minted uuid by matching working dir"
+    ;; Two real copilot session dirs in distinct workdirs; created "now", so a
+    ;; launch instant a few seconds in the past keeps both in the time window and
+    ;; the working dir is the disambiguator (no reliance on sub-second ctime).
+    (let [session-state-dir (io/file *test-dir* ".copilot" "session-state")
+          uuid-a "aaaaaaaa-1111-2222-3333-444444444444"
+          uuid-b "bbbbbbbb-1111-2222-3333-444444444444"
+          mk (fn [id cwd]
+               (let [d (io/file session-state-dir id)]
+                 (.mkdirs d)
+                 (spit (io/file d "events.jsonl") "{\"type\":\"session.start\"}")
+                 (spit (io/file d "workspace.yaml") (str "id: " id "\ncwd: " cwd "\n"))))
+          _ (do (mk uuid-a "/work/proj-a") (mk uuid-b "/work/proj-b"))
+          launch-ms (- (System/currentTimeMillis) 5000)]
+      (with-redefs [providers/get-sessions-dir (fn [p]
+                                                 (if (= p :copilot)
+                                                   session-state-dir
+                                                   (providers/get-sessions-dir p)))]
+        (testing "working dir selects the right session"
+          (is (= uuid-a (providers/discover-session-uuid :copilot "/work/proj-a" launch-ms)))
+          (is (= uuid-b (providers/discover-session-uuid :copilot "/work/proj-b" launch-ms))))
+        (testing "trailing slash on the requested workdir still matches"
+          (is (= uuid-a (providers/discover-session-uuid :copilot "/work/proj-a/" launch-ms))))
+        (testing "exclude set skips an already-claimed uuid"
+          (is (nil? (providers/discover-session-uuid :copilot "/work/proj-a" launch-ms
+                                                     :exclude #{uuid-a}))))
+        (testing "no session for an unrelated workdir"
+          (is (nil? (providers/discover-session-uuid :copilot "/work/nope" launch-ms))))
+        (testing "a launch instant in the future excludes already-existing dirs"
+          (is (nil? (providers/discover-session-uuid
+                     :copilot "/work/proj-a" (+ (System/currentTimeMillis) 100000)))))))))
+
+(deftest discover-session-uuid-selection-test
+  ;; Hermetic: feed synthetic candidates with controlled creation times so the
+  ;; time-window and earliest-after-launch tie-breaking are deterministic
+  ;; (real-FS ctime is only ~second-granular).
+  (let [files [:f1 :f2 :f3]
+        ids {:f1 "uuid-1" :f2 "uuid-2" :f3 "uuid-3"}
+        created {:f1 1000 :f2 2000 :f3 3000}
+        cwds {:f1 "/work/a" :f2 "/work/a" :f3 "/work/b"}]
+    (with-redefs [providers/find-session-files (fn [_] files)
+                  providers/session-id-from-file (fn [_ f] (ids f))
+                  providers/extract-working-dir (fn [_ f] (cwds f))
+                  voice-code.providers/file-creation-ms (fn [f] (created f))]
+      (testing "single match within workdir + time window"
+        (is (= "uuid-3" (providers/discover-session-uuid :copilot "/work/b" 2500))))
+      (testing "multiple same-workdir matches -> earliest created after launch"
+        ;; launch 500: f1(1000) & f2(2000) match /work/a; pick the earliest (f1)
+        (is (= "uuid-1" (providers/discover-session-uuid :copilot "/work/a" 500))))
+      (testing "time window (launch - skew) excludes older dirs"
+        ;; launch 5000, default skew 2000 -> threshold 3000; only f3 survives, but
+        ;; it is in /work/b, so /work/a yields nothing.
+        (is (nil? (providers/discover-session-uuid :copilot "/work/a" 5000))))
+      (testing "custom skew widens the window"
+        ;; launch 5000, skew 4000 -> threshold 1000; f1 & f2 match /work/a again
+        (is (= "uuid-1" (providers/discover-session-uuid :copilot "/work/a" 5000 :skew-ms 4000))))
+      (testing "exclude set yields the next-earliest survivor"
+        (is (= "uuid-2" (providers/discover-session-uuid :copilot "/work/a" 500
+                                                         :exclude #{"uuid-1"}))))
+      (testing "no candidates -> nil"
+        (is (nil? (providers/discover-session-uuid :copilot "/work/c" 0)))))))

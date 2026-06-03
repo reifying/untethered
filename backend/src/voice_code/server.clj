@@ -999,7 +999,7 @@
       (log/error "Recipe not found" {:recipe-id recipe-id :session-id session-id})
       nil)))
 
-(declare recipe-turn-callbacks)
+(declare recipe-turn-callbacks recipe-session-uuid-aliases resolve-session-uuid)
 
 (defn exit-recipe-for-session
   "Exit orchestration for a session.
@@ -1018,8 +1018,12 @@
     (swap! session-orchestration-state dissoc session-id))
   ;; Drop any orphaned turn-complete callback so the atom doesn't leak entries
   ;; when a recipe exits mid-flight (e.g., tmux window killed externally,
-  ;; restart-new-session handoff).
-  (swap! recipe-turn-callbacks dissoc session-id))
+  ;; restart-new-session handoff). For copilot the callback was re-keyed onto the
+  ;; provider's real uuid (see recipe-session-uuid-aliases), so drop both the
+  ;; public id and the resolved uuid, then clear the alias.
+  (let [provider-uuid (resolve-session-uuid session-id)]
+    (swap! recipe-turn-callbacks dissoc session-id provider-uuid)
+    (swap! recipe-session-uuid-aliases dissoc session-id)))
 
 (defn get-next-step-prompt
   "Get the prompt for the next step in an active recipe"
@@ -1164,6 +1168,26 @@
   ;; provider's terminal marker.
   (atom {}))
 
+(defonce ^:private recipe-session-uuid-aliases
+  ;; public recipe session_id -> provider's REAL session uuid.
+  ;;
+  ;; Copilot has no fresh-start "use THIS id" CLI flag (build-provider-command
+  ;; :copilot, tmux.clj), so a copilot session the recipe launches writes its
+  ;; transcript under copilot's OWN uuid, and the watcher fires
+  ;; on-turn-complete / indexes the session under THAT uuid — not the recipe's
+  ;; public session_id. After the first turn begins, dispatch discovers copilot's
+  ;; real uuid and records it here so the transcript/watermark/turn-complete reads
+  ;; key off it, while the orchestration's public session_id (orch state, recipe
+  ;; status) stays stable. Claude never gets an alias (it forces its uuid via
+  ;; --session-id), so resolve-session-uuid is the identity for claude.
+  (atom {}))
+
+(defn- resolve-session-uuid
+  "Map a public recipe session_id to the provider's real session uuid, or return
+   it unchanged when no alias exists (claude, or pre-discovery copilot)."
+  [session-id]
+  (get @recipe-session-uuid-aliases session-id session-id))
+
 (defn- last-assistant-turn
   "Read the session's last assistant message and return trigger-gate metadata:
      {:uuid <string> :text <string> :end-of-turn? <bool> :tool-use? <bool>}
@@ -1210,6 +1234,57 @@
                 {:session-id session-id})
       nil)))
 
+(def ^:private copilot-uuid-discover-timeout-ms
+  "How long to poll ~/.copilot/session-state for the dir copilot mints when its
+   first turn begins. Generous because the turn only starts after the prompt is
+   delivered; a real step keeps copilot busy far longer than this."
+  15000)
+
+(def ^:private copilot-uuid-discover-poll-ms 250)
+
+(defn- reconcile-copilot-session-uuid!
+  "After a FRESH copilot recipe launch, discover copilot's self-minted session
+   uuid and re-key the recipe's turn-complete tracking onto it.
+
+   Copilot has no fresh-start --session-id flag, so its transcript lands under
+   its own uuid and the watcher fires on-turn-complete / indexes under THAT uuid,
+   not the recipe's public session-id. We poll for the new session-state dir
+   (created when the turn begins), record the alias, and MOVE the turn-complete
+   callback from the public id to the real uuid — preserving its since-uuid
+   watermark (nil for a fresh session; recomputing it here would capture the
+   in-progress turn's own assistant message and the completion would never read
+   as fresh). Returns the discovered uuid or nil.
+
+   launch-ms must be captured by the CALLER before start-window! spawns copilot
+   (copilot writes its session-state dir at boot/turn-start, during the readiness
+   wait — i.e. BEFORE start-window! returns), so it is a valid lower bound on the
+   dir's creation time. Already-aliased uuids are excluded so concurrent
+   same-workdir launches each claim a distinct dir."
+  [session-id working-dir launch-ms]
+  (let [deadline (+ (System/currentTimeMillis) copilot-uuid-discover-timeout-ms)
+        real-uuid (loop []
+                    (or (providers/discover-session-uuid
+                         :copilot working-dir launch-ms
+                         :exclude (set (vals @recipe-session-uuid-aliases)))
+                        (when (< (System/currentTimeMillis) deadline)
+                          (Thread/sleep copilot-uuid-discover-poll-ms)
+                          (recur))))]
+    (if real-uuid
+      (do
+        (swap! recipe-session-uuid-aliases assoc session-id real-uuid)
+        (swap! recipe-turn-callbacks
+               (fn [m]
+                 (if-let [entry (get m session-id)]
+                   (-> m (dissoc session-id) (assoc real-uuid entry))
+                   m)))
+        (log/info "Reconciled copilot recipe session uuid"
+                  {:public-session-id session-id :copilot-uuid real-uuid})
+        real-uuid)
+      (do
+        (log/warn "Could not discover copilot session uuid after launch; recipe outcome reads will fail"
+                  {:public-session-id session-id :working-dir working-dir})
+        nil))))
+
 (defn dispatch-recipe-step-via-tmux!
   "Dispatch a recipe step prompt through tmux and register a turn-complete
    callback. For the first step of a session (session-created? false), starts
@@ -1234,34 +1309,59 @@
   ;; Capture the "last assistant message" watermark before dispatch so
   ;; on-turn-complete can distinguish a fresh response from a spurious fire
   ;; caused by non-assistant JSONL writes (interrupt markers, permission-mode
-  ;; entries, etc.). See tmux-untethered-uqj.
-  (let [since-uuid (:uuid (last-assistant-turn session-id))]
-    (swap! recipe-turn-callbacks assoc session-id
-           {:callback callback-fn :since-uuid since-uuid}))
-  (try
-    (locking repl/compaction-dispatch-lock
-      (if (repl/is-compaction-locked? session-id)
-        (do
-          (log/info "Recipe step dispatch aborted: compaction in progress"
-                    {:session-id session-id :provider provider})
-          (swap! recipe-turn-callbacks dissoc session-id)
-          (callback-fn {:success false
-                        :error "Compaction in progress for this session; retry once it completes"}))
-        (if session-created?
-          (tmux/deliver! session-id prompt-text)
-          (tmux/start-window! {:session-uuid session-id
-                               :session-name (:name (repl/get-session-metadata session-id))
-                               :provider provider
-                               :workdir working-dir
-                               :initial-prompt prompt-text
-                               :resume? false}))))
-    nil
-    (catch Throwable e
-      (log/error e "Failed to dispatch recipe step via tmux"
-                 {:session-id session-id :provider provider})
-      (swap! recipe-turn-callbacks dissoc session-id)
-      (callback-fn {:success false
-                    :error (str "tmux dispatch failed: " (.getMessage e))}))))
+  ;; entries, etc.). See tmux-untethered-uqj. The watermark + callback key off
+  ;; the provider's REAL session uuid (resolve-session-uuid), which differs from
+  ;; the public session-id only for a copilot session whose uuid has already been
+  ;; reconciled (step 2+); it is the identity for claude and for copilot's first
+  ;; step (reconciled below). The tmux window itself is always keyed by the
+  ;; public session-id, so start-window!/deliver! use session-id directly.
+  ;;
+  ;; launch-ms is captured HERE — before start-window! spawns copilot — because
+  ;; copilot writes its session-state dir at boot/turn-start, which happens
+  ;; DURING the readiness wait (i.e. before start-window! returns). Capturing it
+  ;; afterward made reconcile's created-after-launch window exclude the dir.
+  (let [launch-ms (System/currentTimeMillis)
+        target-id (resolve-session-uuid session-id)
+        since-uuid (:uuid (last-assistant-turn target-id))]
+    (swap! recipe-turn-callbacks assoc target-id
+           {:callback callback-fn :since-uuid since-uuid})
+    (try
+      (let [launched?
+            (locking repl/compaction-dispatch-lock
+              (if (repl/is-compaction-locked? session-id)
+                (do
+                  (log/info "Recipe step dispatch aborted: compaction in progress"
+                            {:session-id session-id :provider provider})
+                  (swap! recipe-turn-callbacks dissoc (resolve-session-uuid session-id))
+                  (callback-fn {:success false
+                                :error "Compaction in progress for this session; retry once it completes"})
+                  false)
+                (do
+                  (if session-created?
+                    (tmux/deliver! session-id prompt-text)
+                    (tmux/start-window! {:session-uuid session-id
+                                         :session-name (:name (repl/get-session-metadata session-id))
+                                         :provider provider
+                                         :workdir working-dir
+                                         :initial-prompt prompt-text
+                                         :resume? false}))
+                  true)))]
+        ;; Fresh-start copilot: the prompt is now delivered and the turn is
+        ;; beginning, so copilot has (or is about to) create its own session-state
+        ;; dir. Discover that uuid and re-key tracking onto it. Run OUTSIDE the
+        ;; compaction-dispatch-lock so the poll never serializes other sessions.
+        (when (and launched?
+                   (not session-created?)
+                   (= provider :copilot)
+                   (not (contains? @recipe-session-uuid-aliases session-id)))
+          (reconcile-copilot-session-uuid! session-id working-dir launch-ms))
+        nil)
+      (catch Throwable e
+        (log/error e "Failed to dispatch recipe step via tmux"
+                   {:session-id session-id :provider provider})
+        (swap! recipe-turn-callbacks dissoc (resolve-session-uuid session-id))
+        (callback-fn {:success false
+                      :error (str "tmux dispatch failed: " (.getMessage e))})))))
 
 (declare execute-recipe-step)
 
