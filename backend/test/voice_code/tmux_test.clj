@@ -495,7 +495,92 @@
       (is (= "a" (:window (tmux/choose-victim windows 4))))))
 
   (testing "returns nil when empty"
-    (is (nil? (tmux/choose-victim [] 4)))))
+    (is (nil? (tmux/choose-victim [] 4))))
+
+  ;; Regression: a window with unknown activity (last-activity-ms <= 0) must
+  ;; never be evicted. This is the copilot case — its virtual tmux-env uuid has
+  ;; no transcript, so window-last-activity-ms returns 0. The old min-key picked
+  ;; it every time (0 is the global minimum), killing busy copilot windows
+  ;; mid-turn the instant the session hit its window cap.
+  (testing "never evicts a window with unknown (zero) activity, even if marked idle"
+    (let [windows [{:window "copilot" :session-uuid "u1" :last-activity-ms 0   :idle? true}
+                   {:window "b"       :session-uuid "u2" :last-activity-ms 200 :idle? false}
+                   {:window "c"       :session-uuid "u3" :last-activity-ms 300 :idle? false}
+                   {:window "d"       :session-uuid "u4" :last-activity-ms 400 :idle? false}]]
+      (is (nil? (tmux/choose-victim windows 4))
+          "a zero-activity (unknown) window must not be evicted")))
+
+  (testing "skips unknown-activity windows and evicts the oldest KNOWN-idle one"
+    (let [windows [{:window "copilot" :session-uuid "u1" :last-activity-ms 0   :idle? true}
+                   {:window "old"     :session-uuid "u2" :last-activity-ms 100 :idle? true}
+                   {:window "c"       :session-uuid "u3" :last-activity-ms 300 :idle? true}
+                   {:window "d"       :session-uuid "u4" :last-activity-ms 400 :idle? true}]]
+      (is (= "old" (:window (tmux/choose-victim windows 4)))
+          "zero-activity window is skipped; oldest positive-activity idle wins")))
+
+  (testing "returns nil when at cap but every idle window has unknown activity"
+    (let [windows [{:window "a" :session-uuid "u1" :last-activity-ms 0 :idle? true}
+                   {:window "b" :session-uuid "u2" :last-activity-ms 0 :idle? true}
+                   {:window "c" :session-uuid "u3" :last-activity-ms 0 :idle? true}
+                   {:window "d" :session-uuid "u4" :last-activity-ms 0 :idle? true}]]
+      (is (nil? (tmux/choose-victim windows 4)))))
+
+  (testing "treats missing :last-activity-ms as unknown (never evicted)"
+    (let [windows [{:window "a" :session-uuid "u1" :idle? true}
+                   {:window "b" :session-uuid "u2" :idle? true}
+                   {:window "c" :session-uuid "u3" :idle? true}
+                   {:window "d" :session-uuid "u4" :idle? true}]]
+      (is (nil? (tmux/choose-victim windows 4))))))
+
+;; ============================================================================
+;; reassign-session-uuid! — re-key a window onto copilot's discovered real uuid
+;; ============================================================================
+
+(deftest reassign-session-uuid!-test
+  (testing "rewrites VC_SESSION_UUID env and re-keys live-windows to the new uuid"
+    (let [old-uuid "11111111-0000-0000-0000-000000000000"
+          new-uuid "22222222-0000-0000-0000-000000000000"
+          desc     {:tmux-session "myproj"
+                    :tmux-window  "session-111111"
+                    :provider     :copilot
+                    :workdir      "/tmp/myproj"
+                    :started-at   "2026-06-03T13:10:51Z"}
+          calls    (atom [])
+          invoker  (fn [& args]
+                     (swap! calls conj (vec args))
+                     {:exit 0 :out "" :err ""})]
+      (reset! tmux/live-windows {old-uuid desc})
+      (binding [tmux/*tmux-invoker* invoker]
+        (let [result (tmux/reassign-session-uuid! old-uuid new-uuid)]
+          (is (= desc result) "returns the window descriptor")))
+      (testing "live-windows is re-keyed: old gone, new present, descriptor intact"
+        (is (not (contains? @tmux/live-windows old-uuid)))
+        (is (= desc (get @tmux/live-windows new-uuid))))
+      (testing "VC_SESSION_UUID_<suffix> env is overwritten with the new uuid"
+        ;; env-suffix of window name "session-111111" is "session_111111"
+        (is (some #(and (= "tmux" (nth % 0))
+                        (= "set-environment" (nth % 1))
+                        (some #{"VC_SESSION_UUID_session_111111"} %)
+                        (some #{new-uuid} %))
+                  @calls)
+            "expected set-environment VC_SESSION_UUID_session_111111 = new-uuid"))))
+
+  (testing "no-op (returns nil, no env write) when old-uuid is not live"
+    (let [calls   (atom [])
+          invoker (fn [& args] (swap! calls conj (vec args)) {:exit 0 :out "" :err ""})]
+      (reset! tmux/live-windows {})
+      (binding [tmux/*tmux-invoker* invoker]
+        (is (nil? (tmux/reassign-session-uuid! "absent-uuid" "real-uuid"))))
+      (is (empty? @calls) "no tmux calls when the window is not tracked")))
+
+  (testing "same old/new uuid only rewrites env, leaves live-windows entry in place"
+    (let [uuid    "33333333-0000-0000-0000-000000000000"
+          desc    {:tmux-session "p" :tmux-window "session-333333" :provider :copilot}
+          invoker (fn [& _args] {:exit 0 :out "" :err ""})]
+      (reset! tmux/live-windows {uuid desc})
+      (binding [tmux/*tmux-invoker* invoker]
+        (is (= desc (tmux/reassign-session-uuid! uuid uuid))))
+      (is (= {uuid desc} @tmux/live-windows)))))
 
 ;; ============================================================================
 ;; parse-show-environment
@@ -611,9 +696,18 @@
                     (constantly {:last-modified-ms old-ms})]
         (is (false? (#'tmux/processing? "some-uuid"))))))
 
-  (testing "returns false when session-metadata returns nil (missing session)"
+  ;; A missing/nil session-metadata means activity is UNKNOWN, not ancient.
+  ;; processing? returns TRUE (protected) in that case — fail safe — so an
+  ;; un-assessable window (e.g. a copilot window keyed by its virtual uuid) is
+  ;; never eligible for eviction. The old behavior returned false here, which is
+  ;; exactly what made busy copilot windows the guaranteed eviction victim.
+  (testing "returns true (protected) when session-metadata returns nil (unknown activity)"
     (with-redefs [voice-code.providers/session-metadata (constantly nil)]
-      (is (false? (#'tmux/processing? "missing-uuid"))))))
+      (is (true? (#'tmux/processing? "missing-uuid")))))
+
+  (testing "returns true (protected) when last-modified-ms is zero (unknown)"
+    (with-redefs [voice-code.providers/session-metadata (constantly {:last-modified-ms 0})]
+      (is (true? (#'tmux/processing? "zero-uuid"))))))
 
 ;; ============================================================================
 ;; start-window!

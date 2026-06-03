@@ -1277,6 +1277,13 @@
                  (if-let [entry (get m session-id)]
                    (-> m (dissoc session-id) (assoc real-uuid entry))
                    m)))
+        ;; Re-key the tmux window itself onto copilot's real uuid so the activity
+        ;; reads that drive eviction and the sweeper (which key off the window's
+        ;; VC_SESSION_UUID env / live-windows key) see copilot's REAL session
+        ;; instead of nil -> 0 -> "infinitely idle". Without this a busy copilot
+        ;; window is the guaranteed window-cap victim (it was killed mid-turn in
+        ;; the tmux-purge incident), and an idle one can never be reaped.
+        (tmux/reassign-session-uuid! session-id real-uuid)
         (log/info "Reconciled copilot recipe session uuid"
                   {:public-session-id session-id :copilot-uuid real-uuid})
         real-uuid)
@@ -1338,7 +1345,13 @@
                   false)
                 (do
                   (if session-created?
-                    (tmux/deliver! session-id prompt-text)
+                    ;; resolve-session-uuid maps the recipe's public id to
+                    ;; copilot's real uuid once reconciled (identity for claude
+                    ;; and pre-reconcile copilot). The window is re-keyed onto the
+                    ;; real uuid by reconcile-copilot-session-uuid!, so step 2+
+                    ;; must address it by the resolved uuid or deliver! would miss
+                    ;; live-windows and spuriously respawn.
+                    (tmux/deliver! (resolve-session-uuid session-id) prompt-text)
                     (tmux/start-window! {:session-uuid session-id
                                          :session-name (:name (repl/get-session-metadata session-id))
                                          :provider provider
