@@ -28,6 +28,19 @@ class HeadsetRemoteCommandManager: ObservableObject {
     private var cancellables = Set<AnyCancellable>()
     #if os(macOS)
     private var bluetoothMonitor: BluetoothAudioMonitor?
+    /// macOS BlueParrott button source over CoreBluetooth. Mirrors the iOS
+    /// `blueParrottManager` (BPHeadset SDK); both feed the shared, unchanged
+    /// `BlueParrottButtonDelegate` mapping so the two platforms converge.
+    private(set) var blueParrottBLEManager: BlueParrottBLEManager?
+    /// Strong owner of the PTT arbitrator wired between the BLE manager and this
+    /// manager's delegate mapping (the BLE manager holds its `delegate` weakly).
+    private var blueParrottArbitrator: BlueParrottPTTArbitrator?
+    #if DEBUG
+    /// Test seam: override to inject a fake-`BLECentral`-backed `BlueParrottBLEManager`
+    /// instead of standing up a real `CBCentralManager`. DEBUG-only so it adds no
+    /// release surface; production always builds the real adapter.
+    var makeBlueParrottBLEManager: () -> BlueParrottBLEManager = { BlueParrottBLEManager() }
+    #endif
     #endif
     #if DEBUG && os(macOS)
     // Phase A2 GATT explorer: runs alongside the CoreAudio mute proxy in debug
@@ -148,7 +161,10 @@ class HeadsetRemoteCommandManager: ObservableObject {
 
         setupKeepAlive()
 
-        #if os(iOS)
+        // Drive the BlueParrott button source from the same toggle on both
+        // platforms — iOS via the BPHeadset SDK (`BlueParrottButtonManager`),
+        // macOS via CoreBluetooth (`BlueParrottBLEManager`). Both feed the shared
+        // `BlueParrottButtonDelegate` mapping below.
         settings.$blueParrottEnabled
             .receive(on: DispatchQueue.main)
             .sink { [weak self] enabled in
@@ -160,7 +176,6 @@ class HeadsetRemoteCommandManager: ObservableObject {
                 }
             }
             .store(in: &cancellables)
-        #endif
     }
 
     func activate() {
@@ -636,8 +651,14 @@ extension HeadsetRemoteCommandManager {
         hLog("Headset: BlueParrott SDK stopped")
     }
 }
+#endif
 
 // MARK: - BlueParrottButtonDelegate
+//
+// Cross-platform: shared by the iOS BPHeadset SDK path (`BlueParrottButtonManager`)
+// and the macOS CoreBluetooth path (`BlueParrottBLEManager`). The state mapping is
+// unchanged on both platforms so they converge on one downstream path
+// (@docs/design/macos-blueparrott-corebluetooth.md §3).
 
 extension HeadsetRemoteCommandManager: BlueParrottButtonDelegate {
     func blueParrottButtonDown() {
@@ -680,6 +701,41 @@ extension HeadsetRemoteCommandManager: BlueParrottButtonDelegate {
         performInterrupt()
     }
 }
+
+// MARK: - BlueParrott PTT Arbitrator (macOS)
+
+#if os(macOS)
+/// Reduces the raw BlueParrott GATT event stream to push-to-talk semantics before
+/// it reaches the shared `BlueParrottButtonDelegate` mapping.
+///
+/// The hardware brackets every gesture with down/up: a hold streams `01,04,00`
+/// (down, long-press ~1s in, up), a tap `01,00,02`, a double `01,00,01,00,03`
+/// (see @docs/design/macos-blueparrott-corebluetooth.md §3 note 1). Forwarding all
+/// five events into the state machine would double-drive it — e.g. the in-bracket
+/// long-press would `performInterrupt` mid-recording. So the macOS path drives off
+/// down/up (PTT) only and drops the in-bracket gesture-classification codes; a hold
+/// of any length records on down and stops+sends on up.
+///
+/// This is the down/up-vs-gesture arbitration the design assigns to the macOS
+/// rewire. It is an additive filter — the shared state mapping is unchanged.
+/// (Discrete tap/double/long actions would need a separate, non-PTT button
+/// configuration and are out of scope for the PTT path.)
+final class BlueParrottPTTArbitrator: BlueParrottButtonDelegate {
+    weak var downstream: BlueParrottButtonDelegate?
+
+    init(downstream: BlueParrottButtonDelegate?) {
+        self.downstream = downstream
+    }
+
+    func blueParrottButtonDown() { downstream?.blueParrottButtonDown() }
+    func blueParrottButtonUp() { downstream?.blueParrottButtonUp() }
+
+    // In-bracket gesture-classification codes — dropped so they don't double-drive
+    // the PTT state machine alongside the down/up that bracket them.
+    func blueParrottTap() {}
+    func blueParrottDoubleTap() {}
+    func blueParrottLongPress() {}
+}
 #endif
 
 // MARK: - PTT Monitoring
@@ -708,11 +764,59 @@ extension HeadsetRemoteCommandManager {
         bluetoothMonitor = nil
     }
 
+    // MARK: - BlueParrott BLE (CoreBluetooth)
+
+    /// Start the macOS BlueParrott button source, gated by `settings.blueParrottEnabled`
+    /// (mirrors the iOS SDK path). Events flow BLE manager → PTT arbitrator → this
+    /// manager's shared `BlueParrottButtonDelegate` mapping.
+    ///
+    /// The arbitrator is required because the raw GATT stream brackets every gesture
+    /// with down/up (a hold streams `01,04,00`); feeding all five events straight
+    /// into the state machine would double-drive it — the in-bracket long-press
+    /// would `performInterrupt` mid-recording and the trailing up would then no-op,
+    /// orphaning the recording. Per the design (§3 note 1) the macOS path drives off
+    /// down/up (PTT) only and the arbitrator drops the in-bracket gesture codes. The
+    /// state mapping itself is unchanged — the arbitrator is an additive filter.
+    func startBlueParrott() {
+        guard blueParrottBLEManager == nil else { return }
+        #if DEBUG
+        let ble = makeBlueParrottBLEManager()
+        #else
+        let ble = BlueParrottBLEManager()
+        #endif
+        let arbitrator = BlueParrottPTTArbitrator(downstream: self)
+        ble.delegate = arbitrator
+        blueParrottArbitrator = arbitrator
+        ble.start()
+        blueParrottBLEManager = ble
+        #if DEBUG
+        // The Phase A2 explorer and the live client would otherwise both stand up a
+        // CBCentralManager scanning the same service and contend; the persistence
+        // experiment is concluded, so the live client takes over.
+        stopGattExplorer()
+        #endif
+        hLog("Headset: BlueParrott BLE started (macOS CoreBluetooth)")
+    }
+
+    func stopBlueParrott() {
+        blueParrottBLEManager?.stop()
+        blueParrottBLEManager = nil
+        blueParrottArbitrator = nil
+        hLog("Headset: BlueParrott BLE stopped (macOS)")
+    }
+
     #if DEBUG
     // Phase A2: launch the CoreBluetooth GATT explorer for the App-Mode
     // persistence experiment. DEBUG-only; logs to category "BPExplore".
     func startGattExplorer() {
         guard gattExplorer == nil else { return }
+        // Don't contend with the live BLE client for the same peripheral: when
+        // BlueParrott is the active button source, the diagnostic explorer stays
+        // parked (the persistence experiment it served is concluded).
+        guard !settings.blueParrottEnabled else {
+            hLog("Headset: BPGattExplorer skipped — BlueParrott BLE client is the active source")
+            return
+        }
         let explorer = BPGattExplorer()
         explorer.start()
         gattExplorer = explorer
