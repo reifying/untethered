@@ -104,14 +104,12 @@ final class HeadsetRemoteCommandManagerTests: XCTestCase {
         super.setUp()
         UserDefaults.standard.removeObject(forKey: "headsetModeEnabled")
         UserDefaults.standard.removeObject(forKey: "headsetAutoSend")
-        UserDefaults.standard.removeObject(forKey: "headsetPTTEnabled")
         UserDefaults.standard.removeObject(forKey: "blueParrottEnabled")
     }
 
     override func tearDown() {
         UserDefaults.standard.removeObject(forKey: "headsetModeEnabled")
         UserDefaults.standard.removeObject(forKey: "headsetAutoSend")
-        UserDefaults.standard.removeObject(forKey: "headsetPTTEnabled")
         UserDefaults.standard.removeObject(forKey: "blueParrottEnabled")
         super.tearDown()
     }
@@ -438,165 +436,6 @@ final class HeadsetRemoteCommandManagerTests: XCTestCase {
         manager.reclaimNowPlaying()
     }
 
-    // MARK: - PTT Mute Detection
-
-    #if os(macOS)
-    func testMuteOff_fromReady_startsRecording() {
-        let (manager, mocks) = makeManager()
-        manager.activate()
-
-        manager.simulateMuteChanged(isMuted: false)
-
-        XCTAssertEqual(manager.state, .recording)
-        XCTAssertTrue(mocks.voiceInput.startRecordingCalled)
-    }
-
-    func testMuteOn_fromRecording_stopsAndSends() {
-        let (manager, mocks) = makeManager()
-        manager.activate()
-        manager.simulateMuteChanged(isMuted: false) // → .recording
-        mocks.voiceInput.transcribedText = "ptt test"
-
-        manager.simulateMuteChanged(isMuted: true) // → .sending
-
-        let expectation = expectation(description: "ptt send")
-        DispatchQueue.main.async {
-            XCTAssertTrue(mocks.voiceInput.stopRecordingCalled)
-            XCTAssertEqual(mocks.client.lastSentMessage?["text"] as? String, "ptt test")
-            expectation.fulfill()
-        }
-        wait(for: [expectation], timeout: 1.0)
-    }
-
-    func testMuteOff_fromRecording_isIgnored() {
-        let (manager, mocks) = makeManager()
-        manager.activate()
-        manager.simulateTogglePlayPause() // → .recording
-
-        let callsBefore = mocks.voiceInput.startRecordingCalled
-        manager.simulateMuteChanged(isMuted: false) // not in .ready → ignored
-
-        XCTAssertEqual(manager.state, .recording)
-        XCTAssertEqual(mocks.voiceInput.startRecordingCalled, callsBefore)
-    }
-
-    func testMuteOn_fromReady_isIgnored() {
-        let (manager, mocks) = makeManager()
-        manager.activate()
-        XCTAssertEqual(manager.state, .ready)
-
-        manager.simulateMuteChanged(isMuted: true) // not in .recording → ignored
-
-        XCTAssertEqual(manager.state, .ready)
-        XCTAssertFalse(mocks.voiceInput.stopRecordingCalled)
-    }
-    #endif
-
-    // MARK: - PTT Settings Integration
-
-    #if os(macOS)
-    func testActivate_withPTTEnabled_startsPTTMonitoring() {
-        let mocks = HeadsetMockDependencies()
-        mocks.settings.headsetPTTEnabled = true
-        let manager = makeManagerWithDeps(mocks)
-        drainMainQueue()
-
-        manager.activate()
-
-        XCTAssertTrue(manager.isPTTMonitoring)
-    }
-
-    func testActivate_withPTTDisabled_doesNotStartPTTMonitoring() {
-        let (manager, _) = makeManager()
-        drainMainQueue()
-
-        manager.activate()
-
-        XCTAssertFalse(manager.isPTTMonitoring)
-    }
-
-    func testDeactivate_stopsPTTMonitoring() {
-        let mocks = HeadsetMockDependencies()
-        mocks.settings.headsetPTTEnabled = true
-        let manager = makeManagerWithDeps(mocks)
-        drainMainQueue()
-        manager.activate()
-        XCTAssertTrue(manager.isPTTMonitoring)
-
-        manager.deactivate()
-
-        XCTAssertFalse(manager.isPTTMonitoring)
-    }
-
-    func testStartPTTMonitoring_isIdempotent() {
-        let mocks = HeadsetMockDependencies()
-        mocks.settings.headsetPTTEnabled = true
-        let manager = makeManagerWithDeps(mocks)
-        drainMainQueue()
-        manager.activate()
-        XCTAssertTrue(manager.isPTTMonitoring)
-
-        // A second call (e.g. from the $headsetPTTEnabled Combine delivery after activate)
-        // must not replace and leak the existing monitor.
-        manager.startPTTMonitoring()
-
-        // Still monitoring with the same (first) monitor — no replacement occurred.
-        XCTAssertTrue(manager.isPTTMonitoring)
-    }
-
-    func testHeadsetPTTEnabledSetting_whenActive_startsPTTMonitoring() {
-        let (manager, mocks) = makeManager()
-        // Drain initial Combine deliveries (headsetModeEnabled=false, headsetPTTEnabled=false)
-        // before activating — same pattern as testHeadsetModeEnabledSetting_activatesManager.
-        drainMainQueue()
-        manager.activate()
-        XCTAssertFalse(manager.isPTTMonitoring)
-
-        mocks.settings.headsetPTTEnabled = true
-
-        let expectation = expectation(description: "PTT monitoring starts from setting")
-        DispatchQueue.main.async {
-            XCTAssertTrue(manager.isPTTMonitoring)
-            expectation.fulfill()
-        }
-        wait(for: [expectation], timeout: 1.0)
-    }
-
-    func testHeadsetPTTDisabledSetting_whenActive_stopsPTTMonitoring() {
-        let mocks = HeadsetMockDependencies()
-        mocks.settings.headsetPTTEnabled = true
-        let manager = makeManagerWithDeps(mocks)
-        drainMainQueue()
-        manager.activate()
-        // headsetPTTEnabled is already true, activate() calls startPTTMonitoring() synchronously
-        XCTAssertTrue(manager.isPTTMonitoring)
-
-        mocks.settings.headsetPTTEnabled = false
-
-        let expectation = expectation(description: "PTT monitoring stops from setting")
-        DispatchQueue.main.async {
-            XCTAssertFalse(manager.isPTTMonitoring)
-            expectation.fulfill()
-        }
-        wait(for: [expectation], timeout: 1.0)
-    }
-
-    func testHeadsetPTTEnabledSetting_whenInactive_doesNotStartPTTMonitoring() {
-        let (manager, mocks) = makeManager()
-        drainMainQueue()
-        XCTAssertFalse(manager.isActive)
-
-        mocks.settings.headsetPTTEnabled = true
-
-        let expectation = expectation(description: "PTT monitoring does not start when inactive")
-        DispatchQueue.main.async {
-            XCTAssertFalse(manager.isPTTMonitoring)
-            expectation.fulfill()
-        }
-        wait(for: [expectation], timeout: 1.0)
-    }
-    #endif
-
     // MARK: - BlueParrott BLE (macOS)
 
     #if os(macOS)
@@ -707,6 +546,56 @@ final class HeadsetRemoteCommandManagerTests: XCTestCase {
         mocks.settings.blueParrottEnabled = false
         drainMainQueue()
         XCTAssertNil(manager.blueParrottBLEManager)
+    }
+
+    /// Regression: with headset control OFF (`isActive == false`) the macOS BlueParrott
+    /// PTT loop must still recover from `.sending` after the response's TTS so a SECOND
+    /// press records again. Before `stateMachineEngaged`, the `.sending → .ready` reset
+    /// was gated on `isActive` (only set by headset mode), so the down/up path jammed in
+    /// `.sending` after one utterance (the arbitrator drops the `tap` that would otherwise
+    /// reset it). Drives the real BLE → arbitrator → state-machine path, never activating.
+    func testBlueParrottBLE_headsetModeOff_recoversAfterTTS_secondPressRecords() {
+        let mocks = HeadsetMockDependencies()
+        let manager = makeManagerWithDeps(mocks)
+        let central = FakeBLECentralForHRCM()
+        manager.makeBlueParrottBLEManager = {
+            BlueParrottBLEManager(central: central, scheduleWork: { _, work in work.perform() })
+        }
+        // Headset mode stays OFF — never call activate(); the BLE source drives alone.
+        mocks.settings.blueParrottEnabled = true
+        drainMainQueue()
+        XCTAssertFalse(manager.isActive, "headset mode is off — manager must not be active")
+        XCTAssertNotNil(manager.blueParrottBLEManager)
+        central.centralDelegate?.bleDidConnect()
+
+        // Cycle 1: down → record, up → stop + send. State lands in .sending.
+        central.centralDelegate?.bleDidUpdateButtonValue(Data([0x01]))
+        drainMainQueue()
+        XCTAssertEqual(manager.state, .recording)
+        mocks.voiceInput.transcribedText = "first utterance"
+        central.centralDelegate?.bleDidUpdateButtonValue(Data([0x00]))
+        drainMainQueue() // dispatch hop → buttonUp → stopRecordingAndSend
+        drainMainQueue() // deferred transcription read + send
+        XCTAssertEqual(manager.state, .sending)
+        XCTAssertEqual(mocks.client.lastSentMessage?["text"] as? String, "first utterance")
+
+        // The response speaks then finishes — the state machine must walk
+        // .sending → .speaking → .ready even though headset mode is off.
+        mocks.voiceOutput.isSpeaking = true
+        drainMainQueue()
+        XCTAssertEqual(manager.state, .speaking)
+        mocks.voiceOutput.isSpeaking = false
+        drainMainQueue()
+        XCTAssertEqual(manager.state, .ready,
+                       "state must recover to .ready after TTS with headset mode off")
+
+        // Cycle 2: a second press must record again — not jam in .sending.
+        mocks.voiceInput.startRecordingCalled = false
+        central.centralDelegate?.bleDidUpdateButtonValue(Data([0x01]))
+        drainMainQueue()
+        XCTAssertEqual(manager.state, .recording,
+                       "second press must record — the PTT loop must not jam after one utterance")
+        XCTAssertTrue(mocks.voiceInput.startRecordingCalled)
     }
     #endif
 

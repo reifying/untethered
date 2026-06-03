@@ -20,6 +20,23 @@ class HeadsetRemoteCommandManager: ObservableObject {
     @Published var isActive = false
     @Published private(set) var state: HeadsetState = .ready
 
+    /// Whether a button source is driving the state machine — and therefore whether
+    /// TTS-completion and recording auto-finalize must be observed to return the
+    /// machine to `.ready`. Headset control sets `isActive` (it claims the
+    /// MPRemoteCommandCenter / Now Playing slot). The macOS BlueParrott BLE source
+    /// drives the same state machine via its delegate while `isActive` stays false —
+    /// it deliberately does not claim the media slot — so on macOS the BlueParrott
+    /// toggle counts too. Without this, the macOS down/up PTT loop jams in `.sending`
+    /// after one utterance, because the arbitrator drops the `tap` that is the only
+    /// other `.sending → .ready` reset (the recovery here is normally TTS-driven).
+    private var stateMachineEngaged: Bool {
+        #if os(macOS)
+        return isActive || settings.blueParrottEnabled
+        #else
+        return isActive
+        #endif
+    }
+
     private let voiceInput: VoiceInputManager
     private let voiceOutput: VoiceOutputManager
     private let client: VoiceCodeClient
@@ -27,7 +44,6 @@ class HeadsetRemoteCommandManager: ObservableObject {
     private let resolveActiveSession: () -> (sessionId: UUID, workingDirectory: String)?
     private var cancellables = Set<AnyCancellable>()
     #if os(macOS)
-    private var bluetoothMonitor: BluetoothAudioMonitor?
     /// macOS BlueParrott button source over CoreBluetooth. Mirrors the iOS
     /// `blueParrottManager` (BPHeadset SDK); both feed the shared, unchanged
     /// `BlueParrottButtonDelegate` mapping so the two platforms converge.
@@ -43,9 +59,9 @@ class HeadsetRemoteCommandManager: ObservableObject {
     #endif
     #endif
     #if DEBUG && os(macOS)
-    // Phase A2 GATT explorer: runs alongside the CoreAudio mute proxy in debug
-    // macOS builds to observe the BlueParrott control service over CoreBluetooth
-    // (the App-Mode persistence experiment). Diagnostic only; never ships.
+    // Phase A2 GATT explorer: a DEBUG-only diagnostic that observes the BlueParrott
+    // control service over CoreBluetooth (the App-Mode persistence experiment). Parks
+    // when the live BLE client is the active source (see startGattExplorer). Never ships.
     private var gattExplorer: BPGattExplorer?
     #endif
     private var keepAlivePlayer: AVAudioPlayer?
@@ -93,7 +109,7 @@ class HeadsetRemoteCommandManager: ObservableObject {
         voiceOutput.$isSpeaking
             .receive(on: DispatchQueue.main)
             .sink { [weak self] isSpeaking in
-                guard let self = self, self.isActive else { return }
+                guard let self = self, self.stateMachineEngaged else { return }
                 if isSpeaking && self.state == .sending {
                     self.state = .speaking
                     self.updateNowPlayingState()
@@ -129,20 +145,6 @@ class HeadsetRemoteCommandManager: ObservableObject {
             }
             .store(in: &cancellables)
 
-        #if os(macOS)
-        settings.$headsetPTTEnabled
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] enabled in
-                guard let self = self, self.isActive else { return }
-                if enabled {
-                    self.startPTTMonitoring()
-                } else {
-                    self.stopPTTMonitoring()
-                }
-            }
-            .store(in: &cancellables)
-        #endif
-
         // Observe speech recognizer auto-finalize. When SFSpeechRecognizer hits
         // its silence timeout (~30s) it sets isRecording=false from inside the
         // recognition callback — without a second button press. If our state is
@@ -151,7 +153,7 @@ class HeadsetRemoteCommandManager: ObservableObject {
         voiceInput.$isRecording
             .receive(on: DispatchQueue.main)
             .sink { [weak self] isRecording in
-                guard let self = self, self.isActive else { return }
+                guard let self = self, self.stateMachineEngaged else { return }
                 if !isRecording && self.state == .recording {
                     hLog("Headset: isRecording→false while state=.recording (auto-finalize) — triggering send")
                     self.stopRecordingAndSend()
@@ -183,7 +185,6 @@ class HeadsetRemoteCommandManager: ObservableObject {
         hLog("Headset: activating remote control")
         registerRemoteCommands()
         #if os(macOS)
-        if settings.headsetPTTEnabled { startPTTMonitoring() }
         startKeepAlive()
         #if DEBUG
         startGattExplorer()
@@ -228,7 +229,6 @@ class HeadsetRemoteCommandManager: ObservableObject {
             voiceInput.stopRecording()
         }
         #if os(macOS)
-        stopPTTMonitoring()
         stopKeepAlive()
         #if DEBUG
         stopGattExplorer()
@@ -738,33 +738,10 @@ final class BlueParrottPTTArbitrator: BlueParrottButtonDelegate {
 }
 #endif
 
-// MARK: - PTT Monitoring
+// MARK: - BlueParrott BLE (macOS)
 
 #if os(macOS)
 extension HeadsetRemoteCommandManager {
-
-    func startPTTMonitoring() {
-        guard bluetoothMonitor == nil else { return }
-        let monitor = BluetoothAudioMonitor()
-        // BluetoothAudioMonitor delivers onMuteChanged on DispatchQueue.main already
-        // (AudioObjectAddPropertyListenerBlock is given DispatchQueue.main). No re-dispatch needed.
-        monitor.startMonitoring { [weak self] isMuted in
-            guard let self = self else { return }
-            if !isMuted && self.state == .ready {
-                self.startRecording()
-            } else if isMuted && self.state == .recording {
-                self.stopRecordingAndSend()
-            }
-        }
-        bluetoothMonitor = monitor
-    }
-
-    func stopPTTMonitoring() {
-        bluetoothMonitor?.stopMonitoring()
-        bluetoothMonitor = nil
-    }
-
-    // MARK: - BlueParrott BLE (CoreBluetooth)
 
     /// Start the macOS BlueParrott button source, gated by `settings.blueParrottEnabled`
     /// (mirrors the iOS SDK path). Events flow BLE manager → PTT arbitrator → this
@@ -835,10 +812,6 @@ extension HeadsetRemoteCommandManager {
 
 #if DEBUG
 extension HeadsetRemoteCommandManager {
-    #if os(macOS)
-    var isPTTMonitoring: Bool { bluetoothMonitor != nil }
-    #endif
-
     func simulateTogglePlayPause() {
         switch state {
         case .ready:
@@ -863,15 +836,5 @@ extension HeadsetRemoteCommandManager {
     func simulateInterrupt() {
         performInterrupt()
     }
-
-    #if os(macOS)
-    func simulateMuteChanged(isMuted: Bool) {
-        if !isMuted && state == .ready {
-            startRecording()
-        } else if isMuted && state == .recording {
-            stopRecordingAndSend()
-        }
-    }
-    #endif
 }
 #endif

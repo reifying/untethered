@@ -835,10 +835,6 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertFalse(settings.headsetModeEnabled)
     }
 
-    func testDefaultHeadsetPTTEnabled() {
-        XCTAssertFalse(settings.headsetPTTEnabled)
-    }
-
     func testDefaultHeadsetAutoSend() {
         // headsetAutoSend defaults to true when key is absent
         XCTAssertTrue(settings.headsetAutoSend)
@@ -850,14 +846,6 @@ final class AppSettingsTests: XCTestCase {
 
         let reloaded = AppSettings()
         XCTAssertTrue(reloaded.headsetModeEnabled)
-    }
-
-    func testHeadsetPTTEnabledPersistence() {
-        settings.headsetPTTEnabled = true
-        XCTAssertTrue(UserDefaults.standard.bool(forKey: "headsetPTTEnabled"))
-
-        let reloaded = AppSettings()
-        XCTAssertTrue(reloaded.headsetPTTEnabled)
     }
 
     func testHeadsetAutoSendPersistence() {

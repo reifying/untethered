@@ -283,15 +283,37 @@ final class MacSettingsViewTests: XCTestCase {
         XCTAssertTrue(settings.headsetAutoSend)
     }
 
-    func testHeadsetTabBindsToPTTEnabled() {
-        UserDefaults.standard.removeObject(forKey: "headsetPTTEnabled")
-        defer { UserDefaults.standard.removeObject(forKey: "headsetPTTEnabled") }
+    func testHeadsetTabBindsToBlueParrottEnabled() {
+        UserDefaults.standard.removeObject(forKey: "blueParrottEnabled")
+        defer { UserDefaults.standard.removeObject(forKey: "blueParrottEnabled") }
         let settings = AppSettings()
 
-        settings.headsetPTTEnabled = false
-        XCTAssertFalse(settings.headsetPTTEnabled)
-        settings.headsetPTTEnabled = true
-        XCTAssertTrue(settings.headsetPTTEnabled)
+        XCTAssertFalse(settings.blueParrottEnabled)
+        settings.blueParrottEnabled = true
+        XCTAssertTrue(settings.blueParrottEnabled)
+        settings.blueParrottEnabled = false
+        XCTAssertFalse(settings.blueParrottEnabled)
+    }
+
+    /// Regression guard: the macOS Headset tab must expose a toggle bound to
+    /// `blueParrottEnabled`. The BlueParrott button is the macOS button source
+    /// (CoreBluetooth) that replaced the retired CoreAudio mute proxy; the iOS
+    /// "BlueParrott button" toggle lives in SettingsView under `#if os(iOS)`, so
+    /// without this toggle macOS would have no UI to enable any button source.
+    func testHeadsetTabSourceHasBlueParrottToggle() throws {
+        let content = try macSettingsViewSource()
+        XCTAssertTrue(content.contains("$settings.blueParrottEnabled"),
+                      "MacSettingsView Headset tab must bind a toggle to blueParrottEnabled")
+    }
+
+    private func macSettingsViewSource() throws -> String {
+        let sourceFile = URL(fileURLWithPath: #file)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("VoiceCode")
+            .appendingPathComponent("Views")
+            .appendingPathComponent("MacSettingsView.swift")
+        return try String(contentsOf: sourceFile, encoding: .utf8)
     }
 
     func testHeadsetManagerStateDescriptions() {

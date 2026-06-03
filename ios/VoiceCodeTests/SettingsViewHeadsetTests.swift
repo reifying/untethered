@@ -67,13 +67,6 @@ final class SettingsViewHeadsetTests: XCTestCase {
 
     // MARK: - SettingsView Source Structure Tests
 
-    func testSettingsViewSourceHasNoPTTToggle() throws {
-        // BluetoothAudioMonitor is macOS-only; headsetPTTEnabled must not appear in SettingsView.
-        let content = try settingsViewSource()
-        XCTAssertFalse(content.contains("headsetPTTEnabled"),
-                       "SettingsView must not reference headsetPTTEnabled — PTT is macOS-only")
-    }
-
     func testSettingsViewSourceHasHeadsetSection() throws {
         let content = try settingsViewSource()
         XCTAssertTrue(content.contains("Section(header: Text(\"Headset\"))"),

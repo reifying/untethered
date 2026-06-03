@@ -126,14 +126,6 @@ class AppSettings: ObservableObject {
         }
     }
 
-    /// When true (and headsetModeEnabled), monitors CoreAudio Bluetooth input device mute
-    /// property to detect BlueParrott PTT button presses.
-    @Published var headsetPTTEnabled: Bool {
-        didSet {
-            UserDefaults.standard.set(headsetPTTEnabled, forKey: "headsetPTTEnabled")
-        }
-    }
-
     /// When true, recording stop automatically sends transcription without user confirmation.
     /// Only applies to headset-initiated recordings. Defaults to true — headset mode without
     /// auto-send is unusable.
@@ -345,7 +337,6 @@ class AppSettings: ObservableObject {
         self.recentDirectories = UserDefaults.standard.stringArray(forKey: "recentDirectories") ?? []
         #endif
         self.headsetModeEnabled = UserDefaults.standard.bool(forKey: "headsetModeEnabled")
-        self.headsetPTTEnabled = UserDefaults.standard.bool(forKey: "headsetPTTEnabled")
         self.headsetAutoSend = UserDefaults.standard.object(forKey: "headsetAutoSend") as? Bool ?? true
         self.blueParrottEnabled = UserDefaults.standard.bool(forKey: "blueParrottEnabled")
 

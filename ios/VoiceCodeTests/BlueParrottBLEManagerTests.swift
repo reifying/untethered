@@ -5,8 +5,8 @@
 // BlueParrottButtonManagerTests retry suite.
 //
 // Included in VoiceCodeMacTests only; excluded from the iOS VoiceCodeTests
-// target via project.yml (mirrors BluetoothAudioMonitorTests). The
-// #if os(macOS) guard is a secondary safeguard.
+// target via project.yml (macOS-only sources are listed under that target's
+// `excludes`). The #if os(macOS) guard is a secondary safeguard.
 
 import XCTest
 import CoreBluetooth
