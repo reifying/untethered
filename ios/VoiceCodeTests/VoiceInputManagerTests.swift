@@ -318,4 +318,84 @@ final class VoiceInputManagerTests: XCTestCase {
         wait(for: [resumed], timeout: 2.0)
         voiceOutput.stop()
     }
+
+    // MARK: - Capture-readiness hooks (F3: live buffer signal + restart)
+
+    /// `capturedBufferCount` is the live zero-buffer signal the session executor's
+    /// captureGrace timer reads. It is 0 with no active capture and reflects the
+    /// monitor's running count otherwise (silent buffers included — a live route).
+    func testCapturedBufferCount_zeroWithoutMonitor_reflectsMonitorOtherwise() {
+        XCTAssertEqual(manager.capturedBufferCount, 0, "no active capture → zero buffers")
+
+        let monitor = AudioCaptureMonitor(startTime: 0)
+        manager.captureMonitor = monitor
+        XCTAssertEqual(manager.capturedBufferCount, 0, "monitor present but no buffers yet")
+
+        monitor.record(peak: 0.0, frames: 1024, at: 0.05)   // silent, but route is live
+        monitor.record(peak: 0.3, frames: 1024, at: 0.1)
+        XCTAssertEqual(manager.capturedBufferCount, 2,
+                       "exposes the live count the captureGrace timer checks for zero")
+    }
+
+    /// The live first-audio signal forwards to `onCaptureProducedAudio` on the main
+    /// queue (the monitor fires it from the realtime audio thread; the session executor
+    /// runs on main). Feeds the reducer's `captureProducedAudio` event.
+    func testHandleCaptureProducedAudio_forwardsToCallbackOnMainQueue() {
+        let forwarded = XCTestExpectation(description: "captureProducedAudio forwarded")
+        manager.onCaptureProducedAudio = { forwarded.fulfill() }
+
+        manager.handleCaptureProducedAudio()
+
+        wait(for: [forwarded], timeout: 1.0)
+    }
+
+    func testHandleCaptureProducedAudio_noCallbackSet_isNoOp() {
+        XCTAssertNil(manager.onCaptureProducedAudio)
+        manager.handleCaptureProducedAudio()   // must not crash with no observer wired
+    }
+
+    /// `restartCapture` is the F3 recovery entry point. Its contract: never change
+    /// session state (`isRecording`), and be a safe no-op when no capture is active —
+    /// the executor may call it after a stall even if capture has since stopped.
+    func testRestartCapture_noOpWhenNotCapturing_preservesSessionState() {
+        XCTAssertFalse(manager.isRecording)
+        XCTAssertNil(manager.captureMonitor)
+        manager.restartCapture()   // no active capture → no-op, no crash
+        XCTAssertFalse(manager.isRecording, "restartCapture must not change session state")
+        XCTAssertNil(manager.captureMonitor, "restartCapture must not resurrect capture when inactive")
+    }
+
+    /// The after-stop case: `stopRecording()` clears `captureMonitor` (the
+    /// "capture active" signal) but deliberately leaves `recognitionRequest` in place.
+    /// `restartCapture` must key its no-op on the monitor, NOT the request — otherwise a
+    /// stall effect arriving just after a stop would rebuild a live engine feeding an
+    /// already-ended request while not recording.
+    func testRestartCapture_noOpAfterStop_keyedOnMonitorNotRequest() {
+        let monitor = AudioCaptureMonitor(startTime: 0)
+        monitor.record(peak: 0.4, frames: 1024, at: 0.1)
+        manager.captureMonitor = monitor
+
+        manager.stopRecording()
+        XCTAssertNil(manager.captureMonitor, "precondition: stop cleared the capture-active signal")
+
+        manager.restartCapture()   // monitor is nil → must stay a no-op
+        XCTAssertNil(manager.captureMonitor, "restartCapture after stop must not resurrect capture")
+        XCTAssertFalse(manager.isRecording)
+    }
+
+    /// The capture summary observability (`firstAudio=…`) survives the refactor: stop
+    /// logs from the monitor and clears it, so a second stop logs no duplicate — the
+    /// idempotent stopCapture semantics the executor relies on.
+    func testStopRecording_clearsCaptureMonitor_idempotent() {
+        let monitor = AudioCaptureMonitor(startTime: 0)
+        monitor.record(peak: 0.4, frames: 1024, at: 0.1)
+        manager.captureMonitor = monitor
+        XCTAssertNotNil(manager.captureMonitor)
+
+        manager.stopRecording()
+        XCTAssertNil(manager.captureMonitor, "stop snapshots then clears the monitor")
+
+        manager.stopRecording()   // second stop is a safe no-op (no monitor, no crash)
+        XCTAssertNil(manager.captureMonitor)
+    }
 }
