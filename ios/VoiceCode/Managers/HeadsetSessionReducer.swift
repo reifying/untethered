@@ -1,0 +1,160 @@
+// HeadsetSessionReducer.swift
+// Pure interaction state machine for the hands-free loop: record → finalize →
+// await response → speak → idle. Replaces the implicit `HeadsetState` guards
+// scattered across `HeadsetRemoteCommandManager` and the retired
+// `BlueParrottPTTArbitrator`. The whole transition table lives here in one
+// greppable, exhaustively unit-testable `reduce`; an executor (in
+// `HeadsetRemoteCommandManager`) applies the returned effects to the real
+// `VoiceInput`/`VoiceOutput`/`VoiceCodeClient` plumbing and feeds resulting
+// events back in.
+//
+// Platform-agnostic and I/O-free (only `Foundation`), so it compiles into BOTH
+// the iOS and macOS targets and its tests run under `make test` and
+// `make test-mac-unit`. See
+// @docs/design/macos-headset-loop-state-machine.md §Interaction (session) machine.
+//
+// Key invariant — NO STRANDING: every non-idle state has a fallback / timeout /
+// interrupt edge back to `idle`:
+//   • F4: `awaitingResponse —awaitTimedOut/backendUnavailable→ idle` (the old
+//     `.sending` "Processing" could sit forever; here it can't), WITHOUT
+//     cancelling the in-flight prompt — a late response still speaks via
+//     `idle —ttsStarted→ speaking`.
+//   • F5/barge-in: a tap/double dismisses `speaking`/`awaitingResponse`; a hold
+//     interrupts and starts a fresh recording turn in one gesture.
+//   • F3: a first capture that produces zero audio within the grace window
+//     restarts once.
+//   • Goal #2: capture ending with no `up` (recognizer silence / engine failure
+//     / forced on BLE disconnect) finalizes instead of stranding `.recording`.
+
+import Foundation
+
+/// Drives recording / sending / speaking. Replaces the implicit `HeadsetState`.
+/// `awaitingResponse` is the old `.sending` ("Processing") with explicit exits.
+enum SessionState: Equatable {
+    case idle                  // was .ready
+    case recording
+    case finalizing            // reading the final transcription (one run-loop hop)
+    case awaitingResponse      // prompt sent; waiting for spoken response
+    case speaking              // TTS playing the response
+}
+
+/// Semantic, de-bracketed gestures (see `BlueParrottGestureRecognizer`) + system events.
+enum SessionEvent: Equatable {
+    case holdStarted           // button held past holdThreshold
+    case holdEnded             // release after a hold
+    case tap                   // quick press-release
+    case doubleTap             // (no `longPress` — a hold is PTT; the raw `04` code is dropped)
+    case captureProducedAudio  // first non-silent buffer arrived (F3 readiness)
+    case captureStalled        // grace elapsed with zero buffers (F3)
+    case captureEnded          // capture stopped with NO `up` gesture: recognizer silence
+                               // auto-finalize, engine failure, or forced on BLE disconnect.
+                               // Safety net so `.recording` can't strand (preserves the
+                               // existing voiceInput.$isRecording→false transition).
+    case transcription(String?)// nil/empty ⇒ nothing recognized
+    case ttsStarted            // voiceOutput.isSpeaking → true
+    case ttsEnded              // voiceOutput.isSpeaking → false
+    case awaitTimedOut         // awaitingResponse fallback fired (F4)
+    case backendUnavailable    // client disconnected mid-await
+}
+
+enum SessionEffect: Equatable {
+    case startCapture
+    case restartCapture        // F3 recovery
+    case stopCapture
+    case sendPrompt(String)
+    case interruptTTS
+    case suspendKeepAlive      // BLE path only (F2)
+    case resumeKeepAlive
+    case armTimer(SessionTimer)
+    case cancelTimer(SessionTimer)
+    case updateNowPlaying
+    case log(String)
+}
+
+enum SessionTimer: Equatable { case captureGrace, awaitResponse }
+
+/// What is driving the button events. Gates BLE-only effects (e.g. keep-alive
+/// suspension) and distinguishes the gesture-bearing transports (BLE / iOS SDK)
+/// from the media-key path, which has no hold semantics.
+enum ButtonSource: Equatable { case blueParrottBLE, mediaKey, iosSDK }
+
+/// The pure interaction reducer: `(state, event, source) → (state, [effect])`,
+/// no I/O. Irrelevant `(state, event)` pairs fall through to the `default` and
+/// are a no-op (state unchanged, no effects) — e.g. a duplicate `captureEnded`
+/// after the machine already left `.recording` (see Risk 10).
+enum SessionReducer {
+    static func reduce(_ s: SessionState, _ e: SessionEvent,
+                       source: ButtonSource) -> (SessionState, [SessionEffect]) {
+        switch (s, e) {
+        // Start recording: hold (PTT) or tap (toggle) both begin from idle.
+        case (.idle, .holdStarted), (.idle, .tap):
+            return beginRecording(source: source, interrupting: [])
+
+        // Barge-in (F4/F5): a HOLD from a busy state means "talk now" — interrupt and
+        // start a fresh recording turn (the primary PTT gesture must work here too).
+        case (.speaking, .holdStarted):
+            return beginRecording(source: source, interrupting: [.interruptTTS])
+        case (.awaitingResponse, .holdStarted):
+            return beginRecording(source: source, interrupting: [.cancelTimer(.awaitResponse)])
+
+        // F3: first capture produced no audio within the grace window → restart and
+        // re-arm. The reducer is stateless about retry count, so it emits `restartCapture`
+        // on EVERY stall; the one-shot guarantee (Risk 7 — a second stall must finalize to
+        // idle, not loop) is the executor's responsibility (it stops re-feeding
+        // `captureStalled` after one retry). Keep that guard downstream when wiring task .7.
+        case (.recording, .captureStalled):
+            return (.recording, [.restartCapture, .armTimer(.captureGrace),
+                                 .log("capture stalled (0 buffers) — restarting")])
+        case (.recording, .captureProducedAudio):
+            return (.recording, [.cancelTimer(.captureGrace)])
+
+        // Stop: hold release (PTT), a second tap (toggle), or capture ending on its own
+        // (recognizer silence auto-finalize / engine failure / forced on disconnect —
+        // the safety net that keeps `.recording` from stranding) → finalize.
+        case (.recording, .holdEnded), (.recording, .tap), (.recording, .captureEnded):
+            return (.finalizing, [.stopCapture, .resumeKeepAlive, .cancelTimer(.captureGrace)])
+
+        case (.finalizing, .transcription(let text)):
+            if let text, !text.trimmed.isEmpty {
+                return (.awaitingResponse,
+                        [.sendPrompt(text), .armTimer(.awaitResponse), .updateNowPlaying])
+            }
+            return (.idle, [.updateNowPlaying])                    // empty → straight back to idle
+
+        // F4: no spoken response in time (or backend dropped) → idle WITHOUT cancelling
+        // the prompt (a late response still speaks via `idle —ttsStarted→ speaking`).
+        case (.awaitingResponse, .awaitTimedOut), (.awaitingResponse, .backendUnavailable):
+            return (.idle, [.cancelTimer(.awaitResponse), .updateNowPlaying,
+                            .log("await ended — re-enabling button (prompt still in flight)")])
+        case (.awaitingResponse, .ttsStarted):
+            return (.speaking, [.cancelTimer(.awaitResponse), .updateNowPlaying])
+
+        // Dismiss a busy state with a tap or double-tap (no new recording).
+        case (.awaitingResponse, .tap), (.awaitingResponse, .doubleTap):
+            return (.idle, [.cancelTimer(.awaitResponse), .updateNowPlaying])
+        case (.speaking, .tap), (.speaking, .doubleTap):
+            return (.idle, [.interruptTTS, .updateNowPlaying])
+
+        // A late response after a timeout still speaks (idle → speaking).
+        case (.idle, .ttsStarted):
+            return (.speaking, [.updateNowPlaying])
+        case (.speaking, .ttsEnded):
+            return (.idle, [.updateNowPlaying])
+
+        default:
+            return (s, [])   // ignore irrelevant events in the current state
+        }
+    }
+
+    /// Shared "start a recording turn" effects, optionally preceded by interrupt/cleanup
+    /// effects when barging in from a busy state. Keep-alive suspend is BLE-only (F2).
+    private static func beginRecording(source: ButtonSource,
+                                       interrupting: [SessionEffect]) -> (SessionState, [SessionEffect]) {
+        var fx = interrupting
+        if source == .blueParrottBLE { fx.append(.suspendKeepAlive) }
+        fx.append(contentsOf: [.startCapture, .armTimer(.captureGrace), .updateNowPlaying])
+        return (.recording, fx)
+    }
+}
+
+private extension String { var trimmed: String { trimmingCharacters(in: .whitespacesAndNewlines) } }
