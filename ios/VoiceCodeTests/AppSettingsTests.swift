@@ -870,4 +870,59 @@ final class AppSettingsTests: XCTestCase {
         settings.headsetModeEnabled = false
         XCTAssertFalse(settings.headsetModeEnabled)
     }
+
+    // MARK: - BlueParrott Peripheral ID Tests
+
+    func testDefaultBlueParrottPeripheralIDIsNil() {
+        // Absent key → nil
+        XCTAssertNil(settings.blueParrottPeripheralID)
+        XCTAssertNil(UserDefaults.standard.string(forKey: "blueParrottPeripheralID"))
+    }
+
+    func testBlueParrottPeripheralIDSetRoundTrips() {
+        let id = UUID()
+        settings.setBlueParrottPeripheralID(id)
+
+        // In-memory value matches
+        XCTAssertEqual(settings.blueParrottPeripheralID, id)
+        // Persisted as the UUID string
+        XCTAssertEqual(UserDefaults.standard.string(forKey: "blueParrottPeripheralID"), id.uuidString)
+
+        // A fresh instance reads the same UUID back
+        let reloaded = AppSettings()
+        XCTAssertEqual(reloaded.blueParrottPeripheralID, id)
+    }
+
+    func testBlueParrottPeripheralIDClearReturnsNil() {
+        settings.setBlueParrottPeripheralID(UUID())
+        XCTAssertNotNil(settings.blueParrottPeripheralID)
+
+        settings.clearBlueParrottPeripheralID()
+        XCTAssertNil(settings.blueParrottPeripheralID)
+        // Key removed from UserDefaults
+        XCTAssertNil(UserDefaults.standard.string(forKey: "blueParrottPeripheralID"))
+
+        // A fresh instance also reads nil
+        let reloaded = AppSettings()
+        XCTAssertNil(reloaded.blueParrottPeripheralID)
+    }
+
+    func testBlueParrottPeripheralIDInvalidStringParsesToNil() {
+        // A non-UUID string left in UserDefaults should read back as nil
+        UserDefaults.standard.set("not-a-uuid", forKey: "blueParrottPeripheralID")
+        UserDefaults.standard.synchronize()
+
+        let fresh = AppSettings()
+        XCTAssertNil(fresh.blueParrottPeripheralID)
+    }
+
+    func testBlueParrottPeripheralIDAssignmentPersists() {
+        // Direct @Published assignment (not just the helper) also persists
+        let id = UUID()
+        settings.blueParrottPeripheralID = id
+        XCTAssertEqual(UserDefaults.standard.string(forKey: "blueParrottPeripheralID"), id.uuidString)
+
+        settings.blueParrottPeripheralID = nil
+        XCTAssertNil(UserDefaults.standard.string(forKey: "blueParrottPeripheralID"))
+    }
 }

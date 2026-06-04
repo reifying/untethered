@@ -144,6 +144,33 @@ class AppSettings: ObservableObject {
         }
     }
 
+    /// BlueParrott BLE peripheral identifier, persisted across launches so the conn
+    /// executor can `retrievePeripherals(withIdentifiers:)` + `connect()` instead of
+    /// waiting ~50s for an advertisement. Stored as a UUID string; reads validate-parse
+    /// (nil when the key is absent or the stored string isn't a valid UUID).
+    @Published var blueParrottPeripheralID: UUID? {
+        didSet {
+            if let id = blueParrottPeripheralID {
+                UserDefaults.standard.set(id.uuidString, forKey: "blueParrottPeripheralID")
+            } else {
+                UserDefaults.standard.removeObject(forKey: "blueParrottPeripheralID")
+            }
+        }
+    }
+
+    /// Persist the BlueParrott peripheral identifier (the executor's `.persistIdentifier`
+    /// effect, fired when the button service is subscribed).
+    func setBlueParrottPeripheralID(_ id: UUID) {
+        blueParrottPeripheralID = id
+    }
+
+    /// Clear the saved BlueParrott peripheral identifier. Stale-id hygiene: called when
+    /// `retrievePeripherals(withIdentifiers:)` returns empty or the connect watchdog
+    /// fires, so a re-paired/reset headset self-heals back to the scan path.
+    func clearBlueParrottPeripheralID() {
+        blueParrottPeripheralID = nil
+    }
+
     var fullServerURL: String {
         let cleanURL = serverURL.trimmingCharacters(in: .whitespaces)
         let cleanPort = serverPort.trimmingCharacters(in: .whitespaces)
@@ -339,6 +366,9 @@ class AppSettings: ObservableObject {
         self.headsetModeEnabled = UserDefaults.standard.bool(forKey: "headsetModeEnabled")
         self.headsetAutoSend = UserDefaults.standard.object(forKey: "headsetAutoSend") as? Bool ?? true
         self.blueParrottEnabled = UserDefaults.standard.bool(forKey: "blueParrottEnabled")
+        // Validate-parse the stored UUID string; nil when absent or unparseable.
+        self.blueParrottPeripheralID = UserDefaults.standard.string(forKey: "blueParrottPeripheralID")
+            .flatMap { UUID(uuidString: $0) }
 
         // Set up debounced publishers for text fields (serverURL and serverPort)
         // dropFirst() skips the initial value to avoid writing on init
