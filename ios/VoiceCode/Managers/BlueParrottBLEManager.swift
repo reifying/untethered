@@ -1,28 +1,31 @@
 // BlueParrottBLEManager.swift
-// macOS CoreBluetooth client for the BlueParrott multifunction button (Phase B).
+// macOS CoreBluetooth client for the BlueParrott multifunction button.
 //
-// The core/lifecycle foundation (b4i.9) provides:
-//   • the CoreBluetooth seam (`BLECentral` / `BLECentralEvents`) so the lifecycle
-//     is unit-testable without real hardware,
-//   • a real `CBCentralManager`-backed adapter that delivers callbacks on the
-//     main queue and wires `centralDelegate = self`,
-//   • scan-for-service → connect → discover-services,
-//   • the connect / retry / re-arm state machine, mirroring the iOS
-//     `BlueParrottButtonManager` (fast retries → infinite low-frequency retry),
-//   • `CBManagerState` handling (poweredOff / resetting / unauthorized / unsupported).
+// The connection lifecycle is now an explicit, pure state machine (`ConnReducer`,
+// @docs/design/macos-headset-loop-state-machine.md §Connection machine). This
+// manager is the **effect executor**: every BLE callback is fed back into the
+// reducer as a `BLEConnEvent`, and the returned `[BLEConnEffect]` are applied to
+// the CoreBluetooth seam (`BLECentral`) and the watchdog/scan-tick timers (via the
+// injected `scheduleWork`). The implicit retry/slow-retry guards this file used to
+// carry are gone — the reducer owns "what state are we in and what may happen next."
 //
-// THIS TASK (b4i.10) wires the button events on top of that foundation:
-//   • on connect: subscribe to the button-event characteristic `66339E60-…`,
-//   • write the App-Mode enable payload ONLY if App Mode is not persistent
-//     (the hardware experiment in b4i.3 found it PERSISTENT, so the normal path
-//     skips the write; the conditional remains as a never-enabled fallback),
-//   • parse incoming notifications via `BlueParrottEventParser` (b4i.4) and
-//     dispatch each gesture to `BlueParrottButtonDelegate` on the main queue,
-//     logging (never guessing) any unrecognized payload.
+// What the reducer-driven wiring buys (the failure modes it removes):
+//   • identifier reconnect — a saved peripheral id is resolved + connected to
+//     before falling back to scanning (no ~50s wait for an advertisement, F1),
+//   • watchdogs — a `known`/`advertised` connect that never completes, and a
+//     connect that never subscribes, fall back to scanning instead of hanging,
+//   • stale-id hygiene — an unreachable/forgotten saved id is cleared so a
+//     re-paired/reset headset self-heals,
+//   • continuous scan — one scan runs; the scan-tick re-checks but never tears it
+//     down (findings F1).
 //
-// See @docs/design/macos-blueparrott-corebluetooth.md §3 (Phase B + API Design +
-// error-path). macOS-only; requires the `com.apple.security.device.bluetooth`
-// entitlement (b4i.2).
+// Button events (the GATT notification stream) are parsed by `BlueParrottEventParser`
+// and (a) dispatched 1:1 to the shared `BlueParrottButtonDelegate` (the existing
+// macOS path, retained for the transition) and (b) emitted as de-bracketed
+// `RawButtonSignal`s via `rawSignalSink` for the `BlueParrottGestureRecognizer` the
+// session executor wires next (task 3x1.7).
+//
+// macOS-only; requires the `com.apple.security.device.bluetooth` entitlement.
 
 #if os(macOS)
 import Foundation
@@ -63,20 +66,42 @@ enum BPGatt {
 // MARK: - CoreBluetooth seam (test double point)
 
 /// The slice of CoreBluetooth the manager drives. Abstracted so the
-/// connect / retry / re-arm machine is unit-testable without a real
-/// `CBCentralManager` (CoreBluetooth is unavailable in test runs). Mirrors iOS's
-/// `BlueParrottHeadsetControlling`.
+/// reducer-driven connection executor is unit-testable without a real
+/// `CBCentralManager` (CoreBluetooth is unavailable in test runs). The
+/// identifier-reconnect / watchdog effects added the `resolveKnownPeripheral`,
+/// `connectAdvertised`, `connectKnown`, and `reconnectHeld` methods plus the
+/// `connectedPeripheralIdentifier` read (for `persistIdentifier`).
 protocol BLECentral: AnyObject {
     var managerState: CBManagerState { get }
     var centralDelegate: BLECentralEvents? { get set }
-    /// Begin locating the headset: prefer an already-connected (HFP-bonded)
-    /// peripheral, else scan for the advertised control service.
+    /// Identifier of the currently retained `CBPeripheral` (the resolved/known/
+    /// advertised/held peripheral), or nil when none is retained. The
+    /// `.persistIdentifier` effect reads this — the pure reducer never sees the
+    /// peripheral.
+    var connectedPeripheralIdentifier: UUID? { get }
+    /// Start ONE continuous scan for the advertised control service. Idempotent —
+    /// a no-op while a scan is already running (findings F1: never tear down /
+    /// restart between scan-ticks).
     func scanForButtonService()
     func stopScan()
+    /// `retrievePeripherals(withIdentifiers:)` for a saved id, firing
+    /// `bleKnownPeripheralResolved` (found → retained) or `bleNoKnownPeripheral`
+    /// (empty → stale/forgotten id).
+    func resolveKnownPeripheral(_ id: UUID)
+    /// `connect()` to the just-discovered (retained) peripheral. Watchdogged by
+    /// the reducer's `connectWatchdog`.
+    func connectAdvertised()
+    /// `connect()` to the resolved known (retained) peripheral. Watchdogged.
+    func connectKnown()
+    /// `connect()` to the RETAINED `CBPeripheral` after a disconnect — no
+    /// retrieve, no watchdog (an indefinite pending connect is correct here; it
+    /// completes the instant the headset returns).
+    func reconnectHeld()
     func cancelConnection()
-    /// Subscribe to the button-event characteristic (`BPGatt.buttonEvent`). The
-    /// real adapter defers the actual `setNotifyValue` until characteristic
-    /// discovery completes; this records the intent.
+    /// Discover the control service's characteristics and subscribe to the
+    /// button-event characteristic (`BPGatt.buttonEvent`). The real adapter
+    /// defers the `setNotifyValue` until characteristic discovery completes and
+    /// fires `bleDidSubscribe` when `isNotifying` flips true.
     func subscribeToButtonEvents()
     /// Enable App Mode by writing `payload` (and the owner name) to the mode
     /// characteristic. Only called when App Mode is NOT persistent (fallback for
@@ -84,150 +109,279 @@ protocol BLECentral: AnyObject {
     func writeAppModeEnable(_ payload: Data)
 }
 
-/// Callbacks the manager reacts to.
+/// Callbacks the manager reacts to. Each maps to exactly one `BLEConnEvent` fed
+/// back into the reducer (button values are the exception — they drive the gesture
+/// path, not the connection machine).
 protocol BLECentralEvents: AnyObject {
     func bleDidUpdateState(_ state: CBManagerState)
+    /// A peripheral advertising the control service was discovered (didDiscover) →
+    /// `BLEConnEvent.advertisementDiscovered`.
+    func bleDidDiscoverAdvertisement()
+    /// `retrievePeripherals(withIdentifiers:)` returned our saved id →
+    /// `BLEConnEvent.knownPeripheralResolved`.
+    func bleKnownPeripheralResolved()
+    /// `retrievePeripherals(withIdentifiers:)` returned empty (stale/forgotten id)
+    /// → `BLEConnEvent.knownPeripheralUnresolved`.
+    func bleNoKnownPeripheral()
     func bleDidConnect()
     func bleDidFailToConnect(_ retryable: Bool)
     func bleDidDisconnect()
+    /// `isNotifying == true` on the button-event characteristic →
+    /// `BLEConnEvent.subscribed` (discovering → live).
+    func bleDidSubscribe()
     /// A new value arrived on the button-event characteristic — raw notification
     /// bytes for `BlueParrottEventParser` to decode.
     func bleDidUpdateButtonValue(_ data: Data)
 }
 
-// MARK: - Manager
+// MARK: - Manager (ConnReducer effect executor)
 
 final class BlueParrottBLEManager: NSObject, ObservableObject {
     @Published private(set) var isConnected = false
     @Published private(set) var isSDKModeEnabled = false
     @Published private(set) var headsetName: String?
 
-    /// Button-event sink, shared with the iOS path. Wired by the event task
-    /// (b4i.10) once parse/dispatch lands; declared here as the hookup point.
+    /// Button-event sink (the existing 1:1 delegate path, shared with iOS). The
+    /// session executor (task 3x1.7) drives off `rawSignalSink` instead; both are
+    /// fed during the transition.
     weak var delegate: BlueParrottButtonDelegate?
 
-    /// Set from the Phase A persistence experiment (b4i.3): if the headset
-    /// retains App Mode across reconnects the client skips the enable write.
-    /// Optimistic default; b4i.10 consults it.
+    /// De-bracketed raw-signal sink for the `BlueParrottGestureRecognizer`. Set by
+    /// the session executor (task 3x1.7); nil leaves the gesture path inert. Called
+    /// on the main queue.
+    var rawSignalSink: ((RawButtonSignal) -> Void)?
+
+    /// Set from the Phase A persistence experiment (b4i.3): if the headset retains
+    /// App Mode across reconnects the client skips the enable write. Optimistic
+    /// default (the hardware was found PERSISTENT).
     var appModePersistent = true
 
     /// The one UUID the public SDK header exposes (`BPHeadsetNative.h:9`).
     static let serviceUUID = BPGatt.service
 
-    static let maxRetries = 5
-    static let initialDelay: TimeInterval = 1.0
-    static let retryDelay: TimeInterval = 2.0
-    static let slowRetryDelay: TimeInterval = 30.0
+    /// Watchdog / scan-tick durations (all tunable; grounded in the findings).
+    /// `connectWatchdog` picks advertised-vs-known from the in-flight connect mode.
+    static let scanTickInterval: TimeInterval = 8.0
+    static let connectWatchdogAdvertised: TimeInterval = 6.0
+    static let connectWatchdogKnown: TimeInterval = 10.0
+    static let discoveryWatchdogInterval: TimeInterval = 5.0
+
+    /// UserDefaults key for the persisted peripheral identifier — kept in lockstep
+    /// with `AppSettings.blueParrottPeripheralID` so both read/write one value.
+    static let peripheralIDDefaultsKey = "blueParrottPeripheralID"
 
     /// The CoreBluetooth seam this manager drives. The default builds a real
     /// `CBCentralManager`-backed adapter; tests inject a fake.
     private let central: BLECentral?
     private let scheduleWork: (TimeInterval, DispatchWorkItem) -> Void
+    /// Persisted-identifier helpers (default to the shared UserDefaults key so the
+    /// value matches `AppSettings`). Injected in tests to stay off real defaults.
+    private let savedIdentifier: () -> UUID?
+    private let persistIdentifier: (UUID) -> Void
+    private let clearSavedIdentifier: () -> Void
+
+    /// The pure connection state. Every callback reduces against this.
+    private var connState: BLEConnState = .stopped
     private var enabled = false
-    private var retryCount = 0
-    /// After the fast retries are exhausted the manager does NOT give up: it
-    /// drops into a low-frequency retry loop so a headset powered on later still
-    /// gets picked up without manual intervention (mirrors the iOS manager).
-    private var inSlowRetry = false
-    private var retryWorkItem: DispatchWorkItem?
+
+    /// Per-timer generation guard (mirrors the old `scanTimeoutGeneration`): arming
+    /// or cancelling a timer bumps its generation so a fired-but-superseded work
+    /// item no-ops. `timerWorkItems` retains the live item for cancellation.
+    private var timerGenerations: [BLETimer: Int] = [:]
+    private var timerWorkItems: [BLETimer: DispatchWorkItem] = [:]
+
+    /// Reentrancy queue for `handle()`. A seam method called while applying effects
+    /// (e.g. the real `resolveKnownPeripheral`, whose `retrievePeripherals` is
+    /// synchronous) feeds an event back mid-apply; queueing it keeps each
+    /// reduce→apply step atomic instead of interleaving two events' effects.
+    private var isHandling = false
+    private var pendingEvents: [BLEConnEvent] = []
 
     /// - Parameters:
     ///   - central: The CoreBluetooth seam. Defaults to a real adapter; inject a
-    ///     `BLECentral` fake in tests so the lifecycle runs without hardware.
-    ///   - scheduleWork: Schedules a delayed connect attempt. Defaults to
-    ///     `DispatchQueue.main.asyncAfter`; tests pass a synchronous recorder.
+    ///     `BLECentral` fake in tests so the executor runs without hardware.
+    ///   - scheduleWork: Schedules a delayed timer fire. Defaults to
+    ///     `DispatchQueue.main.asyncAfter`; tests pass a synchronous recorder. NOTE:
+    ///     the scan-tick re-arms itself, so a scheduler that fires immediately and
+    ///     synchronously would recurse — tests use a non-firing recorder.
+    ///   - savedIdentifier/persistIdentifier/clearSavedIdentifier: persisted-id
+    ///     helpers; default to the shared UserDefaults key.
     init(central: BLECentral? = nil,
          scheduleWork: @escaping (TimeInterval, DispatchWorkItem) -> Void = { delay, work in
              DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+         },
+         savedIdentifier: @escaping () -> UUID? = {
+             UserDefaults.standard.string(forKey: BlueParrottBLEManager.peripheralIDDefaultsKey)
+                 .flatMap { UUID(uuidString: $0) }
+         },
+         persistIdentifier: @escaping (UUID) -> Void = { id in
+             UserDefaults.standard.set(id.uuidString, forKey: BlueParrottBLEManager.peripheralIDDefaultsKey)
+         },
+         clearSavedIdentifier: @escaping () -> Void = {
+             UserDefaults.standard.removeObject(forKey: BlueParrottBLEManager.peripheralIDDefaultsKey)
          }) {
         self.central = central ?? CBCentralAdapter()
         self.scheduleWork = scheduleWork
+        self.savedIdentifier = savedIdentifier
+        self.persistIdentifier = persistIdentifier
+        self.clearSavedIdentifier = clearSavedIdentifier
         super.init()
         self.central?.centralDelegate = self
     }
 
-    /// Begin connecting. Idempotent. The scan actually starts once CoreBluetooth
-    /// reports `.poweredOn` (via `handleManagerState`); if it is already powered
-    /// on, kick off immediately.
+    // MARK: - Lifecycle
+
+    /// Begin connecting. Idempotent. Feeds `.start` once Bluetooth is powered on;
+    /// otherwise records the (non-powered) state and waits for `.poweredOn` via
+    /// `bleDidUpdateState` to recover.
     func start() {
         guard !enabled else { return }
         enabled = true
-        retryCount = 0
-        inSlowRetry = false
         bleLog("BlueParrottBLE: start")
-        if central?.managerState == .poweredOn {
-            scheduleConnect()
+        let state = central?.managerState ?? .unknown
+        if state == .poweredOn {
+            handle(.start)
+        } else {
+            handle(.managerState(state))   // → .unavailable; poweredOn recovers
         }
     }
 
-    /// Disconnect, cancel pending retries, and reset state. Safe before `start()`.
+    /// Disconnect, cancel pending timers, and reset state. Safe before `start()`.
     func stop() {
         guard enabled else { return }
+        handle(.stop)                      // → .stopped + tear-down effects
         enabled = false
-        retryWorkItem?.cancel()
-        retryWorkItem = nil
-        retryCount = 0
-        inSlowRetry = false
-        central?.stopScan()
-        central?.cancelConnection()
         isConnected = false
         isSDKModeEnabled = false
         headsetName = nil
         bleLog("BlueParrottBLE: stopped")
     }
 
-    /// Re-arm the fast retry cycle (e.g. a manual reconnect request).
-    func reconnect() {
-        guard enabled, !isConnected else { return }
-        retryCount = 0
-        inSlowRetry = false
-        bleLog("BlueParrottBLE: reconnect — re-arming fast retry")
-        scheduleConnect()
+    // MARK: - Reduce → apply
+
+    /// Feed one event into the reducer and apply the returned effects. Runs on the
+    /// main queue (BLE callbacks and `scheduleWork` are main-queue). Reentrant calls
+    /// (a seam method that synchronously feeds an event back while we are applying
+    /// effects) are queued and drained FIFO, so each event's reduce→apply step is
+    /// atomic — two events' effects never interleave.
+    private func handle(_ event: BLEConnEvent) {
+        pendingEvents.append(event)
+        guard !isHandling else { return }   // a reentrant call only enqueues
+        isHandling = true
+        defer { isHandling = false }
+        while !pendingEvents.isEmpty {
+            let next = pendingEvents.removeFirst()
+            let (newState, effects) = ConnReducer.reduce(connState, next, savedID: savedIdentifier())
+            connState = newState
+            updatePublished(for: newState)
+            for effect in effects { apply(effect) }
+        }
     }
 
-    // MARK: - Connect scheduling (mirrors iOS scheduleConnect)
+    /// Mirror the pure connection state onto the `@Published` UI state. App-Mode
+    /// (`isSDKModeEnabled`) is set by `applyAppMode()` on `discoverAndSubscribe`;
+    /// here it is cleared whenever we are not physically connected.
+    private func updatePublished(for state: BLEConnState) {
+        switch state {
+        case .discovering, .live:
+            isConnected = true               // physically connected
+        case .stopped:
+            isConnected = false
+            isSDKModeEnabled = false
+            headsetName = nil
+        default:
+            isConnected = false
+            isSDKModeEnabled = false
+        }
+    }
 
-    private func scheduleConnect() {
-        guard enabled, !isConnected else { return }
-        retryWorkItem?.cancel()
-        let delay: TimeInterval
-        if inSlowRetry {
-            delay = Self.slowRetryDelay
+    private func apply(_ effect: BLEConnEffect) {
+        switch effect {
+        case .startContinuousScan:    central?.scanForButtonService()
+        case .stopScan:               central?.stopScan()
+        case .resolveKnownPeripheral(let id): central?.resolveKnownPeripheral(id)
+        case .connectAdvertised:      central?.connectAdvertised()
+        case .connectKnown:           central?.connectKnown()
+        case .reconnectHeld:          central?.reconnectHeld()
+        case .cancelConnection:       central?.cancelConnection()
+        case .discoverAndSubscribe:
+            central?.subscribeToButtonEvents()
+            applyAppMode()
+        case .persistIdentifier:
+            if let id = central?.connectedPeripheralIdentifier {
+                persistIdentifier(id)
+                bleLog("BlueParrottBLE: persisted peripheral id \(id)")
+            } else {
+                bleLog("⚠️ BlueParrottBLE: persistIdentifier with no retained peripheral")
+            }
+        case .clearSavedIdentifier:
+            clearSavedIdentifier()
+            bleLog("BlueParrottBLE: cleared saved peripheral id")
+        case .armTimer(let timer):    armTimer(timer)
+        case .cancelTimer(let timer): cancelTimer(timer)
+        case .log(let message):       bleLog("BlueParrottBLE: \(message)")
+        }
+    }
+
+    /// App-Mode handling, applied on connect (`discoverAndSubscribe`). Persistent
+    /// mode already streams events (the b4i.3 experiment), so the client just marks
+    /// it enabled; a never-enabled headset gets the optimistic enable write (but is
+    /// NOT reported active until a confirmation path exists).
+    private func applyAppMode() {
+        if appModePersistent {
+            bleLog("BlueParrottBLE: App Mode persistent — no enable write")
+            isSDKModeEnabled = true
         } else {
-            delay = retryCount == 0 ? Self.initialDelay : Self.retryDelay
+            bleLog("BlueParrottBLE: App Mode not persistent — writing enable payload")
+            central?.writeAppModeEnable(BPGatt.appModeEnablePayload)
         }
-        let attempt = retryCount
-        bleLog("BlueParrottBLE: scheduling scan (attempt \(attempt + 1), delay \(delay)s, slowRetry=\(inSlowRetry))")
+    }
+
+    // MARK: - Timers (scanTick / connectWatchdog / discoveryWatchdog)
+
+    private func armTimer(_ timer: BLETimer) {
+        cancelTimer(timer)                 // replace any in-flight instance
+        let generation = (timerGenerations[timer] ?? 0) + 1
+        timerGenerations[timer] = generation
+        let delay = duration(for: timer)
+        let event = self.event(for: timer)
         let work = DispatchWorkItem { [weak self] in
-            guard let self = self, self.enabled, !self.isConnected else { return }
-            self.central?.scanForButtonService()
-            bleLog("BlueParrottBLE: scanning… (attempt \(attempt + 1), slowRetry=\(self.inSlowRetry))")
+            guard let self = self, self.enabled,
+                  self.timerGenerations[timer] == generation else { return }
+            self.timerWorkItems[timer] = nil
+            self.handle(event)
         }
-        retryWorkItem = work
+        timerWorkItems[timer] = work
         scheduleWork(delay, work)
     }
 
-    // MARK: - CBManagerState handling
+    private func cancelTimer(_ timer: BLETimer) {
+        // Bump the generation so a fired-but-not-yet-run work item no-ops, then
+        // cancel + drop the retained item.
+        timerGenerations[timer] = (timerGenerations[timer] ?? 0) + 1
+        timerWorkItems[timer]?.cancel()
+        timerWorkItems[timer] = nil
+    }
 
-    func handleManagerState(_ state: CBManagerState) {
-        switch state {
-        case .poweredOn:
-            bleLog("BlueParrottBLE: Bluetooth powered on")
-            if enabled { scheduleConnect() }
-        case .poweredOff:
-            isConnected = false
-            bleLog("BlueParrottBLE: not ready (poweredOff); awaiting power-on")
-        case .resetting:
-            isConnected = false
-            bleLog("BlueParrottBLE: resetting; awaiting power-on")
-        case .unauthorized:
-            bleLog("⚠️ BlueParrottBLE: unauthorized — check entitlement & permission")
-        case .unsupported:
-            bleLog("❌ BlueParrottBLE: unsupported on this Mac")
-        case .unknown:
-            bleLog("BlueParrottBLE: state unknown")
-        @unknown default:
-            bleLog("BlueParrottBLE: state @unknown (\(state.rawValue))")
+    /// Watchdog duration. `connectWatchdog` reads the *current* connect mode from
+    /// `connState` (set to the new state before effects are applied): an advertised
+    /// connect is imminent (short), a known connect is speculative (long).
+    private func duration(for timer: BLETimer) -> TimeInterval {
+        switch timer {
+        case .scanTick: return Self.scanTickInterval
+        case .connectWatchdog:
+            return connState == .connecting(.known)
+                ? Self.connectWatchdogKnown
+                : Self.connectWatchdogAdvertised
+        case .discoveryWatchdog: return Self.discoveryWatchdogInterval
+        }
+    }
+
+    private func event(for timer: BLETimer) -> BLEConnEvent {
+        switch timer {
+        case .scanTick:          return .scanTick
+        case .connectWatchdog:   return .connectWatchdog
+        case .discoveryWatchdog: return .discoveryWatchdog
         }
     }
 
@@ -236,97 +390,66 @@ final class BlueParrottBLEManager: NSObject, ObservableObject {
     }
 }
 
-// MARK: - BLECentralEvents
+// MARK: - BLECentralEvents (callbacks → reducer events)
 
 extension BlueParrottBLEManager: BLECentralEvents {
     // Callbacks arrive on the main queue (the adapter uses `queue: nil`), so
-    // mutating `@Published` state here is main-thread-safe.
+    // reducing + mutating `@Published` state here is main-thread-safe.
 
     func bleDidUpdateState(_ state: CBManagerState) {
-        handleManagerState(state)
+        guard enabled else { return }
+        handle(.managerState(state))
+    }
+
+    func bleDidDiscoverAdvertisement() {
+        guard enabled else { return }
+        handle(.advertisementDiscovered)
+    }
+
+    func bleKnownPeripheralResolved() {
+        guard enabled else { return }
+        handle(.knownPeripheralResolved)
+    }
+
+    func bleNoKnownPeripheral() {
+        guard enabled else { return }
+        handle(.knownPeripheralUnresolved)
     }
 
     func bleDidConnect() {
         guard enabled else { return }
-        isConnected = true
-        retryCount = 0
-        inSlowRetry = false
-        retryWorkItem?.cancel()
-        bleLog("BlueParrottBLE: connected — subscribing to button events")
-        central?.subscribeToButtonEvents()
-        if appModePersistent {
-            // Hardware experiment (b4i.3) found App Mode survives the phone→Mac
-            // handoff: the headset already streams events, so skip the write.
-            bleLog("BlueParrottBLE: App Mode persistent — no enable write")
-            // App Mode is genuinely already active on the hardware.
-            isSDKModeEnabled = true
-        } else {
-            // Fallback (never-enabled headset): request the enable, but do NOT
-            // claim it's active — the seam has no write-confirmation callback, so
-            // an optimistic flag could read "enabled" after a failed write. Leave
-            // isSDKModeEnabled until a confirmation path exists.
-            bleLog("BlueParrottBLE: App Mode not persistent — writing enable payload")
-            central?.writeAppModeEnable(BPGatt.appModeEnablePayload)
-        }
+        handle(.connected)
     }
 
     func bleDidFailToConnect(_ retryable: Bool) {
         guard enabled else { return }
-        guard retryable else {
-            bleLog("❌ BlueParrottBLE: connect failed (non-retryable)")
-            return
-        }
-        if !inSlowRetry && retryCount < Self.maxRetries {
-            retryCount += 1
-            bleLog("⚠️ BlueParrottBLE: connect failed, retrying (\(retryCount)/\(Self.maxRetries))")
-            scheduleConnect()
-        } else {
-            if !inSlowRetry {
-                inSlowRetry = true
-                bleLog("⚠️ BlueParrottBLE: fast retries exhausted; switching to low-frequency retry every \(Self.slowRetryDelay)s")
-            } else {
-                bleLog("BlueParrottBLE: low-frequency retry failed; will retry in \(Self.slowRetryDelay)s")
-            }
-            scheduleConnect()
-        }
+        handle(.connectFailed(retryable: retryable))
     }
 
     func bleDidDisconnect() {
-        isConnected = false
-        isSDKModeEnabled = false
-        headsetName = nil
-        bleLog("BlueParrottBLE: disconnected")
-        // Re-arm so an out-of-range headset reconnects automatically when it
-        // returns (design error table: reset to ready, re-arm retry).
-        if enabled {
-            retryCount = 0
-            inSlowRetry = false
-            scheduleConnect()
-        }
+        guard enabled else { return }
+        handle(.disconnected)
+    }
+
+    func bleDidSubscribe() {
+        guard enabled else { return }
+        handle(.subscribed)
     }
 
     func bleDidUpdateButtonValue(_ data: Data) {
         guard let event = BlueParrottEventParser.parse(data) else {
             // Unknown payload: log the raw bytes and drop it — never misclassify
-            // a gesture (design error table + criterion #3, firmware variation).
+            // a gesture (design error table + firmware variation).
             bleLog("BlueParrottBLE: unknown button payload \(bleHex(data))")
             return
         }
         dispatch(event)
+        emitRawSignal(for: event)
     }
 
-    /// Fan a decoded gesture out to the shared `BlueParrottButtonDelegate`. Hops
-    /// to the main queue so delegate work (recording UI / state machine) runs
+    /// Fan a decoded gesture out to the shared `BlueParrottButtonDelegate` (the
+    /// existing macOS path). Hops to the main queue so delegate work runs
     /// main-thread-safe regardless of which queue delivered the notification.
-    ///
-    /// ⚠️ Every event is forwarded 1:1, exactly as the iOS SDK path does. The raw
-    /// protocol BRACKETS each gesture with down/up — a tap streams `01,00,02`, a
-    /// hold streams `01,04,00` (see @docs/design/macos-blueparrott-corebluetooth.md
-    /// §3, note 1). The *consumer* must therefore drive behavior off EITHER down/up
-    /// (PTT) OR the gesture codes (tap/double/long), never both, or it double-drives
-    /// the state machine (a tap would record+send; a hold would interrupt mid-record).
-    /// That arbitration belongs to the rewire task (b4i.6, HeadsetRemoteCommandManager),
-    /// NOT this manager — it faithfully reports what the hardware sent.
     private func dispatch(_ event: BlueParrottButtonEvent) {
         DispatchQueue.main.async { [weak self] in
             guard let delegate = self?.delegate else { return }
@@ -339,16 +462,41 @@ extension BlueParrottBLEManager: BLECentralEvents {
             }
         }
     }
+
+    /// Emit the de-bracketed `RawButtonSignal` for the gesture recognizer (task
+    /// 3x1.7). Hops to main to match the delegate dispatch ordering.
+    private func emitRawSignal(for event: BlueParrottButtonEvent) {
+        guard let sink = rawSignalSink else { return }
+        let signal = Self.rawSignal(for: event)
+        DispatchQueue.main.async { sink(signal) }
+    }
+
+    /// Map a parsed button event to the recognizer's raw-signal vocabulary. The
+    /// hardware gesture codes (tap/double/long) become the trailing classification
+    /// codes; down/up pass through.
+    private static func rawSignal(for event: BlueParrottButtonEvent) -> RawButtonSignal {
+        switch event {
+        case .down:      return .down
+        case .up:        return .up
+        case .tap:       return .tapCode
+        case .doubleTap: return .doubleTapCode
+        case .longPress: return .longPressCode
+        }
+    }
 }
 
 // MARK: - Real CBCentralManager-backed adapter
 
 /// Adapter wrapping a real `CBCentralManager` so it satisfies `BLECentral`.
 /// Created on the main thread (the manager's init), with `queue: nil` so all
-/// CoreBluetooth delegate callbacks are delivered on the main queue.
+/// CoreBluetooth delegate callbacks are delivered on the main queue. It performs
+/// the CoreBluetooth I/O the reducer's effects describe and feeds the resulting
+/// CB delegate callbacks back as `BLECentralEvents`.
 private final class CBCentralAdapter: NSObject, BLECentral {
     weak var centralDelegate: BLECentralEvents?
     private var manager: CBCentralManager!
+    /// The retained peripheral the connect/reconnect effects act on — set by
+    /// discovery, identifier-resolve, and kept across a disconnect for `reconnectHeld`.
     private var peripheral: CBPeripheral?
 
     /// Characteristics resolved during discovery; nil until `didDiscoverCharacteristicsFor`.
@@ -361,6 +509,7 @@ private final class CBCentralAdapter: NSObject, BLECentral {
     private var pendingEnablePayload: Data?
 
     var managerState: CBManagerState { manager.state }
+    var connectedPeripheralIdentifier: UUID? { peripheral?.identifier }
 
     override init() {
         super.init()
@@ -369,25 +518,46 @@ private final class CBCentralAdapter: NSObject, BLECentral {
 
     func scanForButtonService() {
         guard manager.state == .poweredOn else { return }
-        // Prefer an already-connected peripheral: the headset is typically bonded
-        // for HFP audio and may not be advertising (design Risk #3).
-        let connected = manager.retrieveConnectedPeripherals(
-            withServices: [BlueParrottBLEManager.serviceUUID]
-        )
-        if let peripheral = connected.first {
-            bleLog("BlueParrottBLE: found connected peripheral \(peripheral.identifier) — connecting")
-            connect(to: peripheral)
-        } else {
-            bleLog("BlueParrottBLE: scanning for advertised service")
-            manager.scanForPeripherals(
-                withServices: [BlueParrottBLEManager.serviceUUID], options: nil
-            )
+        // Continuous scan: if one is already running, leave it — never tear down /
+        // restart between scan-ticks (findings F1). The `retrieveConnectedPeripherals`
+        // fast path was dropped: it is always empty for this headset (HFP ≠ BLE GATT),
+        // and the identifier-reconnect path now covers fast reconnect.
+        guard !manager.isScanning else {
+            bleLog("BlueParrottBLE: scan already running (continuous)")
+            return
         }
+        bleLog("BlueParrottBLE: scanning for advertised service (continuous)")
+        manager.scanForPeripherals(withServices: [BlueParrottBLEManager.serviceUUID], options: nil)
     }
 
     func stopScan() {
         if manager.isScanning { manager.stopScan() }
     }
+
+    func resolveKnownPeripheral(_ id: UUID) {
+        // `retrievePeripherals(withIdentifiers:)` is synchronous, so the resolved /
+        // unresolved event fires back into the manager *while it is still applying the
+        // effect list that drove this resolve*. That is safe: the manager's `handle()`
+        // serializes reentrant events through a queue (see its doc comment).
+        guard manager.state == .poweredOn else {
+            bleLog("BlueParrottBLE: cannot resolve saved id while not powered on")
+            centralDelegate?.bleNoKnownPeripheral()
+            return
+        }
+        let known = manager.retrievePeripherals(withIdentifiers: [id])
+        if let resolved = known.first {
+            bleLog("BlueParrottBLE: resolved saved peripheral \(resolved.identifier)")
+            retain(resolved)
+            centralDelegate?.bleKnownPeripheralResolved()
+        } else {
+            bleLog("BlueParrottBLE: saved peripheral \(id) not found by retrieve → empty")
+            centralDelegate?.bleNoKnownPeripheral()
+        }
+    }
+
+    func connectAdvertised() { connectRetained("advertised") }
+    func connectKnown()      { connectRetained("known") }
+    func reconnectHeld()     { connectRetained("held") }
 
     func cancelConnection() {
         if let peripheral = peripheral {
@@ -396,12 +566,14 @@ private final class CBCentralAdapter: NSObject, BLECentral {
     }
 
     func subscribeToButtonEvents() {
+        // Reducer-driven `discoverAndSubscribe`: kick off characteristic discovery
+        // and record the subscribe intent (applied in `didDiscoverCharacteristicsFor`).
         wantsSubscribe = true
-        // If discovery already finished, subscribe now; otherwise the intent is
-        // applied in `didDiscoverCharacteristicsFor`.
-        if let buttonChar = buttonChar {
-            peripheral?.setNotifyValue(true, for: buttonChar)
+        guard let peripheral = peripheral else {
+            bleLog("⚠️ BlueParrottBLE: subscribe requested but no retained peripheral")
+            return
         }
+        peripheral.discoverServices([BlueParrottBLEManager.serviceUUID])
     }
 
     func writeAppModeEnable(_ payload: Data) {
@@ -423,15 +595,27 @@ private final class CBCentralAdapter: NSObject, BLECentral {
         pendingEnablePayload = nil
     }
 
-    private func connect(to peripheral: CBPeripheral) {
+    /// Retain a peripheral and become its delegate, dropping any characteristics
+    /// from a previous session so pending intents re-resolve against its discovery.
+    private func retain(_ peripheral: CBPeripheral) {
         self.peripheral = peripheral
         peripheral.delegate = self
-        // Fresh connection: drop any characteristics from a previous session so
-        // pending intents re-resolve against this peripheral's discovery.
         buttonChar = nil
         modeChar = nil
         appNameChar = nil
-        manager.stopScan()
+    }
+
+    private func connectRetained(_ label: String) {
+        guard let peripheral = peripheral else {
+            bleLog("⚠️ BlueParrottBLE: \(label) connect requested but no retained peripheral")
+            return
+        }
+        // Fresh connection: drop stale characteristics so intents re-resolve.
+        buttonChar = nil
+        modeChar = nil
+        appNameChar = nil
+        if manager.isScanning { manager.stopScan() }
+        bleLog("BlueParrottBLE: connecting (\(label)) to \(peripheral.identifier)")
         manager.connect(peripheral, options: nil)
     }
 }
@@ -445,13 +629,14 @@ extension CBCentralAdapter: CBCentralManagerDelegate {
                         didDiscover peripheral: CBPeripheral,
                         advertisementData: [String: Any],
                         rssi RSSI: NSNumber) {
-        central.stopScan()
-        connect(to: peripheral)
+        // Retain + notify; the reducer decides whether/when to connect (under a
+        // connectWatchdog) — the adapter no longer auto-connects on discovery.
+        bleLog("BlueParrottBLE: discovered advertised peripheral \(peripheral.identifier)")
+        retain(peripheral)
+        centralDelegate?.bleDidDiscoverAdvertisement()
     }
 
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
-        // Discover services (b4i.9 stops here; characteristic discovery is b4i.10).
-        peripheral.discoverServices([BlueParrottBLEManager.serviceUUID])
         centralDelegate?.bleDidConnect()
     }
 
@@ -530,16 +715,23 @@ extension CBCentralAdapter: CBPeripheralDelegate {
             return
         }
         bleLog("BlueParrottBLE: isNotifying=\(characteristic.isNotifying) for \(characteristic.uuid)")
+        // A live subscription on the button characteristic completes the connect →
+        // the reducer goes `discovering → live`.
+        if characteristic.uuid == BPGatt.buttonEvent, characteristic.isNotifying {
+            centralDelegate?.bleDidSubscribe()
+        }
     }
 }
 
-// MARK: - Debug test hooks (mirror BlueParrottButtonManager)
+// MARK: - Debug test hooks
 
 #if DEBUG
 extension BlueParrottBLEManager {
-    var testRetryCount: Int { retryCount }
-    var testInSlowRetry: Bool { inSlowRetry }
-    var testHasPendingWork: Bool { retryWorkItem != nil }
+    var testConnState: BLEConnState { connState }
+    func testHasArmedTimer(_ timer: BLETimer) -> Bool { timerWorkItems[timer] != nil }
+    /// Fire an armed timer's work item synchronously (tests use a non-firing
+    /// `scheduleWork` recorder so timers don't auto-run, then drive them here).
+    func testFireTimer(_ timer: BLETimer) { timerWorkItems[timer]?.perform() }
 }
 #endif
 #endif

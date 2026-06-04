@@ -19,8 +19,13 @@ import CoreBluetooth
 private final class FakeBLECentralForHRCM: BLECentral {
     var managerState: CBManagerState = .poweredOn
     weak var centralDelegate: BLECentralEvents?
+    var connectedPeripheralIdentifier: UUID?
     func scanForButtonService() {}
     func stopScan() {}
+    func resolveKnownPeripheral(_ id: UUID) {}
+    func connectAdvertised() {}
+    func connectKnown() {}
+    func reconnectHeld() {}
     func cancelConnection() {}
     func subscribeToButtonEvents() {}
     func writeAppModeEnable(_ payload: Data) {}
@@ -449,7 +454,7 @@ final class HeadsetRemoteCommandManagerTests: XCTestCase {
         manager.activate()
 
         let central = FakeBLECentralForHRCM()
-        let ble = BlueParrottBLEManager(central: central, scheduleWork: { _, work in work.perform() })
+        let ble = BlueParrottBLEManager(central: central, scheduleWork: { _, _ in })
         let arbitrator = BlueParrottPTTArbitrator(downstream: manager)
         ble.delegate = arbitrator
         ble.start()
@@ -481,7 +486,7 @@ final class HeadsetRemoteCommandManagerTests: XCTestCase {
         manager.activate()
 
         let central = FakeBLECentralForHRCM()
-        let ble = BlueParrottBLEManager(central: central, scheduleWork: { _, work in work.perform() })
+        let ble = BlueParrottBLEManager(central: central, scheduleWork: { _, _ in })
         let arbitrator = BlueParrottPTTArbitrator(downstream: manager)
         ble.delegate = arbitrator
         ble.start()
@@ -529,7 +534,7 @@ final class HeadsetRemoteCommandManagerTests: XCTestCase {
         let manager = makeManagerWithDeps(mocks)
         let central = FakeBLECentralForHRCM()
         manager.makeBlueParrottBLEManager = {
-            BlueParrottBLEManager(central: central, scheduleWork: { _, work in work.perform() })
+            BlueParrottBLEManager(central: central, scheduleWork: { _, _ in })
         }
         // Flush the initial blueParrottEnabled=false delivery (stopBlueParrott no-op).
         drainMainQueue()
@@ -559,7 +564,7 @@ final class HeadsetRemoteCommandManagerTests: XCTestCase {
         let manager = makeManagerWithDeps(mocks)
         let central = FakeBLECentralForHRCM()
         manager.makeBlueParrottBLEManager = {
-            BlueParrottBLEManager(central: central, scheduleWork: { _, work in work.perform() })
+            BlueParrottBLEManager(central: central, scheduleWork: { _, _ in })
         }
         // Headset mode stays OFF — never call activate(); the BLE source drives alone.
         mocks.settings.blueParrottEnabled = true
