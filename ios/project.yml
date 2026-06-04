@@ -189,6 +189,7 @@ targets:
       - path: VoiceCodeTests
         excludes:
           - "BlueParrottBLEManagerTests.swift"
+          - "HeadsetRemoteCommandManagerMacTests.swift"
     resources:
       - VoiceCodeTests/Fixtures
     dependencies:

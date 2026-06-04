@@ -1,50 +1,25 @@
 // HeadsetRemoteCommandManagerTests.swift
-// Unit tests for HeadsetRemoteCommandManager state machine and auto-send logic.
+// Unit tests for HeadsetRemoteCommandManager's cross-platform lifecycle (activate /
+// deactivate / settings / reclaim) plus the iOS HeadsetState machine + auto-send.
 // Included in both VoiceCodeTests (iOS) and VoiceCodeMacTests targets.
-// PTT-specific tests are guarded by #if os(macOS) because PTT monitoring is macOS-only.
+// The iOS state-machine + message-shape tests are guarded by #if os(iOS) (they drive
+// the implicit HeadsetState via the media-key `simulate*` hooks, which are iOS-only).
+// The macOS SessionReducer-executor integration tests live in
+// HeadsetRemoteCommandManagerMacTests.swift (excluded from the iOS target).
 
 import XCTest
 @testable import VoiceCode
-#if os(macOS)
-import CoreBluetooth
-#endif
 
 // MARK: - Mock Dependencies
-
-#if os(macOS)
-/// Minimal `BLECentral` so a real `BlueParrottBLEManager` can be driven through
-/// the HeadsetRemoteCommandManager delegate path without standing up a real
-/// `CBCentralManager`. The manager wires `centralDelegate = self` in its init, so
-/// tests drive events via `central.centralDelegate?`.
-private final class FakeBLECentralForHRCM: BLECentral {
-    var managerState: CBManagerState = .poweredOn
-    weak var centralDelegate: BLECentralEvents?
-    var connectedPeripheralIdentifier: UUID?
-    func scanForButtonService() {}
-    func stopScan() {}
-    func resolveKnownPeripheral(_ id: UUID) {}
-    func connectAdvertised() {}
-    func connectKnown() {}
-    func reconnectHeld() {}
-    func cancelConnection() {}
-    func subscribeToButtonEvents() {}
-    func writeAppModeEnable(_ payload: Data) {}
-}
-
-/// Records `BlueParrottButtonDelegate` calls in order, for arbitrator unit tests.
-private final class ButtonDelegateSpy: BlueParrottButtonDelegate {
-    private(set) var calls: [String] = []
-    func blueParrottButtonDown() { calls.append("down") }
-    func blueParrottButtonUp() { calls.append("up") }
-    func blueParrottTap() { calls.append("tap") }
-    func blueParrottDoubleTap() { calls.append("doubleTap") }
-    func blueParrottLongPress() { calls.append("longPress") }
-}
-#endif
 
 class MockVoiceInputForHeadset: VoiceInputManager {
     var startRecordingCalled = false
     var stopRecordingCalled = false
+    /// F3 capture-readiness seams: count restart calls and stub the live buffer count
+    /// so the macOS session executor's capture-grace logic can be exercised without a
+    /// real audio route.
+    var restartCaptureCallCount = 0
+    var stubBufferCount = 0
 
     override func startRecording(onSessionReady: (() -> Void)? = nil) {
         startRecordingCalled = true
@@ -56,6 +31,12 @@ class MockVoiceInputForHeadset: VoiceInputManager {
         stopRecordingCalled = true
         DispatchQueue.main.async { self.isRecording = false }
     }
+
+    override func restartCapture() {
+        restartCaptureCallCount += 1
+    }
+
+    override var capturedBufferCount: Int { stubBufferCount }
 }
 
 class MockVoiceOutputForHeadset: VoiceOutputManager {
@@ -118,6 +99,12 @@ final class HeadsetRemoteCommandManagerTests: XCTestCase {
         UserDefaults.standard.removeObject(forKey: "blueParrottEnabled")
         super.tearDown()
     }
+
+    // The implicit-HeadsetState machine and the media-key `simulate*` hooks are
+    // iOS-only now; macOS drives the pure SessionReducer via a thin executor (see
+    // HeadsetRemoteCommandManagerMacTests). These state-machine + message-shape tests
+    // run only in the iOS target.
+    #if os(iOS)
 
     // MARK: - State Machine: Toggle Play/Pause
 
@@ -342,7 +329,9 @@ final class HeadsetRemoteCommandManagerTests: XCTestCase {
         wait(for: [expectation], timeout: 1.0)
     }
 
-    // MARK: - Activate / Deactivate
+    #endif  // iOS state-machine tests
+
+    // MARK: - Activate / Deactivate (cross-platform)
 
     func testActivate_setsIsActive() {
         let (manager, _) = makeManager()
@@ -360,7 +349,12 @@ final class HeadsetRemoteCommandManagerTests: XCTestCase {
         manager.deactivate()
 
         XCTAssertFalse(manager.isActive)
+        // Deactivate resets the interaction state to its idle value on both platforms.
+        #if os(iOS)
         XCTAssertEqual(manager.state, .ready)
+        #else
+        XCTAssertEqual(manager.state, .idle)
+        #endif
     }
 
     func testActivate_isIdempotent() {
@@ -380,6 +374,7 @@ final class HeadsetRemoteCommandManagerTests: XCTestCase {
         XCTAssertFalse(manager.isActive)
     }
 
+    #if os(iOS)
     func testDeactivate_duringRecording_stopsRecording() {
         let (manager, mocks) = makeManager()
         manager.activate()
@@ -392,6 +387,7 @@ final class HeadsetRemoteCommandManagerTests: XCTestCase {
         XCTAssertEqual(manager.state, .ready)
         XCTAssertTrue(mocks.voiceInput.stopRecordingCalled)
     }
+    #endif
 
     func testHeadsetModeEnabledSetting_activatesManager() {
         let mocks = HeadsetMockDependencies()
@@ -441,171 +437,9 @@ final class HeadsetRemoteCommandManagerTests: XCTestCase {
         manager.reclaimNowPlaying()
     }
 
-    // MARK: - BlueParrott BLE (macOS)
+    // MARK: - Message Shape (iOS)
 
-    #if os(macOS)
-    /// Integration (verification target): a BlueParrottBLEManager-sourced button
-    /// DOWN then UP drives the shared delegate mapping through record → stop+send
-    /// (acceptance #1, the PTT loop). Exercises the real macOS path
-    /// parser → dispatch → PTT arbitrator → BlueParrottButtonDelegate → HeadsetState
-    /// machine, wired exactly as `startBlueParrott()` does in production.
-    func testBlueParrottBLE_downThenUp_recordsThenStopsAndSends() {
-        let (manager, mocks) = makeManager()
-        manager.activate()
-
-        let central = FakeBLECentralForHRCM()
-        let ble = BlueParrottBLEManager(central: central, scheduleWork: { _, _ in })
-        let arbitrator = BlueParrottPTTArbitrator(downstream: manager)
-        ble.delegate = arbitrator
-        ble.start()
-        central.centralDelegate?.bleDidConnect()
-
-        // Button DOWN (opcode 0x01) → start recording.
-        central.centralDelegate?.bleDidUpdateButtonValue(Data([0x01]))
-        drainMainQueue() // BLE dispatch hops to main before invoking the delegate
-        XCTAssertEqual(manager.state, .recording)
-        XCTAssertTrue(mocks.voiceInput.startRecordingCalled)
-
-        mocks.voiceInput.transcribedText = "blue parrott ptt"
-
-        // Button UP (opcode 0x00) → stop + send.
-        central.centralDelegate?.bleDidUpdateButtonValue(Data([0x00]))
-        drainMainQueue() // (1) dispatch hop → blueParrottButtonUp → stopRecordingAndSend
-        drainMainQueue() // (2) stopRecordingAndSend's deferred transcription read + send
-
-        XCTAssertTrue(mocks.voiceInput.stopRecordingCalled)
-        XCTAssertEqual(manager.state, .sending)
-        XCTAssertEqual(mocks.client.lastSentMessage?["text"] as? String, "blue parrott ptt")
-    }
-
-    /// Regression for the down/up-vs-gesture double-drive: the raw stream brackets a
-    /// hold as `01,04,00`, so the in-bracket long-press must NOT interrupt the PTT
-    /// recording — the arbitrator drops it, leaving down→record / up→stop+send intact.
-    func testBlueParrottBLE_pttHold_inBracketLongPress_doesNotInterruptRecording() {
-        let (manager, mocks) = makeManager()
-        manager.activate()
-
-        let central = FakeBLECentralForHRCM()
-        let ble = BlueParrottBLEManager(central: central, scheduleWork: { _, _ in })
-        let arbitrator = BlueParrottPTTArbitrator(downstream: manager)
-        ble.delegate = arbitrator
-        ble.start()
-        central.centralDelegate?.bleDidConnect()
-
-        central.centralDelegate?.bleDidUpdateButtonValue(Data([0x01])) // down → record
-        drainMainQueue()
-        XCTAssertEqual(manager.state, .recording)
-
-        central.centralDelegate?.bleDidUpdateButtonValue(Data([0x04])) // in-bracket long-press → dropped
-        drainMainQueue()
-        XCTAssertEqual(manager.state, .recording, "in-bracket long-press must NOT interrupt the PTT recording")
-        XCTAssertFalse(mocks.voiceOutput.stopCalled, "long-press during a PTT hold must not fire performInterrupt")
-
-        mocks.voiceInput.transcribedText = "held utterance"
-        central.centralDelegate?.bleDidUpdateButtonValue(Data([0x00])) // up → stop + send
-        drainMainQueue()
-        drainMainQueue()
-
-        XCTAssertEqual(manager.state, .sending)
-        XCTAssertEqual(mocks.client.lastSentMessage?["text"] as? String, "held utterance")
-    }
-
-    /// Unit: the PTT arbitrator forwards down/up and drops the in-bracket gesture
-    /// codes (tap/double/long) so they never double-drive the state machine.
-    func testBlueParrottPTTArbitrator_forwardsDownUp_dropsInBracketGestureCodes() {
-        let spy = ButtonDelegateSpy()
-        let arbitrator = BlueParrottPTTArbitrator(downstream: spy)
-
-        arbitrator.blueParrottButtonDown()
-        arbitrator.blueParrottLongPress()
-        arbitrator.blueParrottTap()
-        arbitrator.blueParrottDoubleTap()
-        arbitrator.blueParrottButtonUp()
-
-        XCTAssertEqual(spy.calls, ["down", "up"],
-                       "PTT arbitrator must forward down/up and drop in-bracket gesture codes")
-    }
-
-    /// Enabling `blueParrottEnabled` stands up a BlueParrottBLEManager whose delegate
-    /// is the PTT arbitrator routing to this manager; disabling tears it down — the
-    /// macOS rewire's gating + delegate wiring, mirroring how iOS drives the SDK.
-    func testBlueParrottEnabledSetting_startsBLEManagerRoutingToSelf() {
-        let mocks = HeadsetMockDependencies()
-        let manager = makeManagerWithDeps(mocks)
-        let central = FakeBLECentralForHRCM()
-        manager.makeBlueParrottBLEManager = {
-            BlueParrottBLEManager(central: central, scheduleWork: { _, _ in })
-        }
-        // Flush the initial blueParrottEnabled=false delivery (stopBlueParrott no-op).
-        drainMainQueue()
-        XCTAssertNil(manager.blueParrottBLEManager)
-
-        mocks.settings.blueParrottEnabled = true
-        drainMainQueue()
-        XCTAssertNotNil(manager.blueParrottBLEManager)
-        let delegate = manager.blueParrottBLEManager?.delegate
-        XCTAssertTrue(delegate is BlueParrottPTTArbitrator, "BLE manager delegate should be the PTT arbitrator")
-        XCTAssertTrue((delegate as? BlueParrottPTTArbitrator)?.downstream === manager,
-                      "arbitrator must route button events to this manager")
-
-        mocks.settings.blueParrottEnabled = false
-        drainMainQueue()
-        XCTAssertNil(manager.blueParrottBLEManager)
-    }
-
-    /// Regression: with headset control OFF (`isActive == false`) the macOS BlueParrott
-    /// PTT loop must still recover from `.sending` after the response's TTS so a SECOND
-    /// press records again. Before `stateMachineEngaged`, the `.sending → .ready` reset
-    /// was gated on `isActive` (only set by headset mode), so the down/up path jammed in
-    /// `.sending` after one utterance (the arbitrator drops the `tap` that would otherwise
-    /// reset it). Drives the real BLE → arbitrator → state-machine path, never activating.
-    func testBlueParrottBLE_headsetModeOff_recoversAfterTTS_secondPressRecords() {
-        let mocks = HeadsetMockDependencies()
-        let manager = makeManagerWithDeps(mocks)
-        let central = FakeBLECentralForHRCM()
-        manager.makeBlueParrottBLEManager = {
-            BlueParrottBLEManager(central: central, scheduleWork: { _, _ in })
-        }
-        // Headset mode stays OFF — never call activate(); the BLE source drives alone.
-        mocks.settings.blueParrottEnabled = true
-        drainMainQueue()
-        XCTAssertFalse(manager.isActive, "headset mode is off — manager must not be active")
-        XCTAssertNotNil(manager.blueParrottBLEManager)
-        central.centralDelegate?.bleDidConnect()
-
-        // Cycle 1: down → record, up → stop + send. State lands in .sending.
-        central.centralDelegate?.bleDidUpdateButtonValue(Data([0x01]))
-        drainMainQueue()
-        XCTAssertEqual(manager.state, .recording)
-        mocks.voiceInput.transcribedText = "first utterance"
-        central.centralDelegate?.bleDidUpdateButtonValue(Data([0x00]))
-        drainMainQueue() // dispatch hop → buttonUp → stopRecordingAndSend
-        drainMainQueue() // deferred transcription read + send
-        XCTAssertEqual(manager.state, .sending)
-        XCTAssertEqual(mocks.client.lastSentMessage?["text"] as? String, "first utterance")
-
-        // The response speaks then finishes — the state machine must walk
-        // .sending → .speaking → .ready even though headset mode is off.
-        mocks.voiceOutput.isSpeaking = true
-        drainMainQueue()
-        XCTAssertEqual(manager.state, .speaking)
-        mocks.voiceOutput.isSpeaking = false
-        drainMainQueue()
-        XCTAssertEqual(manager.state, .ready,
-                       "state must recover to .ready after TTS with headset mode off")
-
-        // Cycle 2: a second press must record again — not jam in .sending.
-        mocks.voiceInput.startRecordingCalled = false
-        central.centralDelegate?.bleDidUpdateButtonValue(Data([0x01]))
-        drainMainQueue()
-        XCTAssertEqual(manager.state, .recording,
-                       "second press must record — the PTT loop must not jam after one utterance")
-        XCTAssertTrue(mocks.voiceInput.startRecordingCalled)
-    }
-    #endif
-
-    // MARK: - Message Shape
-
+    #if os(iOS)
     func testSentMessage_containsRequiredFields() {
         let (manager, mocks) = makeManager()
         let expectedSessionId = testSessionId.uuidString.lowercased()
@@ -668,6 +502,7 @@ final class HeadsetRemoteCommandManagerTests: XCTestCase {
         }
         wait(for: [expectation], timeout: 1.0)
     }
+    #endif  // iOS message-shape tests
 
     // MARK: - Helpers
 

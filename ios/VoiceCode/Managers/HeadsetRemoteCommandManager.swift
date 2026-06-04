@@ -18,17 +18,28 @@ private func hLogError(_ msg: String) {
 
 class HeadsetRemoteCommandManager: ObservableObject {
     @Published var isActive = false
+
+    // The interaction state machine differs per platform. iOS keeps the implicit
+    // `HeadsetState` guards driven by the BPHeadset SDK / media-key handlers; macOS
+    // is driven by the pure `SessionReducer` via a thin effect executor (this is
+    // task 3x1.7 — see @docs/design/macos-headset-loop-state-machine.md). The
+    // shared `BlueParrottPTTArbitrator` is retired on macOS (the gesture recognizer
+    // de-brackets the raw stream instead).
+    #if os(iOS)
     @Published private(set) var state: HeadsetState = .ready
+    #else
+    @Published private(set) var state: SessionState = .idle
+    #endif
 
     /// Whether a button source is driving the state machine — and therefore whether
     /// TTS-completion and recording auto-finalize must be observed to return the
-    /// machine to `.ready`. Headset control sets `isActive` (it claims the
+    /// machine to idle. Headset control sets `isActive` (it claims the
     /// MPRemoteCommandCenter / Now Playing slot). The macOS BlueParrott BLE source
-    /// drives the same state machine via its delegate while `isActive` stays false —
+    /// drives the same state machine via its events while `isActive` stays false —
     /// it deliberately does not claim the media slot — so on macOS the BlueParrott
-    /// toggle counts too. Without this, the macOS down/up PTT loop jams in `.sending`
-    /// after one utterance, because the arbitrator drops the `tap` that is the only
-    /// other `.sending → .ready` reset (the recovery here is normally TTS-driven).
+    /// toggle counts too. This is also the executor-input GATE: when disengaged the
+    /// session executor drops gesture/session events (the machine stays inert without
+    /// special-casing inside the pure reducer).
     private var stateMachineEngaged: Bool {
         #if os(macOS)
         return isActive || settings.blueParrottEnabled
@@ -43,21 +54,71 @@ class HeadsetRemoteCommandManager: ObservableObject {
     private let settings: AppSettings
     private let resolveActiveSession: () -> (sessionId: UUID, workingDirectory: String)?
     private var cancellables = Set<AnyCancellable>()
+
     #if os(macOS)
     /// macOS BlueParrott button source over CoreBluetooth. Mirrors the iOS
-    /// `blueParrottManager` (BPHeadset SDK); both feed the shared, unchanged
-    /// `BlueParrottButtonDelegate` mapping so the two platforms converge.
+    /// `blueParrottManager` (BPHeadset SDK); macOS feeds the de-bracketing
+    /// `BlueParrottGestureRecognizer` → `SessionReducer` instead of the shared
+    /// `BlueParrottButtonDelegate`.
     private(set) var blueParrottBLEManager: BlueParrottBLEManager?
-    /// Strong owner of the PTT arbitrator wired between the BLE manager and this
-    /// manager's delegate mapping (the BLE manager holds its `delegate` weakly).
-    private var blueParrottArbitrator: BlueParrottPTTArbitrator?
+    /// De-bracketer between the BLE raw-signal stream and the session reducer.
+    private var gestureRecognizer: BlueParrottGestureRecognizer?
+    /// Disconnect observation for the live BLE manager — a disconnect WHILE recording
+    /// feeds `captureEnded` so `.recording` can't strand (Goal #2). Replaced on each
+    /// `startBlueParrott()`.
+    private var bleDisconnectCancellable: AnyCancellable?
+    /// The source of the most recent button-driven event, used to label the
+    /// system-derived events (TTS / capture / timers) the reducer requires a source
+    /// for. None of those events trigger a source-gated effect, so this only matters
+    /// for completeness.
+    private var lastButtonSource: ButtonSource = .blueParrottBLE
+    /// One-shot guard for the F3 capture restart (Risk 7): the reducer restarts on
+    /// EVERY stall, so the executor stops re-feeding `captureStalled` after one retry
+    /// and finalizes instead of looping. Reset on each fresh `startCapture`.
+    private var captureRestartCount = 0
+
+    /// Session-timer (captureGrace / awaitResponse) generation guards + retained work
+    /// items, mirroring the BLE manager's pattern: arming or cancelling bumps the
+    /// generation so a fired-but-superseded work item no-ops.
+    private var sessionTimerGenerations: [SessionTimer: Int] = [:]
+    private var sessionTimerWorkItems: [SessionTimer: DispatchWorkItem] = [:]
+
+    /// Reentrancy queue for `ingest()` so each reduce→apply step is atomic — an effect
+    /// whose application synchronously feeds an event back (e.g. a disconnected-client
+    /// `startCapture` enqueuing `captureEnded`) is queued, not interleaved.
+    private var isIngesting = false
+    private var pendingSessionEvents: [(SessionEvent, ButtonSource)] = []
+
+    /// Scheduler for the session timers. Test seam: defaults to `main.asyncAfter`;
+    /// unit tests inject a non-firing recorder and drive timers via `testFireSessionTimer`.
+    var sessionScheduleWork: (TimeInterval, DispatchWorkItem) -> Void = { delay, work in
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+    /// Scheduler for the gesture recognizer's hold timer. Same test-seam rationale —
+    /// tests capture the block and fire it deterministically (no wall-clock).
+    var gestureScheduleAfter: (TimeInterval, @escaping () -> Void) -> Void = { delay, block in
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: block)
+    }
+
+    /// Session-timer durations (tunable; grounded in the findings). `captureGrace`: a
+    /// live route delivers buffers within ~300 ms even when silent, so zero buffers by
+    /// ~1 s ⇒ dead route (F3). `awaitResponse`: generous backstop for the F4 strand.
+    static let captureGraceInterval: TimeInterval = 1.0
+    static let awaitResponseInterval: TimeInterval = 120.0
+
     #if DEBUG
     /// Test seam: override to inject a fake-`BLECentral`-backed `BlueParrottBLEManager`
     /// instead of standing up a real `CBCentralManager`. DEBUG-only so it adds no
     /// release surface; production always builds the real adapter.
     var makeBlueParrottBLEManager: () -> BlueParrottBLEManager = { BlueParrottBLEManager() }
+    /// Test observability: counts of the source-gated keep-alive effects applied, so
+    /// integration tests can assert a media-key recording does NOT suspend keep-alive
+    /// (acceptance #7) while a BLE recording does.
+    private(set) var suspendKeepAliveCount = 0
+    private(set) var resumeKeepAliveCount = 0
     #endif
     #endif
+
     #if DEBUG && os(macOS)
     // Phase A2 GATT explorer: a DEBUG-only diagnostic that observes the BlueParrott
     // control service over CoreBluetooth (the App-Mode persistence experiment). Parks
@@ -68,7 +129,6 @@ class HeadsetRemoteCommandManager: ObservableObject {
     #if os(iOS)
     private var interruptionObserver: NSObjectProtocol?
     private(set) var blueParrottManager: BlueParrottButtonManager?
-    #endif
 
     enum HeadsetState: CustomStringConvertible, Equatable {
         case ready
@@ -85,6 +145,7 @@ class HeadsetRemoteCommandManager: ObservableObject {
             }
         }
     }
+    #endif
 
     init(voiceInput: VoiceInputManager,
          voiceOutput: VoiceOutputManager,
@@ -106,6 +167,7 @@ class HeadsetRemoteCommandManager: ObservableObject {
 
         hLog("Headset: init — headsetModeEnabled=\(settings.headsetModeEnabled), autoSend=\(settings.headsetAutoSend)")
 
+        #if os(iOS)
         voiceOutput.$isSpeaking
             .receive(on: DispatchQueue.main)
             .sink { [weak self] isSpeaking in
@@ -116,23 +178,41 @@ class HeadsetRemoteCommandManager: ObservableObject {
                 } else if !isSpeaking && self.state == .speaking {
                     self.state = .ready
                     self.updateNowPlayingState()
-                    #if os(iOS)
                     self.activateAudioSession()
-                    #endif
                 } else if !isSpeaking {
                     // TTS ended but state wasn't .speaking — e.g. session-history replay TTS
                     // or other out-of-band speech. Re-assert only if TTS actually changed our
                     // category (avoids 187 redundant rebuilds when session history is replayed).
-                    #if os(iOS)
                     let s = AVAudioSession.sharedInstance()
                     if s.category != .playAndRecord || !s.categoryOptions.contains(.allowBluetoothA2DP) {
                         hLog("Headset: isSpeaking→false — session changed (was \(s.category.rawValue)/opts=\(s.categoryOptions.rawValue)), re-asserting")
                         self.activateAudioSession()
                     }
-                    #endif
                 }
             }
             .store(in: &cancellables)
+        #else
+        // macOS: TTS start/end feed the session reducer (ttsStarted/ttsEnded).
+        voiceOutput.$isSpeaking
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] isSpeaking in
+                self?.handleSystemEvent(isSpeaking ? .ttsStarted : .ttsEnded)
+            }
+            .store(in: &cancellables)
+        // macOS: a backend drop mid-await must not strand `.awaitingResponse` (F4).
+        client.$isConnected
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] connected in
+                guard let self = self, !connected else { return }
+                self.handleSystemEvent(.backendUnavailable)
+            }
+            .store(in: &cancellables)
+        // macOS: the live capture-readiness signal (F3) — first non-silent buffer
+        // cancels the grace window.
+        voiceInput.onCaptureProducedAudio = { [weak self] in
+            self?.handleSystemEvent(.captureProducedAudio)
+        }
+        #endif
 
         settings.$headsetModeEnabled
             .receive(on: DispatchQueue.main)
@@ -145,6 +225,7 @@ class HeadsetRemoteCommandManager: ObservableObject {
             }
             .store(in: &cancellables)
 
+        #if os(iOS)
         // Observe speech recognizer auto-finalize. When SFSpeechRecognizer hits
         // its silence timeout (~30s) it sets isRecording=false from inside the
         // recognition callback — without a second button press. If our state is
@@ -160,13 +241,26 @@ class HeadsetRemoteCommandManager: ObservableObject {
                 }
             }
             .store(in: &cancellables)
+        #else
+        // macOS: capture ending with no `up` (recognizer silence auto-finalize /
+        // engine failure) feeds `captureEnded` so `.recording` can't strand (Goal #2).
+        // `(.finalizing/.idle, .captureEnded)` is a reducer no-op, so this is safe even
+        // when capture ended because WE stopped it.
+        voiceInput.$isRecording
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] isRecording in
+                guard let self = self, !isRecording else { return }
+                self.handleSystemEvent(.captureEnded)
+            }
+            .store(in: &cancellables)
+        #endif
 
         setupKeepAlive()
 
         // Drive the BlueParrott button source from the same toggle on both
         // platforms — iOS via the BPHeadset SDK (`BlueParrottButtonManager`),
-        // macOS via CoreBluetooth (`BlueParrottBLEManager`). Both feed the shared
-        // `BlueParrottButtonDelegate` mapping below.
+        // macOS via CoreBluetooth (`BlueParrottBLEManager` → gesture recognizer →
+        // session reducer).
         settings.$blueParrottEnabled
             .receive(on: DispatchQueue.main)
             .sink { [weak self] enabled in
@@ -245,7 +339,11 @@ class HeadsetRemoteCommandManager: ObservableObject {
         MPNowPlayingInfoCenter.default().playbackState = .unknown
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
         isActive = false
+        #if os(iOS)
         state = .ready
+        #else
+        state = .idle
+        #endif
         hLog("Headset remote control deactivated")
     }
 
@@ -272,25 +370,41 @@ class HeadsetRemoteCommandManager: ObservableObject {
 
         center.togglePlayPauseCommand.isEnabled = true
         center.togglePlayPauseCommand.addTarget { [weak self] _ in
+            #if os(iOS)
             self?.handleTogglePlayPause()
+            #else
+            self?.handleMediaButton(.tap)
+            #endif
             return .success
         }
 
         center.playCommand.isEnabled = true
         center.playCommand.addTarget { [weak self] _ in
+            #if os(iOS)
             self?.handlePlay()
+            #else
+            self?.handleMediaButton(.tap)
+            #endif
             return .success
         }
 
         center.pauseCommand.isEnabled = true
         center.pauseCommand.addTarget { [weak self] _ in
+            #if os(iOS)
             self?.handlePause()
+            #else
+            self?.handleMediaButton(.tap)
+            #endif
             return .success
         }
 
         center.nextTrackCommand.isEnabled = true
         center.nextTrackCommand.addTarget { [weak self] _ in
+            #if os(iOS)
             self?.handleInterrupt()
+            #else
+            self?.handleMediaButton(.doubleTap)
+            #endif
             return .success
         }
 
@@ -314,61 +428,99 @@ class HeadsetRemoteCommandManager: ObservableObject {
         center.nextTrackCommand.isEnabled = false
     }
 
-    private func updateNowPlayingState() {
-        let info: [String: Any]
+    fileprivate func updateNowPlayingState() {
+        let title: String
         let playbackState: MPNowPlayingPlaybackState
-
         switch state {
+        #if os(iOS)
         case .ready:
-            info = [
-                MPMediaItemPropertyTitle: "VoiceCode — Ready",
-                MPMediaItemPropertyPlaybackDuration: 0,
-                MPNowPlayingInfoPropertyElapsedPlaybackTime: 0
-            ]
+            title = "VoiceCode — Ready"
             // Report .playing because we continuously output silent audio to hold
             // the Now Playing slot. This makes AirPods consistently send ❚❚ for a
             // single press, which handlePause() treats as a toggle.
             playbackState = .playing
-
         case .recording:
-            info = [
-                MPMediaItemPropertyTitle: "VoiceCode — Recording",
-                MPMediaItemPropertyPlaybackDuration: 0,
-                MPNowPlayingInfoPropertyElapsedPlaybackTime: 0
-            ]
+            title = "VoiceCode — Recording"
             playbackState = .playing
-
         case .sending:
-            info = [
-                MPMediaItemPropertyTitle: "VoiceCode — Processing",
-                MPMediaItemPropertyPlaybackDuration: 0,
-                MPNowPlayingInfoPropertyElapsedPlaybackTime: 0
-            ]
+            title = "VoiceCode — Processing"
             playbackState = .paused
-
         case .speaking:
-            info = [
-                MPMediaItemPropertyTitle: "VoiceCode — Speaking",
-                MPMediaItemPropertyPlaybackDuration: 0,
-                MPNowPlayingInfoPropertyElapsedPlaybackTime: 0
-            ]
+            title = "VoiceCode — Speaking"
             playbackState = .playing
+        #else
+        case .idle:
+            title = "VoiceCode — Ready"
+            playbackState = .playing
+        case .recording:
+            title = "VoiceCode — Recording"
+            playbackState = .playing
+        case .finalizing, .awaitingResponse:
+            title = "VoiceCode — Processing"
+            playbackState = .paused
+        case .speaking:
+            title = "VoiceCode — Speaking"
+            playbackState = .playing
+        #endif
         }
 
-        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = [
+            MPMediaItemPropertyTitle: title,
+            MPMediaItemPropertyPlaybackDuration: 0,
+            MPNowPlayingInfoPropertyElapsedPlaybackTime: 0
+        ]
         MPNowPlayingInfoCenter.default().playbackState = playbackState
     }
+
+    // MARK: - Prompt send (shared)
+
+    /// Build the prompt message and send it to the active session. Returns false if
+    /// there is no active session to send to — the caller decides how to recover
+    /// (iOS returns to `.ready`; the macOS executor feeds `.backendUnavailable`). Does
+    /// NOT touch state, so it stays platform-neutral.
+    @discardableResult
+    fileprivate func buildAndSend(_ text: String) -> Bool {
+        guard let (sessionId, workingDirectory) = resolveActiveSession() else {
+            hLogWarning("Headset: auto-send failed — no active session")
+            return false
+        }
+
+        let sessionIdStr = sessionId.uuidString.lowercased()
+        hLog("Headset: sending prompt to session=\(sessionIdStr) textLength=\(text.count) dir=\(workingDirectory)")
+
+        client.sessionSyncManager.createOptimisticMessage(
+            sessionId: sessionId,
+            text: text
+        ) { _ in }
+
+        var message: [String: Any] = [
+            "type": "prompt",
+            "text": text,
+            "resume_session_id": sessionIdStr,
+            "working_directory": workingDirectory
+        ]
+
+        if !settings.systemPrompt.isEmpty {
+            message["system_prompt"] = settings.systemPrompt
+        }
+
+        client.sendMessage(message)
+        hLog("Headset: prompt sent to session \(sessionIdStr)")
+        return true
+    }
+}
+
+// MARK: - iOS state machine (HeadsetState)
+
+#if os(iOS)
+extension HeadsetRemoteCommandManager {
 
     // MARK: - Button Handlers
 
     private func handleTogglePlayPause() {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
-            #if os(iOS)
             hLog("Headset: ▶︎/❚❚ received — state=\(self.state), audioCategory=\(AVAudioSession.sharedInstance().category.rawValue)")
-            #else
-            hLog("Headset: ▶︎/❚❚ received — state=\(self.state)")
-            #endif
             switch self.state {
             case .ready:
                 self.startRecording()
@@ -402,11 +554,7 @@ class HeadsetRemoteCommandManager: ObservableObject {
     private func handlePause() {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
-            #if os(iOS)
             hLog("Headset: ❚❚ received — state=\(self.state), audioCategory=\(AVAudioSession.sharedInstance().category.rawValue)")
-            #else
-            hLog("Headset: ❚❚ received — state=\(self.state)")
-            #endif
             // Continuous silent audio causes AirPods to always send ❚❚ (pause)
             // rather than ▶︎ (play), regardless of our NowPlaying playbackState.
             // Treat ❚❚ as a toggle so it works symmetrically with handleTogglePlayPause.
@@ -450,12 +598,9 @@ class HeadsetRemoteCommandManager: ObservableObject {
             hLogWarning("Headset: startRecording ignored — not connected to backend")
             return
         }
-        #if os(iOS)
         hLog("Headset: startRecording — audioCategory=\(AVAudioSession.sharedInstance().category.rawValue) route=\(AVAudioSession.sharedInstance().currentRoute.inputs.map(\.portName))")
-        #endif
         state = .recording
         updateNowPlayingState()
-        #if os(iOS)
         // Pass onSessionReady so we restart the silence player AFTER
         // VoiceInputManager switches the audio session to .playAndRecord.
         // AVAudioPlayer binds audio routing at prepareToPlay() time. Playing or
@@ -473,23 +618,15 @@ class HeadsetRemoteCommandManager: ObservableObject {
             let opts = s.categoryOptions.rawValue
             hLog("Headset: recording started — silence player rebuilt+started, playing=\(self.keepAlivePlayer?.isPlaying ?? false), audioCategory=\(s.category.rawValue), outputs=[\(outputs)], opts=\(opts)")
         })
-        #else
-        voiceInput.startRecording()
-        hLog("Headset: recording started")
-        #endif
     }
 
     private func stopRecordingAndSend() {
-        #if os(iOS)
         hLog("Headset: stopRecordingAndSend — pre-stop audioCategory=\(AVAudioSession.sharedInstance().category.rawValue)")
-        #endif
         voiceInput.stopRecording()
-        #if os(iOS)
         // Re-assert .playback session so MPRemoteCommandCenter keeps routing
         // AirPod/headset button events to our app during the sending/ready gap.
         activateAudioSession()
         hLog("Headset: stopRecordingAndSend — post-reactivation audioCategory=\(AVAudioSession.sharedInstance().category.rawValue)")
-        #endif
         state = .sending
         updateNowPlayingState()
 
@@ -519,36 +656,13 @@ class HeadsetRemoteCommandManager: ObservableObject {
     }
 
     private func sendToActiveSession(_ text: String) {
-        guard let (sessionId, workingDirectory) = resolveActiveSession() else {
-            hLogWarning("Headset: auto-send failed — no active session")
+        if !buildAndSend(text) {
             state = .ready
             updateNowPlayingState()
-            return
         }
-
-        let sessionIdStr = sessionId.uuidString.lowercased()
-        hLog("Headset: sending prompt to session=\(sessionIdStr) textLength=\(text.count) dir=\(workingDirectory)")
-
-        client.sessionSyncManager.createOptimisticMessage(
-            sessionId: sessionId,
-            text: text
-        ) { _ in }
-
-        var message: [String: Any] = [
-            "type": "prompt",
-            "text": text,
-            "resume_session_id": sessionIdStr,
-            "working_directory": workingDirectory
-        ]
-
-        if !settings.systemPrompt.isEmpty {
-            message["system_prompt"] = settings.systemPrompt
-        }
-
-        client.sendMessage(message)
-        hLog("Headset: prompt sent to session \(sessionIdStr)")
     }
 }
+#endif
 
 // MARK: - Silent Audio Keep-Alive (cross-platform)
 
@@ -633,7 +747,7 @@ extension HeadsetRemoteCommandManager {
 
     func startBlueParrott() {
         guard blueParrottManager == nil else { return }
-        #if DEBUG && os(iOS)
+        #if DEBUG
         // Phase A1 collector: capture the SDK's GATT traffic (App-Mode enable
         // write + per-gesture notification bytes) for the macOS reimplementation.
         BPSniffer.install()
@@ -651,14 +765,13 @@ extension HeadsetRemoteCommandManager {
         hLog("Headset: BlueParrott SDK stopped")
     }
 }
-#endif
 
-// MARK: - BlueParrottButtonDelegate
+// MARK: - BlueParrottButtonDelegate (iOS)
 //
-// Cross-platform: shared by the iOS BPHeadset SDK path (`BlueParrottButtonManager`)
-// and the macOS CoreBluetooth path (`BlueParrottBLEManager`). The state mapping is
-// unchanged on both platforms so they converge on one downstream path
-// (@docs/design/macos-blueparrott-corebluetooth.md §3).
+// The iOS BPHeadset SDK (`BlueParrottButtonManager`) maps its de-bracketed gestures
+// onto the implicit `HeadsetState` machine. macOS no longer uses this path — it
+// drives the pure `SessionReducer` via the gesture recognizer instead (the shared
+// `BlueParrottPTTArbitrator` is retired).
 
 extension HeadsetRemoteCommandManager: BlueParrottButtonDelegate {
     func blueParrottButtonDown() {
@@ -701,59 +814,212 @@ extension HeadsetRemoteCommandManager: BlueParrottButtonDelegate {
         performInterrupt()
     }
 }
-
-// MARK: - BlueParrott PTT Arbitrator (macOS)
-
-#if os(macOS)
-/// Reduces the raw BlueParrott GATT event stream to push-to-talk semantics before
-/// it reaches the shared `BlueParrottButtonDelegate` mapping.
-///
-/// The hardware brackets every gesture with down/up: a hold streams `01,04,00`
-/// (down, long-press ~1s in, up), a tap `01,00,02`, a double `01,00,01,00,03`
-/// (see @docs/design/macos-blueparrott-corebluetooth.md §3 note 1). Forwarding all
-/// five events into the state machine would double-drive it — e.g. the in-bracket
-/// long-press would `performInterrupt` mid-recording. So the macOS path drives off
-/// down/up (PTT) only and drops the in-bracket gesture-classification codes; a hold
-/// of any length records on down and stops+sends on up.
-///
-/// This is the down/up-vs-gesture arbitration the design assigns to the macOS
-/// rewire. It is an additive filter — the shared state mapping is unchanged.
-/// (Discrete tap/double/long actions would need a separate, non-PTT button
-/// configuration and are out of scope for the PTT path.)
-final class BlueParrottPTTArbitrator: BlueParrottButtonDelegate {
-    weak var downstream: BlueParrottButtonDelegate?
-
-    init(downstream: BlueParrottButtonDelegate?) {
-        self.downstream = downstream
-    }
-
-    func blueParrottButtonDown() { downstream?.blueParrottButtonDown() }
-    func blueParrottButtonUp() { downstream?.blueParrottButtonUp() }
-
-    // In-bracket gesture-classification codes — dropped so they don't double-drive
-    // the PTT state machine alongside the down/up that bracket them.
-    func blueParrottTap() {}
-    func blueParrottDoubleTap() {}
-    func blueParrottLongPress() {}
-}
 #endif
 
-// MARK: - BlueParrott BLE (macOS)
+// MARK: - macOS session reducer executor
 
 #if os(macOS)
 extension HeadsetRemoteCommandManager {
 
+    /// Executor input for a de-bracketed button gesture (BLE) or a media-key press.
+    /// Sets the last button source, applies the engagement gate (drop gesture/session
+    /// events when disengaged), and the not-connected guard (a fresh recording needs a
+    /// live client to send the prompt), then ingests into the reducer.
+    func handleButtonEvent(_ event: SessionEvent, source: ButtonSource) {
+        lastButtonSource = source
+        guard stateMachineEngaged else {
+            hLog("Session: \(event) dropped — not engaged")
+            return
+        }
+        if startsRecordingFromIdle(event), !client.isConnected {
+            hLogWarning("Session: \(event) ignored — not connected to backend")
+            return
+        }
+        ingest(event, source: source)
+    }
+
+    /// Executor input for a system-derived event (TTS / capture lifecycle / timers /
+    /// disconnect). Gated on engagement; uses the last real button source (no
+    /// source-gated effect is reachable from these events).
+    func handleSystemEvent(_ event: SessionEvent) {
+        guard stateMachineEngaged else { return }
+        ingest(event, source: lastButtonSource)
+    }
+
+    /// True when `event` would begin a recording from `.idle` — the only transition
+    /// that must be blocked when the backend is down (mirrors the old macOS
+    /// `startRecording` connection guard).
+    private func startsRecordingFromIdle(_ event: SessionEvent) -> Bool {
+        switch (state, event) {
+        case (.idle, .holdStarted), (.idle, .tap): return true
+        default: return false
+        }
+    }
+
+    /// Reduce one event and apply the returned effects, serialized on the main queue.
+    /// Reentrant calls (an effect that synchronously feeds an event back) are queued
+    /// and drained FIFO so two events' effects never interleave.
+    private func ingest(_ event: SessionEvent, source: ButtonSource) {
+        pendingSessionEvents.append((event, source))
+        guard !isIngesting else { return }
+        isIngesting = true
+        defer { isIngesting = false }
+        while !pendingSessionEvents.isEmpty {
+            let (e, src) = pendingSessionEvents.removeFirst()
+            let (newState, effects) = SessionReducer.reduce(state, e, source: src)
+            state = newState
+            for effect in effects { apply(effect) }
+        }
+    }
+
+    private func apply(_ effect: SessionEffect) {
+        switch effect {
+        case .startCapture:
+            startSessionCapture()
+        case .restartCapture:
+            voiceInput.restartCapture()
+        case .stopCapture:
+            stopSessionCaptureAndReadTranscription()
+        case .sendPrompt(let text):
+            if !buildAndSend(text) {
+                // No active session → don't strand `.awaitingResponse`.
+                handleSystemEvent(.backendUnavailable)
+            }
+        case .interruptTTS:
+            voiceOutput.stop()
+        case .suspendKeepAlive:
+            stopKeepAlive()
+            #if DEBUG
+            suspendKeepAliveCount += 1
+            #endif
+        case .resumeKeepAlive:
+            startKeepAlive()
+            #if DEBUG
+            resumeKeepAliveCount += 1
+            #endif
+        case .armTimer(let timer):
+            armSessionTimer(timer)
+        case .cancelTimer(let timer):
+            cancelSessionTimer(timer)
+        case .updateNowPlaying:
+            updateNowPlayingState()
+        case .log(let message):
+            hLog("Session: \(message)")
+        }
+    }
+
+    private func startSessionCapture() {
+        captureRestartCount = 0
+        voiceInput.startRecording()
+        hLog("Session: capture started")
+    }
+
+    private func stopSessionCaptureAndReadTranscription() {
+        voiceInput.stopRecording()
+        // ALWAYS emit transcription after stopCapture so `.finalizing` can't strand
+        // (nil when nothing was recognized / on error). Deferred one run-loop hop so
+        // the final recognition callback lands first.
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            let text = self.voiceInput.transcribedText
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            self.handleSystemEvent(.transcription(text.isEmpty ? nil : text))
+        }
+    }
+
+    // MARK: - Session timers (captureGrace / awaitResponse)
+
+    private func armSessionTimer(_ timer: SessionTimer) {
+        cancelSessionTimer(timer)
+        let generation = (sessionTimerGenerations[timer] ?? 0) + 1
+        sessionTimerGenerations[timer] = generation
+        let work = DispatchWorkItem { [weak self] in
+            guard let self = self,
+                  self.sessionTimerGenerations[timer] == generation else { return }
+            self.sessionTimerWorkItems[timer] = nil
+            self.sessionTimerFired(timer)
+        }
+        sessionTimerWorkItems[timer] = work
+        sessionScheduleWork(sessionTimerDuration(timer), work)
+    }
+
+    private func cancelSessionTimer(_ timer: SessionTimer) {
+        sessionTimerGenerations[timer] = (sessionTimerGenerations[timer] ?? 0) + 1
+        sessionTimerWorkItems[timer]?.cancel()
+        sessionTimerWorkItems[timer] = nil
+    }
+
+    private func sessionTimerDuration(_ timer: SessionTimer) -> TimeInterval {
+        switch timer {
+        case .captureGrace: return Self.captureGraceInterval
+        case .awaitResponse: return Self.awaitResponseInterval
+        }
+    }
+
+    private func sessionTimerFired(_ timer: SessionTimer) {
+        switch timer {
+        case .captureGrace:
+            // The grace window elapsed. Zero buffers ⇒ dead route (F3): restart ONCE,
+            // then finalize on a second stall rather than looping (Risk 7). A live but
+            // silent route (F2 warm-up) just lets the window lapse.
+            if voiceInput.capturedBufferCount == 0 {
+                if captureRestartCount == 0 {
+                    captureRestartCount += 1
+                    handleSystemEvent(.captureStalled)
+                } else {
+                    hLog("Session: capture stalled again after restart — finalizing (no loop)")
+                    handleSystemEvent(.captureEnded)
+                }
+            } else {
+                hLog("Session: captureGrace elapsed — route live (\(voiceInput.capturedBufferCount) buffers)")
+            }
+        case .awaitResponse:
+            handleSystemEvent(.awaitTimedOut)
+        }
+    }
+
+    /// Map a recognizer gesture to its session event.
+    fileprivate static func sessionEvent(for gesture: HeadsetGesture) -> SessionEvent {
+        switch gesture {
+        case .holdStarted: return .holdStarted
+        case .holdEnded:   return .holdEnded
+        case .tap:         return .tap
+        case .doubleTap:   return .doubleTap
+        }
+    }
+
+    /// Media-key entry: AirPods stem / system media keys map play/pause→tap,
+    /// next→doubleTap with `source: .mediaKey` (no hold semantics, keeps keep-alive).
+    /// MPRemoteCommandCenter may invoke off-main, so hop to main first.
+    private func handleMediaButton(_ event: SessionEvent) {
+        DispatchQueue.main.async { [weak self] in
+            self?.handleButtonEvent(event, source: .mediaKey)
+        }
+    }
+}
+
+/// Display string for the macOS settings "State" row (parity with the retired
+/// `HeadsetState.description`). `finalizing`/`awaitingResponse` both read "Processing".
+extension SessionState {
+    var description: String {
+        switch self {
+        case .idle: return "Ready"
+        case .recording: return "Recording"
+        case .finalizing, .awaitingResponse: return "Processing"
+        case .speaking: return "Speaking"
+        }
+    }
+}
+
+// MARK: - BlueParrott BLE (macOS)
+
+extension HeadsetRemoteCommandManager {
+
     /// Start the macOS BlueParrott button source, gated by `settings.blueParrottEnabled`
-    /// (mirrors the iOS SDK path). Events flow BLE manager → PTT arbitrator → this
-    /// manager's shared `BlueParrottButtonDelegate` mapping.
-    ///
-    /// The arbitrator is required because the raw GATT stream brackets every gesture
-    /// with down/up (a hold streams `01,04,00`); feeding all five events straight
-    /// into the state machine would double-drive it — the in-bracket long-press
-    /// would `performInterrupt` mid-recording and the trailing up would then no-op,
-    /// orphaning the recording. Per the design (§3 note 1) the macOS path drives off
-    /// down/up (PTT) only and the arbitrator drops the in-bracket gesture codes. The
-    /// state mapping itself is unchanged — the arbitrator is an additive filter.
+    /// (mirrors the iOS SDK path). The raw GATT stream flows BLE manager →
+    /// `BlueParrottGestureRecognizer` (de-brackets every gesture into exactly one
+    /// semantic gesture) → `SessionReducer` (via `handleButtonEvent`). The retired
+    /// `BlueParrottPTTArbitrator` and the implicit `HeadsetState` guards are gone.
     func startBlueParrott() {
         guard blueParrottBLEManager == nil else { return }
         #if DEBUG
@@ -761,9 +1027,24 @@ extension HeadsetRemoteCommandManager {
         #else
         let ble = BlueParrottBLEManager()
         #endif
-        let arbitrator = BlueParrottPTTArbitrator(downstream: self)
-        ble.delegate = arbitrator
-        blueParrottArbitrator = arbitrator
+        let recognizer = BlueParrottGestureRecognizer(
+            emit: { [weak self] gesture in
+                self?.handleButtonEvent(Self.sessionEvent(for: gesture), source: .blueParrottBLE)
+            },
+            scheduleAfter: gestureScheduleAfter
+        )
+        gestureRecognizer = recognizer
+        ble.rawSignalSink = { [weak recognizer] signal in recognizer?.feed(signal) }
+        // A disconnect WHILE recording feeds `captureEnded` so `.recording` can't
+        // strand on an out-of-range mid-recording (Goal #2). `dropFirst` skips the
+        // initial `isConnected == false`.
+        bleDisconnectCancellable = ble.$isConnected
+            .receive(on: DispatchQueue.main)
+            .dropFirst()
+            .sink { [weak self] connected in
+                guard let self = self, !connected else { return }
+                self.handleSystemEvent(.captureEnded)
+            }
         ble.start()
         blueParrottBLEManager = ble
         #if DEBUG
@@ -772,13 +1053,14 @@ extension HeadsetRemoteCommandManager {
         // experiment is concluded, so the live client takes over.
         stopGattExplorer()
         #endif
-        hLog("Headset: BlueParrott BLE started (macOS CoreBluetooth)")
+        hLog("Headset: BlueParrott BLE started (macOS CoreBluetooth → session reducer)")
     }
 
     func stopBlueParrott() {
         blueParrottBLEManager?.stop()
         blueParrottBLEManager = nil
-        blueParrottArbitrator = nil
+        gestureRecognizer = nil
+        bleDisconnectCancellable = nil
         hLog("Headset: BlueParrott BLE stopped (macOS)")
     }
 
@@ -812,6 +1094,7 @@ extension HeadsetRemoteCommandManager {
 
 #if DEBUG
 extension HeadsetRemoteCommandManager {
+    #if os(iOS)
     func simulateTogglePlayPause() {
         switch state {
         case .ready:
@@ -836,5 +1119,14 @@ extension HeadsetRemoteCommandManager {
     func simulateInterrupt() {
         performInterrupt()
     }
+    #else
+    // macOS test hooks: drive the session executor directly (gesture / media-key
+    // inputs) and the injected session timers.
+    func simulateMediaTap() { handleButtonEvent(.tap, source: .mediaKey) }
+    func simulateMediaDoubleTap() { handleButtonEvent(.doubleTap, source: .mediaKey) }
+    func testFireSessionTimer(_ timer: SessionTimer) { sessionTimerWorkItems[timer]?.perform() }
+    func testHasArmedSessionTimer(_ timer: SessionTimer) -> Bool { sessionTimerWorkItems[timer] != nil }
+    var testSessionState: SessionState { state }
+    #endif
 }
 #endif
