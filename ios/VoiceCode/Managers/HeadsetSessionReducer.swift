@@ -76,7 +76,7 @@ enum SessionTimer: Equatable { case captureGrace, awaitResponse }
 /// What is driving the button events. Gates BLE-only effects (e.g. keep-alive
 /// suspension) and distinguishes the gesture-bearing transports (BLE / iOS SDK)
 /// from the media-key path, which has no hold semantics.
-enum ButtonSource: Equatable { case blueParrottBLE, mediaKey, iosSDK }
+enum ButtonSource: Equatable { case blueParrottBLE, mediaKey, iosSDK, ui }
 
 /// The pure interaction reducer: `(state, event, source) → (state, [effect])`,
 /// no I/O. Irrelevant `(state, event)` pairs fall through to the `default` and
@@ -95,6 +95,16 @@ enum SessionReducer {
         case (.speaking, .holdStarted):
             return beginRecording(source: source, interrupting: [.interruptTTS])
         case (.awaitingResponse, .holdStarted):
+            return beginRecording(source: source, interrupting: [.cancelTimer(.awaitResponse)])
+
+        // The on-screen mic button (.ui source) is a record/stop toggle, not a TTS
+        // dismisser: a tap from a busy state barges in and records — what a user expects
+        // when clicking "record". The headset/SDK has a hold for record-over, so its
+        // .tap keeps F5 dismiss semantics (below); the UI button has no hold gesture, so
+        // its tap must record. Mirrors the hold barge-in effects above.
+        case (.speaking, .tap) where source == .ui:
+            return beginRecording(source: source, interrupting: [.interruptTTS])
+        case (.awaitingResponse, .tap) where source == .ui:
             return beginRecording(source: source, interrupting: [.cancelTimer(.awaitResponse)])
 
         // F3: first capture produced no audio within the grace window → restart and

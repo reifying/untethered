@@ -89,6 +89,13 @@ class HeadsetRemoteCommandManager: ObservableObject {
     private var isIngesting = false
     private var pendingSessionEvents: [(SessionEvent, ButtonSource)] = []
 
+    /// Canonical voice-send, injected by the active `ConversationView` so the reducer's
+    /// `.sendPrompt` effect goes through the SAME rich send path the UI uses
+    /// (`sendPromptText`: new-session/resume, ghost, provider, draft, queue) instead of
+    /// the bare `buildAndSend`. nil → fall back to `buildAndSend`. Returns whether a send
+    /// was issued. This is what unifies the UI mic button and the headset onto one send.
+    var sendVoicePrompt: ((String) -> Bool)?
+
     /// Scheduler for the session timers. Test seam: defaults to `main.asyncAfter`;
     /// unit tests inject a non-firing recorder and drive timers via `testFireSessionTimer`.
     var sessionScheduleWork: (TimeInterval, DispatchWorkItem) -> Void = { delay, work in
@@ -825,13 +832,26 @@ extension HeadsetRemoteCommandManager {
     /// Sets the last button source, applies the engagement gate (drop gesture/session
     /// events when disengaged), and the not-connected guard (a fresh recording needs a
     /// live client to send the prompt), then ingests into the reducer.
+    /// The on-screen mic button, routed through the SAME session reducer as the headset
+    /// so they share one recording-state owner: a headset tap can stop a UI-started
+    /// recording (and vice versa) without the cross-source restart that silently lost
+    /// the message. A tap toggles idle→record, recording→finalize+send.
+    func toggleRecordingFromUI() {
+        handleButtonEvent(.tap, source: .ui)
+    }
+
     func handleButtonEvent(_ event: SessionEvent, source: ButtonSource) {
         lastButtonSource = source
+        // Log every executor input with its source and the current state. The BLE path
+        // also logs raw-signal/gesture upstream, but the .ui (mic-button) path has no
+        // other trace — this is what makes a UI toggle / cross-source state issue
+        // diagnosable from shared logs.
+        hLog("Session: button \(event) source=\(source) state=\(state)")
         guard stateMachineEngaged else {
             hLog("Session: \(event) dropped — not engaged")
             return
         }
-        if startsRecordingFromIdle(event), !client.isConnected {
+        if beginsRecording(event, source: source), !client.isConnected {
             hLogWarning("Session: \(event) ignored — not connected to backend")
             return
         }
@@ -846,12 +866,16 @@ extension HeadsetRemoteCommandManager {
         ingest(event, source: lastButtonSource)
     }
 
-    /// True when `event` would begin a recording from `.idle` — the only transition
-    /// that must be blocked when the backend is down (mirrors the old macOS
-    /// `startRecording` connection guard).
-    private func startsRecordingFromIdle(_ event: SessionEvent) -> Bool {
+    /// True when `event` from `source` would BEGIN a recording in the current state — the
+    /// transitions that must be blocked when the backend is down (a fresh recording needs
+    /// a live client to send the prompt). Covers an idle start (any source) and the UI
+    /// mic's barge-in-and-record from a busy state (`.speaking`/`.awaitingResponse`),
+    /// which a headset/SDK `.tap` does NOT do (it dismisses). Mirrors `SessionReducer`'s
+    /// recording-start transitions.
+    private func beginsRecording(_ event: SessionEvent, source: ButtonSource) -> Bool {
         switch (state, event) {
         case (.idle, .holdStarted), (.idle, .tap): return true
+        case (.speaking, .tap), (.awaitingResponse, .tap): return source == .ui
         default: return false
         }
     }
@@ -881,7 +905,11 @@ extension HeadsetRemoteCommandManager {
         case .stopCapture:
             stopSessionCaptureAndReadTranscription()
         case .sendPrompt(let text):
-            if !buildAndSend(text) {
+            // Prefer the injected rich send (UI's `sendPromptText`); fall back to the
+            // bare `buildAndSend` when no ConversationView is wired. One send path for
+            // headset + UI + silence-timeout finalize.
+            let sent = sendVoicePrompt?(text) ?? buildAndSend(text)
+            if !sent {
                 // No active session → don't strand `.awaitingResponse`.
                 handleSystemEvent(.backendUnavailable)
             }

@@ -290,4 +290,74 @@ final class HeadsetSessionReducerTests: XCTestCase {
     func testGrace_allowsMoreThanOneWarmupRestart() {
         XCTAssertGreaterThan(CaptureReadiness.maxRestarts, 1, "one restart was not enough for a slow SCO link")
     }
+
+    // MARK: - UI source: mic button shares the reducer (cross-source fix)
+
+    /// The on-screen mic button drives the reducer as `.ui` so the headset and UI share
+    /// one recording-state owner. A `.ui` tap from idle records — but must NOT suspend
+    /// the keep-alive (that's the BlueParrott BLE warm-up dance only).
+    func testUITap_fromIdle_records_withoutSuspendingKeepAlive() {
+        let (state, fx) = SessionReducer.reduce(.idle, .tap, source: .ui)
+        XCTAssertEqual(state, .recording)
+        XCTAssertTrue(fx.contains(.startCapture))
+        XCTAssertFalse(fx.contains(.suspendKeepAlive), "keep-alive suspend is gated to the BLE source")
+    }
+
+    /// A `.ui` tap while recording finalizes + sends — the same toggle the headset uses,
+    /// so a UI-started recording stopped by a headset tap (or vice versa) is sent, not
+    /// lost. (Whichever source stops it, `(.recording, .tap) → finalizing`.)
+    func testUITap_whileRecording_finalizes() {
+        let (state, fx) = SessionReducer.reduce(.recording, .tap, source: .ui)
+        XCTAssertEqual(state, .finalizing)
+        XCTAssertTrue(fx.contains(.stopCapture))
+    }
+
+    /// Cross-source: a BLE start then a UI stop (and the reverse) both finalize — the
+    /// reducer doesn't care which source toggles, it just owns the state.
+    func testCrossSource_bleStart_uiStop_finalizes() {
+        let (rec, _) = SessionReducer.reduce(.idle, .holdStarted, source: .blueParrottBLE)
+        XCTAssertEqual(rec, .recording)
+        let (fin, fx) = SessionReducer.reduce(rec, .tap, source: .ui)
+        XCTAssertEqual(fin, .finalizing)
+        XCTAssertTrue(fx.contains(.stopCapture))
+    }
+
+    // MARK: - UI source: mic button barges in and records (not a TTS dismisser)
+
+    /// The on-screen mic button taps to RECORD even while TTS is speaking: it barges in
+    /// (interrupt TTS + start capture) instead of merely dismissing the TTS and making
+    /// the user tap again. This is the "pressed twice, didn't record" fix.
+    func testUITap_whileSpeaking_bargesInAndRecords() {
+        let (state, fx) = SessionReducer.reduce(.speaking, .tap, source: .ui)
+        XCTAssertEqual(state, .recording)
+        XCTAssertTrue(fx.contains(.interruptTTS), "must interrupt the TTS it barged into")
+        XCTAssertTrue(fx.contains(.startCapture), "must actually start recording, not just dismiss")
+        XCTAssertFalse(fx.contains(.suspendKeepAlive), "keep-alive suspend is BLE-only")
+    }
+
+    /// A `.ui` tap while awaiting the backend response also barges in and records (cancel
+    /// the await timer + start capture) rather than dismissing to idle.
+    func testUITap_whileAwaiting_bargesInAndRecords() {
+        let (state, fx) = SessionReducer.reduce(.awaitingResponse, .tap, source: .ui)
+        XCTAssertEqual(state, .recording)
+        XCTAssertTrue(fx.contains(.cancelTimer(.awaitResponse)))
+        XCTAssertTrue(fx.contains(.startCapture))
+    }
+
+    /// Regression guard: a HEADSET (`.blueParrottBLE`) tap while speaking still only
+    /// DISMISSES (F5: tap=dismiss, hold=record-over). The barge-in-on-tap behavior is
+    /// exclusive to the `.ui` source, which has no hold gesture.
+    func testHeadsetTap_whileSpeaking_stillDismisses_doesNotRecord() {
+        let (state, fx) = SessionReducer.reduce(.speaking, .tap, source: .blueParrottBLE)
+        XCTAssertEqual(state, .idle)
+        XCTAssertTrue(fx.contains(.interruptTTS))
+        XCTAssertFalse(fx.contains(.startCapture), "headset tap must not start a recording from speaking")
+    }
+
+    /// Regression guard: a headset tap while awaiting still dismisses to idle (no record).
+    func testHeadsetTap_whileAwaiting_stillDismisses_doesNotRecord() {
+        let (state, fx) = SessionReducer.reduce(.awaitingResponse, .tap, source: .blueParrottBLE)
+        XCTAssertEqual(state, .idle)
+        XCTAssertFalse(fx.contains(.startCapture))
+    }
 }
