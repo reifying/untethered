@@ -135,6 +135,16 @@ class AppSettings: ObservableObject {
         }
     }
 
+    /// When true, plays short audible earcons through the headset for hands-free state
+    /// changes (recording started, prompt sent, failure). Gates all earcon playback and is
+    /// silent on the desktop. Defaults to false — ship off until Phase 1 is validated on
+    /// hardware (see docs/design/macos-headset-audible-feedback.md §6 Rollback).
+    @Published var headsetAudibleCuesEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(headsetAudibleCuesEnabled, forKey: "headsetAudibleCuesEnabled")
+        }
+    }
+
     /// When true, connects to a BlueParrott headset via the BPHeadset SDK and routes the
     /// programmable button to start/stop recording. Independent of headsetModeEnabled —
     /// button events arrive over BLE, not AVRCP.
@@ -365,6 +375,8 @@ class AppSettings: ObservableObject {
         #endif
         self.headsetModeEnabled = UserDefaults.standard.bool(forKey: "headsetModeEnabled")
         self.headsetAutoSend = UserDefaults.standard.object(forKey: "headsetAutoSend") as? Bool ?? true
+        // Default OFF: bool(forKey:) returns false when the key is absent.
+        self.headsetAudibleCuesEnabled = UserDefaults.standard.bool(forKey: "headsetAudibleCuesEnabled")
         self.blueParrottEnabled = UserDefaults.standard.bool(forKey: "blueParrottEnabled")
         // Validate-parse the stored UUID string; nil when absent or unparseable.
         self.blueParrottPeripheralID = UserDefaults.standard.string(forKey: "blueParrottPeripheralID")

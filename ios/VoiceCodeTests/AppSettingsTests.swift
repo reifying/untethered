@@ -871,6 +871,37 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertFalse(settings.headsetModeEnabled)
     }
 
+    func testDefaultHeadsetAudibleCuesEnabled() {
+        // Defaults OFF — ship quiet until validated on hardware (design §6 Rollback).
+        XCTAssertFalse(settings.headsetAudibleCuesEnabled)
+    }
+
+    func testHeadsetAudibleCuesEnabledPersistenceTrue() {
+        settings.headsetAudibleCuesEnabled = true
+        XCTAssertEqual(UserDefaults.standard.object(forKey: "headsetAudibleCuesEnabled") as? Bool, true)
+
+        let reloaded = AppSettings()
+        XCTAssertTrue(reloaded.headsetAudibleCuesEnabled)
+    }
+
+    func testHeadsetAudibleCuesEnabledPersistenceFalse() {
+        // Round-trip back to false after having been true.
+        settings.headsetAudibleCuesEnabled = true
+        settings.headsetAudibleCuesEnabled = false
+        XCTAssertEqual(UserDefaults.standard.object(forKey: "headsetAudibleCuesEnabled") as? Bool, false)
+
+        let reloaded = AppSettings()
+        XCTAssertFalse(reloaded.headsetAudibleCuesEnabled)
+    }
+
+    func testHeadsetAudibleCuesEnabledToggle() {
+        XCTAssertFalse(settings.headsetAudibleCuesEnabled)
+        settings.headsetAudibleCuesEnabled = true
+        XCTAssertTrue(settings.headsetAudibleCuesEnabled)
+        settings.headsetAudibleCuesEnabled = false
+        XCTAssertFalse(settings.headsetAudibleCuesEnabled)
+    }
+
     // MARK: - BlueParrott Peripheral ID Tests
 
     func testDefaultBlueParrottPeripheralIDIsNil() {

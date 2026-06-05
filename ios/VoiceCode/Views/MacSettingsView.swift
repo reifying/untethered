@@ -408,6 +408,11 @@ struct HeadsetSettingsTab: View {
 
                 if settings.headsetModeEnabled || settings.blueParrottEnabled {
                     Toggle("Auto-send on recording stop", isOn: $settings.headsetAutoSend)
+
+                    Toggle("Audible cues", isOn: $settings.headsetAudibleCuesEnabled)
+                    Text("Play short in-ear tones for recording started, prompt sent, and failures so you get eyes-free confirmation while driving.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
                 }
             }
 
