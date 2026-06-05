@@ -190,6 +190,7 @@ targets:
         excludes:
           - "BlueParrottBLEManagerTests.swift"
           - "HeadsetRemoteCommandManagerMacTests.swift"
+          - "HeadsetEarconPlayerTests.swift"
     resources:
       - VoiceCodeTests/Fixtures
     dependencies:

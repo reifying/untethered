@@ -1,0 +1,196 @@
+// HeadsetEarconPlayer.swift
+// The macOS playback seam for hands-free audible cues (earcons). Synthesizes one short,
+// distinct tone per `Earcon` to a temp file ONCE at init and `prepareToPlay()`s an
+// `AVAudioPlayer` for each, so `play()` is low-latency. This mirrors the keep-alive silent
+// player (`HeadsetRemoteCommandManager.setupKeepAlive`): synthesize PCM → temp CAF →
+// `AVAudioPlayer(contentsOf:)` → `prepareToPlay()`.
+//
+// Routing note: macOS has NO `AVAudioSession`, so there is no `.playAndRecord` /
+// `.allowBluetoothA2DP` to set (those are the iOS precedent named in the design doc).
+// On macOS `AVAudioPlayer` follows the system default output device — the same device the
+// keep-alive player already relies on — which is the Bluetooth (HFP) headset when one is
+// connected. To catch mis-routing (cue on the Mac speaker instead of the headset, Risk 2),
+// `play()` logs the resolved CoreAudio default output device, mirroring `setupKeepAlive`'s
+// `outputs=[…]` logging.
+//
+// macOS-only: only macOS is driven by `SessionReducer`/the executor; iOS exercises the
+// `Earcon` type via unit tests only, never a live playback path. See
+// @docs/design/macos-headset-audible-feedback.md §3 (API Design) and §6 (Risks).
+
+#if os(macOS)
+import Foundation
+import AVFoundation
+import CoreAudio
+
+/// Log to the in-app LogManager so messages appear in the in-app debug log viewer
+/// (mirrors `HeadsetRemoteCommandManager`'s `hLog`). See ios/CLAUDE.md.
+private func eLog(_ msg: String) {
+    LogManager.shared.log(msg, category: "HeadsetEarcon")
+}
+
+private func eLogError(_ msg: String) {
+    LogManager.shared.log("❌ \(msg)", category: "HeadsetEarcon")
+}
+
+/// Plays an earcon. Injected into the macOS executor; the real impl routes to the headset
+/// default-output device, tests inject a spy.
+protocol EarconPlaying {
+    func play(_ earcon: Earcon)
+}
+
+/// Synthesizes the earcon tones ONCE at init to temp files and `prepareToPlay()`s them so
+/// `play()` is immediate (Risk 6: no first-play latency). A short one-shot tone coexists
+/// with the silent looping keep-alive player (both follow the system default output).
+final class HeadsetEarconPlayer: EarconPlaying {
+    /// Errors from tone synthesis. `init` catches these per-earcon (logs and moves on) so
+    /// one bad earcon doesn't sink the others; `preparedEarcons` then reveals which succeeded.
+    enum SynthesisError: Error {
+        case formatUnavailable
+        case bufferUnavailable(frames: Int)
+    }
+
+    private var players: [Earcon: AVAudioPlayer] = [:]
+
+    init() {
+        for earcon in [Earcon.listening, .sent, .error, .cancelled] {
+            do {
+                players[earcon] = try Self.makePlayer(for: earcon)
+            } catch {
+                eLogError("Earcon: failed to prepare \(earcon): \(error)")
+            }
+        }
+        eLog("Earcon: player ready — prepared=\(preparedEarcons.count)/4")
+    }
+
+    func play(_ earcon: Earcon) {
+        guard let player = players[earcon] else {
+            eLogError("Earcon: no prepared player for \(earcon) — skipping")
+            return
+        }
+        player.currentTime = 0
+        let started = player.play()
+        eLog("Earcon: played \(earcon) — started=\(started), output=[\(Self.defaultOutputDeviceDescription())]")
+    }
+
+    /// Test accessor (reachable via `@testable import`, unlike the `private` cache): which
+    /// earcons got a prepared player at init. Lets the isolation test verify construction
+    /// without a live audio route or any `private` access.
+    var preparedEarcons: Set<Earcon> { Set(players.keys) }
+
+    // MARK: - Tone synthesis
+
+    /// One earcon's tone: a sequence of pure-sine notes played back-to-back. Distinct
+    /// CONTOUR + REGISTER per earcon keeps them non-confusable eyes-free:
+    ///   • `.listening` — rising 2-note (low→high): "go / talk now"
+    ///   • `.sent`      — single bright high blip: "got it" (short)
+    ///   • `.error`     — falling 2-note in a low register: "that didn't work"
+    ///   • `.cancelled` — single neutral mid blip: "dismissed"
+    /// Amplitude is modest (Risk 1: keep cue energy low so it doesn't bleed into capture).
+    private struct ToneSpec {
+        let notes: [(frequency: Double, duration: Double)]
+        let amplitude: Float
+        let fileLabel: String
+    }
+
+    private static func spec(for earcon: Earcon) -> ToneSpec {
+        switch earcon {
+        case .listening:
+            return ToneSpec(notes: [(659.25, 0.10), (880.00, 0.13)], amplitude: 0.22, fileLabel: "listening")
+        case .sent:
+            return ToneSpec(notes: [(1046.50, 0.08)], amplitude: 0.22, fileLabel: "sent")
+        case .error:
+            return ToneSpec(notes: [(392.00, 0.11), (261.63, 0.15)], amplitude: 0.22, fileLabel: "error")
+        case .cancelled:
+            return ToneSpec(notes: [(523.25, 0.09)], amplitude: 0.20, fileLabel: "cancelled")
+        }
+    }
+
+    /// Synthesizes a 1-channel PCM tone for `earcon` to a temp CAF and returns a prepared
+    /// `AVAudioPlayer`, mirroring `setupKeepAlive`'s temp-file approach.
+    private static func makePlayer(for earcon: Earcon) throws -> AVAudioPlayer {
+        let spec = spec(for: earcon)
+        let sampleRate = 44100.0
+        guard let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1) else {
+            throw SynthesisError.formatUnavailable
+        }
+        let noteFrameCounts = spec.notes.map { Int(($0.duration * sampleRate).rounded()) }
+        let totalFrames = noteFrameCounts.reduce(0, +)
+        guard totalFrames > 0,
+              let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(totalFrames)),
+              let channel = buffer.floatChannelData?[0] else {
+            throw SynthesisError.bufferUnavailable(frames: totalFrames)
+        }
+        buffer.frameLength = AVAudioFrameCount(totalFrames)
+
+        // ~6ms raised-cosine fade at each note boundary so note starts/ends don't click.
+        let fadeFrames = max(1, Int(0.006 * sampleRate))
+        var offset = 0
+        for (note, noteFrames) in zip(spec.notes, noteFrameCounts) {
+            for i in 0..<noteFrames {
+                let phase = 2.0 * Double.pi * note.frequency * Double(i) / sampleRate
+                var sample = Float(sin(phase)) * spec.amplitude
+                if i < fadeFrames {
+                    sample *= Float(0.5 * (1 - cos(Double.pi * Double(i) / Double(fadeFrames))))
+                } else if i >= noteFrames - fadeFrames {
+                    let remaining = noteFrames - i
+                    sample *= Float(0.5 * (1 - cos(Double.pi * Double(remaining) / Double(fadeFrames))))
+                }
+                channel[offset + i] = sample
+            }
+            offset += noteFrames
+        }
+
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("headset_earcon_\(spec.fileLabel).caf")
+        // Write+close in a nested scope so the file is flushed before the player reads it.
+        do {
+            let file = try AVAudioFile(forWriting: url, settings: format.settings)
+            try file.write(from: buffer)
+        }
+        let player = try AVAudioPlayer(contentsOf: url)
+        player.prepareToPlay()
+        return player
+    }
+
+    // MARK: - Route diagnostics
+
+    /// Name + UID of the system default OUTPUT device (CoreAudio). On macOS `AVAudioPlayer`
+    /// plays to this device, so logging it at play time catches the cue going to the Mac
+    /// speaker instead of the headset (Risk 2). Mirrors
+    /// `VoiceInputManager.defaultInputDeviceDescription()` for the input side.
+    static func defaultOutputDeviceDescription() -> String {
+        var deviceID = AudioDeviceID(0)
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        let status = AudioObjectGetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &deviceID
+        )
+        guard status == noErr, deviceID != AudioDeviceID(0) else {
+            return "unknown (default-output status \(status))"
+        }
+        let name = deviceStringProperty(deviceID, kAudioObjectPropertyName) ?? "?"
+        let uid = deviceStringProperty(deviceID, kAudioDevicePropertyDeviceUID) ?? "?"
+        return "\(name) [uid=\(uid)]"
+    }
+
+    private static func deviceStringProperty(
+        _ device: AudioDeviceID, _ selector: AudioObjectPropertySelector
+    ) -> String? {
+        var address = AudioObjectPropertyAddress(
+            mSelector: selector,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var value: CFString = "" as CFString
+        var size = UInt32(MemoryLayout<CFString>.size)
+        let status = withUnsafeMutablePointer(to: &value) { pointer -> OSStatus in
+            AudioObjectGetPropertyData(device, &address, 0, nil, &size, pointer)
+        }
+        return status == noErr ? (value as String) : nil
+    }
+}
+#endif
