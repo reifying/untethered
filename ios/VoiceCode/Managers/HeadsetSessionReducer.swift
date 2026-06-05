@@ -158,3 +158,34 @@ enum SessionReducer {
 }
 
 private extension String { var trimmed: String { trimmingCharacters(in: .whitespacesAndNewlines) } }
+
+/// Pure F3 capture-readiness decision: given how many audio buffers the route has
+/// delivered by the `captureGrace` window and how many warm-up restarts we've already
+/// spent, decide whether the route is live, should be restarted (cold), or has failed
+/// to warm up and must finalize. Extracted from the executor so it is unit-testable
+/// (the executor just reads `voiceInput.capturedBufferCount` and applies the outcome).
+///
+/// Why `minLiveBufferCount > 1` (the bug this fixes): a cold Bluetooth SCO mic route
+/// emits exactly ONE silent priming buffer and then nothing — observed on the B450-XT
+/// as `buffers=1, firstAudio=never`, whole utterance lost, every dead capture preceded
+/// by `route live (1 buffers)`. A LIVE 16 kHz route streams ~10 buffers/sec
+/// (1600 frames/buffer), so by the ~1 s grace window it has delivered many; `restartCapture`
+/// rebuilds a fresh engine/monitor so each window's count is independent. The old
+/// `>= 1 ⇒ live` check mis-classified the cold route's single buffer as live and never
+/// restarted. The non-silent fast path is handled separately by `captureProducedAudio`
+/// (which cancels the grace), so this governs only the silent-warm-up branch.
+enum CaptureReadiness {
+    /// Minimum buffers by the grace window to consider the route live. A cold route
+    /// delivers ≤1; a live one ~10 per grace — wide separation, 2 keeps margin against
+    /// a slightly-late-but-live route while still catching the 1-buffer cold route.
+    static let minLiveBufferCount = 2
+    /// Warm-up restarts allowed before finalizing (Risk 7: bounded — never loops).
+    static let maxRestarts = 2
+
+    enum Outcome: Equatable { case live, restart, finalize }
+
+    static func graceOutcome(bufferCount: Int, restartCount: Int) -> Outcome {
+        if bufferCount >= minLiveBufferCount { return .live }
+        return restartCount < maxRestarts ? .restart : .finalize
+    }
+}

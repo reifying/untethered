@@ -99,9 +99,11 @@ protocol BLECentral: AnyObject {
     func reconnectHeld()
     func cancelConnection()
     /// Discover the control service's characteristics and subscribe to the
-    /// button-event characteristic (`BPGatt.buttonEvent`). The real adapter
-    /// defers the `setNotifyValue` until characteristic discovery completes and
-    /// fires `bleDidSubscribe` when `isNotifying` flips true.
+    /// button-event characteristic (`BPGatt.buttonEvent`). The real adapter defers
+    /// the `setNotifyValue` until the button char's descriptors (its CCCD) are
+    /// discovered — subscribing before then errors on this hardware — then fires
+    /// `bleDidSubscribe` when `isNotifying` flips true, or `bleSubscribeFailed` if
+    /// the notify-state callback returns an error.
     func subscribeToButtonEvents()
     /// Enable App Mode by writing `payload` (and the owner name) to the mode
     /// characteristic. Only called when App Mode is NOT persistent (fallback for
@@ -129,6 +131,11 @@ protocol BLECentralEvents: AnyObject {
     /// `isNotifying == true` on the button-event characteristic →
     /// `BLEConnEvent.subscribed` (discovering → live).
     func bleDidSubscribe()
+    /// `setNotifyValue` returned an error on the button-event characteristic (e.g.
+    /// the CCCD was not resolvable — macOS "attribute could not be found" on this
+    /// hardware) → `BLEConnEvent.subscribeFailed` (discovering → immediate re-probe,
+    /// no 5s discoveryWatchdog wait).
+    func bleSubscribeFailed()
     /// A new value arrived on the button-event characteristic — raw notification
     /// bytes for `BlueParrottEventParser` to decode.
     func bleDidUpdateButtonValue(_ data: Data)
@@ -436,6 +443,11 @@ extension BlueParrottBLEManager: BLECentralEvents {
         handle(.subscribed)
     }
 
+    func bleSubscribeFailed() {
+        guard enabled else { return }
+        handle(.subscribeFailed)
+    }
+
     func bleDidUpdateButtonValue(_ data: Data) {
         guard let event = BlueParrottEventParser.parse(data) else {
             // Unknown payload: log the raw bytes and drop it — never misclassify
@@ -443,6 +455,10 @@ extension BlueParrottBLEManager: BLECentralEvents {
             bleLog("BlueParrottBLE: unknown button payload \(bleHex(data))")
             return
         }
+        // Trace EVERY known button NOTIFY (raw bytes → parsed event) so the de-bracketing
+        // and any flicker/strand are diagnosable from the log — App-Mode push delivers
+        // these without a CCCD subscription, so the byte stream is the ground truth.
+        bleLog("BlueParrottBLE: button NOTIFY \(bleHex(data)) → \(event)")
         dispatch(event)
         emitRawSignal(for: event)
     }
@@ -503,9 +519,16 @@ private final class CBCentralAdapter: NSObject, BLECentral {
     private var buttonChar: CBCharacteristic?
     private var modeChar: CBCharacteristic?
     private var appNameChar: CBCharacteristic?
-    /// Intents recorded before discovery completes, applied once the matching
-    /// characteristic is found (subscribe / write are async w.r.t. connect).
-    private var wantsSubscribe = false
+    /// The control service, retained from discovery so the GATT effects can issue
+    /// `discoverCharacteristics(for:)` against it.
+    private var controlService: CBService?
+    /// Pure GATT choreography state (discover → descriptors → subscribe). The adapter
+    /// is a thin translator: CoreBluetooth callbacks → `GATTReducer` events, effects →
+    /// CoreBluetooth calls. The ordering/logic is unit-tested in `BLEGattReducerTests`
+    /// (CBPeripheral can't be faked, but the reducer replays the hardware sequence).
+    private var gatt: GATTState = .idle
+    /// Enable-write intent recorded before the mode char is discovered (the
+    /// never-enabled-headset fallback; written in `flushPendingEnable`).
     private var pendingEnablePayload: Data?
 
     var managerState: CBManagerState { manager.state }
@@ -566,14 +589,71 @@ private final class CBCentralAdapter: NSObject, BLECentral {
     }
 
     func subscribeToButtonEvents() {
-        // Reducer-driven `discoverAndSubscribe`: kick off characteristic discovery
-        // and record the subscribe intent (applied in `didDiscoverCharacteristicsFor`).
-        wantsSubscribe = true
-        guard let peripheral = peripheral else {
+        // Reducer-driven `discoverAndSubscribe`: start the GATT choreography from
+        // `connected`. The pure `GATTReducer` drives the ordering (services →
+        // characteristics → button descriptors → subscribe); this adapter only
+        // performs the CoreBluetooth calls its effects describe.
+        guard peripheral != nil else {
             bleLog("⚠️ BlueParrottBLE: subscribe requested but no retained peripheral")
             return
         }
-        peripheral.discoverServices([BlueParrottBLEManager.serviceUUID])
+        gatt = .idle
+        applyGatt(.connected)
+    }
+
+    // MARK: - GATT choreography (drives the pure GATTReducer)
+
+    /// Feed one CoreBluetooth-derived event into the pure `GATTReducer` and apply the
+    /// returned effects. The reducer owns the ordering; this adapter is I/O only.
+    private func applyGatt(_ event: GATTEvent) {
+        let (next, fx) = GATTReducer.reduce(gatt, event)
+        gatt = next
+        fx.forEach(perform)
+    }
+
+    private func perform(_ effect: GATTEffect) {
+        switch effect {
+        case .discoverServices(let uuids):
+            peripheral?.discoverServices(uuids)
+        case .discoverCharacteristics(let serviceUUID):
+            guard let peripheral = peripheral,
+                  let service = controlService
+                    ?? peripheral.services?.first(where: { $0.uuid == serviceUUID }) else {
+                bleLog("⚠️ BlueParrottBLE: control service \(serviceUUID) unavailable for characteristic discovery")
+                return
+            }
+            peripheral.discoverCharacteristics([BPGatt.buttonEvent, BPGatt.mode, BPGatt.appName], for: service)
+        case .discoverDescriptors(let uuid):
+            if let c = characteristic(for: uuid) {
+                bleLog("BlueParrottBLE: discovering descriptors for button-event characteristic")
+                peripheral?.discoverDescriptors(for: c)
+            }
+        case .readValue(let uuid):
+            if let c = characteristic(for: uuid) { peripheral?.readValue(for: c) }
+        case .setNotify(let uuid):
+            if let c = characteristic(for: uuid) {
+                bleLog("BlueParrottBLE: subscribing to button-event characteristic")
+                peripheral?.setNotifyValue(true, for: c)
+            }
+        case .emitSubscribed:            centralDelegate?.bleDidSubscribe()
+        case .emitSubscribeFailed:       centralDelegate?.bleSubscribeFailed()
+        case .emitButtonValue(let data): centralDelegate?.bleDidUpdateButtonValue(data)
+        case .noteAppMode(let value):
+            let text = String(data: value, encoding: .utf8) ?? "<non-utf8>"
+            bleLog("BlueParrottBLE: App Mode characteristic = '\(text)' (hex \(bleHex(value))) — hardware truth")
+        case .log(let message):
+            bleLog("BlueParrottBLE: \(message)")
+        }
+    }
+
+    /// Map a target UUID to the retained `CBCharacteristic` discovered for it.
+    private func characteristic(for uuid: CBUUID) -> CBCharacteristic? {
+        switch uuid {
+        case BPGatt.buttonEvent: return buttonChar
+        case BPGatt.mode:        return modeChar
+        case BPGatt.appName:     return appNameChar
+        default:                 return nil
+        }
     }
 
     func writeAppModeEnable(_ payload: Data) {
@@ -603,6 +683,8 @@ private final class CBCentralAdapter: NSObject, BLECentral {
         buttonChar = nil
         modeChar = nil
         appNameChar = nil
+        controlService = nil
+        gatt = .idle
     }
 
     private func connectRetained(_ label: String) {
@@ -610,10 +692,13 @@ private final class CBCentralAdapter: NSObject, BLECentral {
             bleLog("⚠️ BlueParrottBLE: \(label) connect requested but no retained peripheral")
             return
         }
-        // Fresh connection: drop stale characteristics so intents re-resolve.
+        // Fresh connection: drop stale characteristics + GATT state so the
+        // choreography re-runs from scratch against this connection's discovery.
         buttonChar = nil
         modeChar = nil
         appNameChar = nil
+        controlService = nil
+        gatt = .idle
         if manager.isScanning { manager.stopScan() }
         bleLog("BlueParrottBLE: connecting (\(label)) to \(peripheral.identifier)")
         manager.connect(peripheral, options: nil)
@@ -655,18 +740,19 @@ extension CBCentralAdapter: CBCentralManagerDelegate {
     }
 }
 
+// The CoreBluetooth peripheral callbacks are now a THIN TRANSLATION layer: each maps
+// to one `GATTEvent` fed into the pure `GATTReducer`, which owns the ordering (the
+// discover→descriptors→subscribe choreography unit-tested in `BLEGattReducerTests`).
 extension CBCentralAdapter: CBPeripheralDelegate {
     func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
         if let error = error {
             bleLog("BlueParrottBLE: service discovery error — \(error.localizedDescription)")
             return
         }
-        for service in peripheral.services ?? [] {
-            bleLog("BlueParrottBLE: discovered service \(service.uuid)")
-            peripheral.discoverCharacteristics(
-                [BPGatt.buttonEvent, BPGatt.mode, BPGatt.appName], for: service
-            )
-        }
+        let services = peripheral.services ?? []
+        controlService = services.first { $0.uuid == BPGatt.service }
+        for service in services { bleLog("BlueParrottBLE: discovered service \(service.uuid)") }
+        applyGatt(.servicesDiscovered(services.map { $0.uuid }))
     }
 
     func peripheral(_ peripheral: CBPeripheral,
@@ -676,7 +762,8 @@ extension CBCentralAdapter: CBPeripheralDelegate {
             bleLog("BlueParrottBLE: characteristic discovery error — \(error.localizedDescription)")
             return
         }
-        for characteristic in service.characteristics ?? [] {
+        let characteristics = service.characteristics ?? []
+        for characteristic in characteristics {
             switch characteristic.uuid {
             case BPGatt.buttonEvent: buttonChar = characteristic
             case BPGatt.mode:        modeChar = characteristic
@@ -684,16 +771,22 @@ extension CBCentralAdapter: CBPeripheralDelegate {
             default:                 break
             }
         }
-        // Apply any intent recorded before discovery completed.
-        if wantsSubscribe {
-            if let buttonChar = buttonChar {
-                bleLog("BlueParrottBLE: subscribing to button-event characteristic")
-                peripheral.setNotifyValue(true, for: buttonChar)
-            } else {
-                bleLog("⚠️ BlueParrottBLE: button-event characteristic \(BPGatt.buttonEvent) not found — cannot subscribe (firmware variation?)")
-            }
-        }
+        // Preserve the never-enabled-headset enable-write fallback (independent of the
+        // subscribe choreography the reducer drives below).
         if let modeChar = modeChar { flushPendingEnable(on: modeChar) }
+        applyGatt(.characteristicsDiscovered(characteristics.map { $0.uuid }))
+    }
+
+    func peripheral(_ peripheral: CBPeripheral,
+                    didDiscoverDescriptorsFor characteristic: CBCharacteristic,
+                    error: Error?) {
+        if let error = error {
+            bleLog("BlueParrottBLE: descriptor discovery error for \(characteristic.uuid) — \(error.localizedDescription)")
+        }
+        // Did the button char actually expose the CCCD (0x2902, the notify descriptor)?
+        // Surfaced to the reducer (and logged) so the hardware truth is observable.
+        let hasCCCD = (characteristic.descriptors ?? []).contains { $0.uuid == CBUUID(string: "2902") }
+        applyGatt(.descriptorsDiscovered(characteristic: characteristic.uuid, hasCCCD: hasCCCD))
     }
 
     func peripheral(_ peripheral: CBPeripheral,
@@ -703,8 +796,8 @@ extension CBCentralAdapter: CBPeripheralDelegate {
             bleLog("BlueParrottBLE: value update error for \(characteristic.uuid) — \(error.localizedDescription)")
             return
         }
-        guard characteristic.uuid == BPGatt.buttonEvent, let value = characteristic.value else { return }
-        centralDelegate?.bleDidUpdateButtonValue(value)
+        guard let value = characteristic.value else { return }
+        applyGatt(.valueUpdated(characteristic: characteristic.uuid, data: value))
     }
 
     func peripheral(_ peripheral: CBPeripheral,
@@ -712,14 +805,12 @@ extension CBCentralAdapter: CBPeripheralDelegate {
                     error: Error?) {
         if let error = error {
             bleLog("BlueParrottBLE: subscribe error for \(characteristic.uuid) — \(error.localizedDescription)")
-            return
+        } else {
+            bleLog("BlueParrottBLE: isNotifying=\(characteristic.isNotifying) for \(characteristic.uuid)")
         }
-        bleLog("BlueParrottBLE: isNotifying=\(characteristic.isNotifying) for \(characteristic.uuid)")
-        // A live subscription on the button characteristic completes the connect →
-        // the reducer goes `discovering → live`.
-        if characteristic.uuid == BPGatt.buttonEvent, characteristic.isNotifying {
-            centralDelegate?.bleDidSubscribe()
-        }
+        applyGatt(.notifyStateUpdated(characteristic: characteristic.uuid,
+                                      isNotifying: characteristic.isNotifying,
+                                      failed: error != nil))
     }
 }
 

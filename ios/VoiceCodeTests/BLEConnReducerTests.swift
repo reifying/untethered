@@ -199,6 +199,28 @@ final class BLEConnReducerTests: XCTestCase {
         XCTAssertTrue(fx.contains(.startContinuousScan))
     }
 
+    /// The CCCD/subscribe-failure fix: an explicit `setNotifyValue` error in
+    /// `.discovering` must re-probe IMMEDIATELY (cancel the still-armed
+    /// discoveryWatchdog and re-scan) rather than stranding until the 5s watchdog —
+    /// the silent ~16s reconnect loop the hardware session exposed.
+    func testSubscribeFailed_reProbesViaScan_cancellingDiscoveryWatchdog() {
+        let (state, fx) = ConnReducer.reduce(.discovering, .subscribeFailed, savedID: UUID())
+        XCTAssertEqual(state, .scanning(attempt: 1))
+        XCTAssertTrue(fx.contains(.cancelConnection))
+        XCTAssertTrue(fx.contains(.cancelTimer(.discoveryWatchdog)),
+                      "the still-armed discoveryWatchdog must be cancelled — don't wait it out")
+        XCTAssertTrue(fx.contains(.startContinuousScan))
+        XCTAssertTrue(fx.contains(.armTimer(.scanTick)))
+    }
+
+    /// `subscribeFailed` only matters while `.discovering`; a stray one elsewhere is
+    /// a no-op (the executor only emits it from a button-char notify-state error).
+    func testSubscribeFailed_whileScanning_isNoOp() {
+        let (state, fx) = ConnReducer.reduce(.scanning(attempt: 2), .subscribeFailed, savedID: nil)
+        XCTAssertEqual(state, .scanning(attempt: 2))
+        XCTAssertTrue(fx.isEmpty)
+    }
+
     // MARK: - live → reconnecting (held peripheral, not retrieve)
 
     func testDisconnect_reconnectsToHeldPeripheral_notRetrieve() {

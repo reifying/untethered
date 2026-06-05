@@ -260,4 +260,34 @@ final class HeadsetSessionReducerTests: XCTestCase {
         XCTAssertEqual(recording, .recording)
         XCTAssertTrue(fx.contains(.startCapture))
     }
+
+    // MARK: - F3 capture-readiness: the cold-SCO "1 buffer = live" false-positive fix
+
+    /// THE BUG (logs-20260604-191349): a cold Bluetooth SCO route delivered exactly ONE
+    /// silent buffer, which the old `>= 1 ⇒ live` check called live → no restart → the
+    /// whole 14 s hold was lost. One buffer must be treated as cold, not live.
+    func testGrace_oneBuffer_isColdNotLive_restarts() {
+        XCTAssertEqual(CaptureReadiness.graceOutcome(bufferCount: 1, restartCount: 0), .restart,
+                       "a single priming buffer is a cold SCO route, not a live one")
+        XCTAssertEqual(CaptureReadiness.graceOutcome(bufferCount: 0, restartCount: 0), .restart)
+    }
+
+    /// A live route streams ~10 buffers per grace window — comfortably above the bar.
+    func testGrace_manyBuffers_isLive() {
+        XCTAssertEqual(CaptureReadiness.graceOutcome(bufferCount: 2, restartCount: 0), .live)
+        XCTAssertEqual(CaptureReadiness.graceOutcome(bufferCount: 10, restartCount: 1), .live)
+    }
+
+    /// Restarts are bounded (Risk 7): after `maxRestarts` cold windows, finalize rather
+    /// than loop forever rebuilding the engine.
+    func testGrace_coldPastMaxRestarts_finalizes_noLoop() {
+        XCTAssertEqual(CaptureReadiness.graceOutcome(bufferCount: 1, restartCount: CaptureReadiness.maxRestarts), .finalize)
+        XCTAssertEqual(CaptureReadiness.graceOutcome(bufferCount: 0, restartCount: CaptureReadiness.maxRestarts), .finalize)
+        // Still cold but budget remains → keep trying (more warm-up attempts than the old single restart).
+        XCTAssertEqual(CaptureReadiness.graceOutcome(bufferCount: 1, restartCount: CaptureReadiness.maxRestarts - 1), .restart)
+    }
+
+    func testGrace_allowsMoreThanOneWarmupRestart() {
+        XCTAssertGreaterThan(CaptureReadiness.maxRestarts, 1, "one restart was not enough for a slow SCO link")
+    }
 }

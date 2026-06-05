@@ -402,6 +402,29 @@ final class BlueParrottBLEManagerTests: XCTestCase {
         XCTAssertEqual(central.scanCount, scansBefore + 1)
     }
 
+    /// The subscribe-failure fix: a `setNotifyValue` error (the macOS "attribute
+    /// could not be found" the hardware session hit) re-probes IMMEDIATELY via the
+    /// explicit `bleSubscribeFailed` callback — no `testFireTimer(.discoveryWatchdog)`
+    /// here, proving recovery does not wait out the 5s watchdog — and the still-armed
+    /// discoveryWatchdog is cancelled.
+    func testSubscribeFailed_reProbesViaScan_withoutWaitingOutDiscoveryWatchdog() {
+        let (manager, central, _) = makeManager(savedID: nil)
+        manager.start()
+        central.centralDelegate?.bleDidDiscoverAdvertisement()
+        central.centralDelegate?.bleDidConnect()
+        XCTAssertEqual(manager.testConnState, .discovering)
+        XCTAssertTrue(manager.testHasArmedTimer(.discoveryWatchdog))
+        let scansBefore = central.scanCount
+
+        central.centralDelegate?.bleSubscribeFailed()
+
+        XCTAssertEqual(manager.testConnState, .scanning(attempt: 1))
+        XCTAssertEqual(central.cancelCount, 1, "the subscribe failure tears down the half-open connect")
+        XCTAssertEqual(central.scanCount, scansBefore + 1, "and re-probes via a fresh scan")
+        XCTAssertFalse(manager.testHasArmedTimer(.discoveryWatchdog),
+                       "the still-armed discoveryWatchdog is cancelled — recovery is immediate, not after 5s")
+    }
+
     // MARK: - App Mode on connect
 
     func testReachingDiscover_persistentMode_marksSDKEnabled_noWrite() {

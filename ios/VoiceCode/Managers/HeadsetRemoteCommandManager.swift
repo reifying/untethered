@@ -959,19 +959,22 @@ extension HeadsetRemoteCommandManager {
     private func sessionTimerFired(_ timer: SessionTimer) {
         switch timer {
         case .captureGrace:
-            // The grace window elapsed. Zero buffers ⇒ dead route (F3): restart ONCE,
-            // then finalize on a second stall rather than looping (Risk 7). A live but
-            // silent route (F2 warm-up) just lets the window lapse.
-            if voiceInput.capturedBufferCount == 0 {
-                if captureRestartCount == 0 {
-                    captureRestartCount += 1
-                    handleSystemEvent(.captureStalled)
-                } else {
-                    hLog("Session: capture stalled again after restart — finalizing (no loop)")
-                    handleSystemEvent(.captureEnded)
-                }
-            } else {
-                hLog("Session: captureGrace elapsed — route live (\(voiceInput.capturedBufferCount) buffers)")
+            // The grace window elapsed. A cold Bluetooth SCO route delivers ≤1 silent
+            // priming buffer then nothing (≥2 ⇒ a live ~10/grace stream): restart it,
+            // up to `maxRestarts`, then finalize rather than looping (Risk 7). A live
+            // but silent route (F2 warm-up) clears the bar and just lets the window
+            // lapse. Decision is the pure `CaptureReadiness.graceOutcome`.
+            let buffers = voiceInput.capturedBufferCount
+            switch CaptureReadiness.graceOutcome(bufferCount: buffers, restartCount: captureRestartCount) {
+            case .restart:
+                captureRestartCount += 1
+                hLog("Session: captureGrace — route cold (\(buffers) buffers) → restart \(captureRestartCount)/\(CaptureReadiness.maxRestarts)")
+                handleSystemEvent(.captureStalled)
+            case .finalize:
+                hLog("Session: capture still cold after \(captureRestartCount) restart(s) (\(buffers) buffers) — finalizing (no loop)")
+                handleSystemEvent(.captureEnded)
+            case .live:
+                hLog("Session: captureGrace elapsed — route live (\(buffers) buffers)")
             }
         case .awaitResponse:
             handleSystemEvent(.awaitTimedOut)
@@ -1029,12 +1032,18 @@ extension HeadsetRemoteCommandManager {
         #endif
         let recognizer = BlueParrottGestureRecognizer(
             emit: { [weak self] gesture in
+                hLog("Headset: gesture \(gesture) → session event")
                 self?.handleButtonEvent(Self.sessionEvent(for: gesture), source: .blueParrottBLE)
             },
             scheduleAfter: gestureScheduleAfter
         )
         gestureRecognizer = recognizer
-        ble.rawSignalSink = { [weak recognizer] signal in recognizer?.feed(signal) }
+        // Trace the raw de-bracketing stream so a flicker/strand can be read off the
+        // log: raw signal in → recognizer → gesture out (above) → session event.
+        ble.rawSignalSink = { [weak recognizer] signal in
+            hLog("Headset: raw signal \(signal)")
+            recognizer?.feed(signal)
+        }
         // A disconnect WHILE recording feeds `captureEnded` so `.recording` can't
         // strand on an out-of-range mid-recording (Goal #2). `dropFirst` skips the
         // initial `isConnected == false`.

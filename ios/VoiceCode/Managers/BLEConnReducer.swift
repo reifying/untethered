@@ -51,6 +51,7 @@ enum BLEConnEvent: Equatable {
     case connected                     // didConnect
     case connectFailed(retryable: Bool)
     case subscribed                    // isNotifying == true on the button char
+    case subscribeFailed               // setNotifyValue errored (e.g. CCCD unresolved — macOS "attribute could not be found")
     case scanTick                      // re-check timer fired (does NOT stop the scan)
     case connectWatchdog               // a connect didn't complete in time
     case discoveryWatchdog             // connected but never reached `subscribed`
@@ -145,6 +146,18 @@ enum ConnReducer {
         case (.discovering, .subscribed):
             return (.live, [.cancelTimer(.discoveryWatchdog), .persistIdentifier,
                             .log("BlueParrottBLE live — button events flowing")])
+        case (.discovering, .subscribeFailed):
+            // The button-char subscribe errored — on this hardware macOS reports
+            // "attribute could not be found" when `setNotifyValue` races the CCCD
+            // discovery. The adapter now discovers the descriptor before subscribing
+            // (the actual fix); this edge is the deliberate backstop: don't sit out
+            // the 5s discoveryWatchdog, tear the half-open connect down and re-probe
+            // via a fresh scan immediately. Mirrors the discoveryWatchdog recovery but
+            // also cancels that still-armed watchdog (it has not fired here).
+            return (.scanning(attempt: 1),
+                    [.cancelConnection, .cancelTimer(.discoveryWatchdog),
+                     .startContinuousScan, .armTimer(.scanTick),
+                     .log("subscribe failed → re-probing")])
         case (.discovering, .discoveryWatchdog):
             return (.scanning(attempt: 1),
                     [.cancelConnection, .startContinuousScan, .armTimer(.scanTick),
