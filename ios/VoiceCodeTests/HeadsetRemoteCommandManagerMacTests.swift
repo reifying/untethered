@@ -38,6 +38,14 @@ private final class FakeBLECentralForSession: BLECentral {
     func writeAppModeEnable(_ payload: Data) {}
 }
 
+/// Records played earcons in order (mirrors the existing mock pattern). Injected into
+/// `manager.earconPlayer` so executor tests assert the ORDERED cue sequence without a live
+/// audio route.
+private final class EarconSpy: EarconPlaying {
+    private(set) var played: [Earcon] = []
+    func play(_ earcon: Earcon) { played.append(earcon) }
+}
+
 final class HeadsetRemoteCommandManagerMacTests: XCTestCase {
 
     private let testSessionId = UUID()
@@ -49,12 +57,14 @@ final class HeadsetRemoteCommandManagerMacTests: XCTestCase {
         UserDefaults.standard.removeObject(forKey: "blueParrottEnabled")
         UserDefaults.standard.removeObject(forKey: "headsetModeEnabled")
         UserDefaults.standard.removeObject(forKey: "blueParrottPeripheralID")
+        UserDefaults.standard.removeObject(forKey: "headsetAudibleCuesEnabled")
     }
 
     override func tearDown() {
         UserDefaults.standard.removeObject(forKey: "blueParrottEnabled")
         UserDefaults.standard.removeObject(forKey: "headsetModeEnabled")
         UserDefaults.standard.removeObject(forKey: "blueParrottPeripheralID")
+        UserDefaults.standard.removeObject(forKey: "headsetAudibleCuesEnabled")
         super.tearDown()
     }
 
@@ -67,6 +77,7 @@ final class HeadsetRemoteCommandManagerMacTests: XCTestCase {
         let client: MockVoiceCodeClientForHeadset
         let central: FakeBLECentralForSession
         let settings: AppSettings
+        let earconSpy: EarconSpy
     }
 
     /// Build a manager wired to mocked voice IO/client and a fake-`BLECentral`-backed
@@ -115,12 +126,15 @@ final class HeadsetRemoteCommandManagerMacTests: XCTestCase {
         }
         manager.sessionScheduleWork = { _, _ in }                       // non-firing
         manager.gestureScheduleAfter = { [weak self] _, block in self?.capturedHoldBlock = block }
+        let earconSpy = EarconSpy()
+        manager.earconPlayer = earconSpy                                // spy in place of the live player
         if engaged {
             settings.blueParrottEnabled = true                           // engages without activate()
             drainMainQueue()
         }
         return Fixture(manager: manager, input: input, output: output,
-                       client: client, central: central, settings: settings)
+                       client: client, central: central, settings: settings,
+                       earconSpy: earconSpy)
     }
 
     /// Fire the captured gesture hold timer (→ `holdStarted`).
@@ -376,6 +390,53 @@ final class HeadsetRemoteCommandManagerMacTests: XCTestCase {
 
         XCTAssertEqual(f.manager.testSessionState, .idle, "a failed send must not strand awaitingResponse")
         XCTAssertNil(f.client.lastSentMessage, "no active session → nothing sent")
+    }
+
+    // MARK: - Earcons (executor cues: .listening on record, .sent on confirmed send, .error)
+
+    /// A confirmed record→send loop cues `[.listening, .sent]` in order: `.listening` from the
+    /// reducer at recording-start, `.sent` from the executor on the confirmed send.
+    func testConfirmedSend_playsListeningThenSent_inOrder() {
+        let f = makeFixture()                                        // engaged, connected
+        f.settings.headsetAudibleCuesEnabled = true
+        f.input.transcribedText = "do the thing"                     // non-empty → buildAndSend succeeds
+        f.manager.handleButtonEvent(.tap, source: .blueParrottBLE)   // idle → recording (.listening)
+        f.manager.handleButtonEvent(.tap, source: .blueParrottBLE)   // recording → finalizing → send
+        drainMainQueue()                                             // transcription read + send settle
+        XCTAssertEqual(f.manager.testSessionState, .awaitingResponse)
+        XCTAssertEqual(f.earconSpy.played, [.listening, .sent])
+    }
+
+    /// A FAILED send cues `[.listening, .error]` — never a misleading `.sent`. The reducer
+    /// turns the executor's `.backendUnavailable` (no active session) into `.error`.
+    func testFailedSend_playsListeningThenError_neverSent() {
+        let f = makeFixture(resolveSession: { nil })                 // connected, but no active session
+        f.settings.headsetAudibleCuesEnabled = true
+        f.input.transcribedText = "do the thing"
+        f.manager.handleButtonEvent(.tap, source: .blueParrottBLE)
+        f.manager.handleButtonEvent(.tap, source: .blueParrottBLE)
+        drainMainQueue()
+        XCTAssertEqual(f.manager.testSessionState, .idle, "backendUnavailable unstrands (F4)")
+        XCTAssertEqual(f.earconSpy.played, [.listening, .error], "no contradictory .sent on a failed send")
+    }
+
+    /// The not-connected guard cues `.error` (it returns before the reducer runs, so the
+    /// `.listening` start cue never fires).
+    func testNotConnectedGuard_playsError_onPress() {
+        let f = makeFixture(connected: false)
+        f.settings.headsetAudibleCuesEnabled = true
+        f.manager.handleButtonEvent(.tap, source: .blueParrottBLE)   // guard blocks recording
+        XCTAssertEqual(f.manager.testSessionState, .idle)
+        XCTAssertEqual(f.earconSpy.played, [.error])
+    }
+
+    /// The opt-out gate: with the setting off, no earcon reaches the player at all.
+    func testCuesSuppressedWhenSettingOff() {
+        let f = makeFixture()
+        f.settings.headsetAudibleCuesEnabled = false
+        f.manager.handleButtonEvent(.tap, source: .blueParrottBLE)   // would emit .listening
+        XCTAssertEqual(f.manager.testSessionState, .recording)
+        XCTAssertEqual(f.earconSpy.played, [])
     }
 }
 #endif

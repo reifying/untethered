@@ -96,6 +96,10 @@ class HeadsetRemoteCommandManager: ObservableObject {
     /// was issued. This is what unifies the UI mic button and the headset onto one send.
     var sendVoicePrompt: ((String) -> Bool)?
 
+    /// Audible-cue player. Test seam: defaults to the headset player; tests inject a spy.
+    /// All playback routes through the single gated `playCue` (checks the opt-out setting).
+    var earconPlayer: EarconPlaying = HeadsetEarconPlayer()
+
     /// Scheduler for the session timers. Test seam: defaults to `main.asyncAfter`;
     /// unit tests inject a non-firing recorder and drive timers via `testFireSessionTimer`.
     var sessionScheduleWork: (TimeInterval, DispatchWorkItem) -> Void = { delay, work in
@@ -853,6 +857,7 @@ extension HeadsetRemoteCommandManager {
         }
         if beginsRecording(event, source: source), !client.isConnected {
             hLogWarning("Session: \(event) ignored — not connected to backend")
+            playCue(.error)   // a press that can't record/send cues the failure (guard returns pre-reducer)
             return
         }
         ingest(event, source: source)
@@ -909,8 +914,13 @@ extension HeadsetRemoteCommandManager {
             // bare `buildAndSend` when no ConversationView is wired. One send path for
             // headset + UI + silence-timeout finalize.
             let sent = sendVoicePrompt?(text) ?? buildAndSend(text)
-            if !sent {
-                // No active session → don't strand `.awaitingResponse`.
+            if sent {
+                // Confirmed send → "got it". Played here (not as a reducer effect alongside
+                // the optimistic `.sendPrompt`) so a FAILED send can't lie ("sent" → "error").
+                playCue(.sent)
+            } else {
+                // No active session → don't strand `.awaitingResponse`. The reducer turns
+                // `.backendUnavailable` into `.error`, so a failed send cues `.error` alone.
                 handleSystemEvent(.backendUnavailable)
             }
         case .interruptTTS:
@@ -931,14 +941,21 @@ extension HeadsetRemoteCommandManager {
             cancelSessionTimer(timer)
         case .updateNowPlaying:
             updateNowPlayingState()
-        case .playEarcon:
-            // No-op for now: the audible-cue player + gated `playCue` are wired in a
-            // follow-up task (voice-code-macos-headset-audible-feedback-5ew.4). The
-            // additive effect must be handled here to keep this switch exhaustive.
-            break
+        case .playEarcon(let earcon):
+            playCue(earcon)
         case .log(let message):
             hLog("Session: \(message)")
         }
+    }
+
+    /// The ONE gated entry point for audible cues. Quiet on the desktop and when the user
+    /// opted out; every call site (reducer `.playEarcon` effects, the confirmed-send `.sent`,
+    /// the not-connected guard) routes through here so no play site can forget the gate.
+    /// Headset-engagement is already guaranteed upstream by `handleButtonEvent` /
+    /// `handleSystemEvent`, so this only adds the opt-out check.
+    private func playCue(_ earcon: Earcon) {
+        guard settings.headsetAudibleCuesEnabled else { return }
+        earconPlayer.play(earcon)
     }
 
     private func startSessionCapture() {
