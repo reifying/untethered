@@ -931,6 +931,11 @@ extension HeadsetRemoteCommandManager {
             cancelSessionTimer(timer)
         case .updateNowPlaying:
             updateNowPlayingState()
+        case .playEarcon:
+            // No-op for now: the audible-cue player + gated `playCue` are wired in a
+            // follow-up task (voice-code-macos-headset-audible-feedback-5ew.4). The
+            // additive effect must be handled here to keep this switch exhaustive.
+            break
         case .log(let message):
             hLog("Session: \(message)")
         }

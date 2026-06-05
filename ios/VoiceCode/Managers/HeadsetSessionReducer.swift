@@ -57,6 +57,19 @@ enum SessionEvent: Equatable {
     case backendUnavailable    // client disconnected mid-await
 }
 
+/// A short, language-neutral audio cue for a hands-free state change, played through the
+/// headset HFP route so the user hears it without looking at the screen. `Hashable` (not
+/// just `Equatable`) because `HeadsetEarconPlayer` (macOS executor, task .3) keys a
+/// `[Earcon: AVAudioPlayer]` cache by it; `Hashable` refines `Equatable`, so the
+/// `SessionEffect` Equatable synthesis below still holds.
+/// See @docs/design/macos-headset-audible-feedback.md §3.
+enum Earcon: Hashable {
+    case listening   // recording began — "mic is live, talk now"
+    case sent        // prompt dispatched — "got it" (executor-only; never a reducer effect)
+    case error       // nothing recognized / no response / not connected — "that didn't work"
+    case cancelled   // TTS dismissed without recording (optional; not emitted yet)
+}
+
 enum SessionEffect: Equatable {
     case startCapture
     case restartCapture        // F3 recovery
@@ -68,6 +81,7 @@ enum SessionEffect: Equatable {
     case armTimer(SessionTimer)
     case cancelTimer(SessionTimer)
     case updateNowPlaying
+    case playEarcon(Earcon)    // declare intent to play an audible cue (executor does the I/O)
     case log(String)
 }
 
@@ -126,15 +140,18 @@ enum SessionReducer {
 
         case (.finalizing, .transcription(let text)):
             if let text, !text.trimmed.isEmpty {
+                // Success branch: send only. The `.sent` cue is the executor's job (played
+                // on a CONFIRMED send) — emitting it here would lie on a failed send (§3).
                 return (.awaitingResponse,
                         [.sendPrompt(text), .armTimer(.awaitResponse), .updateNowPlaying])
             }
-            return (.idle, [.updateNowPlaying])                    // empty → straight back to idle
+            // Nothing recognized (nil/empty/whitespace) → idle + "didn't catch that".
+            return (.idle, [.playEarcon(.error), .updateNowPlaying])
 
         // F4: no spoken response in time (or backend dropped) → idle WITHOUT cancelling
         // the prompt (a late response still speaks via `idle —ttsStarted→ speaking`).
         case (.awaitingResponse, .awaitTimedOut), (.awaitingResponse, .backendUnavailable):
-            return (.idle, [.cancelTimer(.awaitResponse), .updateNowPlaying,
+            return (.idle, [.cancelTimer(.awaitResponse), .playEarcon(.error), .updateNowPlaying,
                             .log("await ended — re-enabling button (prompt still in flight)")])
         case (.awaitingResponse, .ttsStarted):
             return (.speaking, [.cancelTimer(.awaitResponse), .updateNowPlaying])
@@ -162,7 +179,10 @@ enum SessionReducer {
                                        interrupting: [SessionEffect]) -> (SessionState, [SessionEffect]) {
         var fx = interrupting
         if source == .blueParrottBLE { fx.append(.suspendKeepAlive) }
-        fx.append(contentsOf: [.startCapture, .armTimer(.captureGrace), .updateNowPlaying])
+        // `.playEarcon(.listening)` fires on EVERY recording-start (idle start AND barge-in,
+        // any source) — the eyes-free "mic is live, talk now" cue (executor gates it).
+        fx.append(contentsOf: [.startCapture, .playEarcon(.listening),
+                               .armTimer(.captureGrace), .updateNowPlaying])
         return (.recording, fx)
     }
 }

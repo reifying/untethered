@@ -25,12 +25,18 @@ final class HeadsetSessionReducerTests: XCTestCase {
         return nil
     }
 
+    /// True if `fx` carries any `.playEarcon(_)` (regardless of which earcon).
+    private func containsAnyEarcon(_ fx: [SessionEffect]) -> Bool {
+        fx.contains { if case .playEarcon = $0 { return true }; return false }
+    }
+
     // MARK: - Start recording from idle (PTT + toggle)
 
     func testIdle_holdStarted_startsRecording_BLEsuspendsKeepAlive() {
         let (state, fx) = SessionReducer.reduce(.idle, .holdStarted, source: .blueParrottBLE)
         XCTAssertEqual(state, .recording)
-        XCTAssertEqual(fx, [.suspendKeepAlive, .startCapture, .armTimer(.captureGrace), .updateNowPlaying])
+        XCTAssertEqual(fx, [.suspendKeepAlive, .startCapture, .playEarcon(.listening),
+                            .armTimer(.captureGrace), .updateNowPlaying])
     }
 
     func testIdle_tap_startsRecording() {
@@ -359,5 +365,90 @@ final class HeadsetSessionReducerTests: XCTestCase {
         let (state, fx) = SessionReducer.reduce(.awaitingResponse, .tap, source: .blueParrottBLE)
         XCTAssertEqual(state, .idle)
         XCTAssertFalse(fx.contains(.startCapture))
+    }
+
+    // MARK: - Earcons (audible state-change cues)
+    // @docs/design/macos-headset-audible-feedback.md §3–§4. The reducer declares cue INTENT
+    // via `.playEarcon`; only playback is I/O (executor, task .4). `.sent` is never a reducer
+    // effect — the executor plays it on a confirmed send so a failed send can't lie.
+
+    /// `.listening` ("mic is live, talk now") on the idle-start recording transition.
+    func testRecordingStart_fromIdle_emitsListeningEarcon() {
+        let (state, fx) = SessionReducer.reduce(.idle, .tap, source: .ui)
+        XCTAssertEqual(state, .recording)
+        XCTAssertTrue(fx.contains(.playEarcon(.listening)))
+    }
+
+    /// Barge-in is also a recording-start, so it ALSO cues `.listening` — the UI mic button
+    /// tapped while TTS is speaking interrupts and records, and the user hears "talk now".
+    func testRecordingStart_uiBargeInWhileSpeaking_emitsListeningEarcon() {
+        let (state, fx) = SessionReducer.reduce(.speaking, .tap, source: .ui)
+        XCTAssertEqual(state, .recording)
+        XCTAssertTrue(fx.contains(.playEarcon(.listening)))
+        XCTAssertTrue(fx.contains(.interruptTTS))
+    }
+
+    /// A hold barge-in from awaitingResponse (headset PTT "talk now") also cues `.listening`.
+    func testRecordingStart_holdBargeInWhileAwaiting_emitsListeningEarcon() {
+        let (state, fx) = SessionReducer.reduce(.awaitingResponse, .holdStarted, source: .blueParrottBLE)
+        XCTAssertEqual(state, .recording)
+        XCTAssertTrue(fx.contains(.playEarcon(.listening)))
+    }
+
+    /// Negative: the SUCCESS branch emits `.sendPrompt` but NO earcon — the `.sent` cue is the
+    /// executor's job (confirmed-send only), asserted in the executor tests, not here.
+    func testNonEmptyTranscription_emitsSend_butNoReducerEarcon() {
+        let (state, fx) = SessionReducer.reduce(.finalizing, .transcription("hello"), source: .blueParrottBLE)
+        XCTAssertEqual(state, .awaitingResponse)
+        XCTAssertTrue(fx.contains(.sendPrompt("hello")))
+        XCTAssertFalse(containsAnyEarcon(fx), "the reducer must NOT emit .sent on send — that is executor-only")
+    }
+
+    /// `.error` ("didn't catch that") on a nil transcription (nothing recognized).
+    func testEmptyTranscription_nil_emitsErrorEarcon() {
+        let (state, fx) = SessionReducer.reduce(.finalizing, .transcription(nil), source: .blueParrottBLE)
+        XCTAssertEqual(state, .idle)
+        XCTAssertTrue(fx.contains(.playEarcon(.error)))
+    }
+
+    /// `.error` also covers empty/whitespace-only transcriptions — same "nothing recognized".
+    func testEmptyTranscription_whitespace_emitsErrorEarcon() {
+        let (state, fx) = SessionReducer.reduce(.finalizing, .transcription("   \n\t "), source: .blueParrottBLE)
+        XCTAssertEqual(state, .idle)
+        XCTAssertTrue(fx.contains(.playEarcon(.error)))
+    }
+
+    /// `.error` on the F4 await-timeout strand exit (no spoken response in time).
+    func testAwaitTimeout_emitsErrorEarcon() {
+        let (state, fx) = SessionReducer.reduce(.awaitingResponse, .awaitTimedOut, source: .blueParrottBLE)
+        XCTAssertEqual(state, .idle)
+        XCTAssertTrue(fx.contains(.playEarcon(.error)))
+    }
+
+    /// `.error` on the F4 backend-dropped strand exit (client disconnected mid-await).
+    func testBackendUnavailable_emitsErrorEarcon() {
+        let (state, fx) = SessionReducer.reduce(.awaitingResponse, .backendUnavailable, source: .blueParrottBLE)
+        XCTAssertEqual(state, .idle)
+        XCTAssertTrue(fx.contains(.playEarcon(.error)))
+    }
+
+    /// Negative: a silent transition (TTS finished playing) stays silent — no earcon.
+    func testSpeakingState_noEarconOnTtsEnd() {
+        let (_, fx) = SessionReducer.reduce(.speaking, .ttsEnded, source: .blueParrottBLE)
+        XCTAssertFalse(containsAnyEarcon(fx))
+    }
+
+    /// Negative: a headset tap dismissing TTS (F5) emits no earcon — `.cancelled` is not yet
+    /// emitted by the reducer (it ships only if wanted; see design §3).
+    func testHeadsetDismissSpeaking_emitsNoEarcon() {
+        let (state, fx) = SessionReducer.reduce(.speaking, .tap, source: .blueParrottBLE)
+        XCTAssertEqual(state, .idle)
+        XCTAssertFalse(containsAnyEarcon(fx))
+    }
+
+    /// `Earcon` is `Hashable` (it keys the player's `[Earcon: AVAudioPlayer]` cache); guard
+    /// that the cases stay distinct so the cache can't collide two cues into one player.
+    func testEarcon_isHashable_distinctCases() {
+        XCTAssertEqual(Set<Earcon>([.listening, .sent, .error, .cancelled]).count, 4)
     }
 }
