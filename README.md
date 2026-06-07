@@ -25,6 +25,7 @@ Untethered connects your iOS/macOS device to a Clojure backend that invokes Clau
 - **Real-time Streaming** — Live command output as it happens
 - **Share Extension** — Share files directly to Claude from other apps
 - **Session Compaction** — Summarize long sessions to reduce token usage
+- **Recipes** — Multi-step agent workflows (design → break down → implement) driven by a state machine
 
 ## Prerequisites
 
@@ -154,6 +155,92 @@ The app communicates with the backend over WebSocket. Key message types:
 | ← | `session_history` | Historical messages |
 
 See [STANDARDS.md](STANDARDS.md) for the complete protocol specification.
+
+## Recipes
+
+Recipes are multi-step agent workflows defined as small state machines in
+[`backend/src/voice_code/recipes.clj`](backend/src/voice_code/recipes.clj). Each
+recipe is a set of named **steps**; every step gives the agent a prompt and a
+fixed set of **outcomes**. The orchestrator
+([`orchestration.clj`](backend/src/voice_code/orchestration.clj)) reads the
+outcome the agent emits at the end of its turn and follows the step's
+`:on-outcome` transition — advancing to the next step, looping back, exiting, or
+restarting in a fresh session. Guardrails (`:max-step-visits`,
+`:max-total-steps`) bound runaway loops.
+
+The flagship recipe, **`:design-break-impl-all`**, chains the full feature
+pipeline end to end:
+
+1. **Document design** — write and self-review a design document, then commit it.
+2. **Break down tasks** — analyze the design and create an epic plus child tasks
+   in the [beads](https://github.com/steveyegge/beads) issue tracker.
+3. **Implement & review all** — implement each ready task, code-review it, fix any
+   issues, and commit — one **fresh agent session per task** — until no ready
+   tasks remain.
+
+Phases 1 and 2 run in a single accumulating session (the design output feeds task
+breakdown directly). Phase 2 then hands off via `:restart-new-session` to the
+generic `:implement-and-review-all` recipe, which restarts a brand-new session
+for each task so no state leaks between implementations. Every step also has an
+`:other` escape outcome that exits the recipe immediately (omitted below for
+readability).
+
+```mermaid
+flowchart TD
+    Start([Invoke design-break-impl-all]):::entry --> DD
+
+    subgraph P1["Phase 1 · document design — single accumulating session"]
+        direction TB
+        DD["design-document"] -->|complete| DR["design-review"]
+        DR -->|issues-found| DF["design-fix"]
+        DF -->|complete| DR
+        DR -->|no-issues| DC["design-commit"]
+    end
+
+    DD -->|needs-input| ExClar["Exit: clarification-needed"]:::exit
+
+    DC -->|committed / nothing-to-commit| TA
+
+    subgraph P2["Phase 2 · break down tasks — same session as Phase 1"]
+        direction TB
+        TA["tasks-analyze"] -->|complete| TCE["tasks-create-epic"]
+        TCE -->|complete| TCT["tasks-create-tasks"]
+        TCT -->|complete| TR["tasks-review"]
+        TR -->|issues-found| TF["tasks-fix"]
+        TF -->|complete| TR
+        TR -->|no-issues| TC["tasks-commit"]
+    end
+
+    TA -->|design-missing| ExNoDesign["Exit: no-design-document-found"]:::exit
+    TA -->|needs-input| ExClar
+
+    TC -->|"committed / nothing-to-commit — restart-new-session"| Impl
+
+    subgraph P3["Phase 3 · implement-and-review-all — FRESH session per task"]
+        direction TB
+        Impl["implement (one task)"] -->|complete| CR["code-review"]
+        CR -->|issues-found| Fix["fix"]
+        Fix -->|complete| CR
+        CR -->|no-issues| Commit["commit"]
+        Commit -->|"committed / nothing-to-commit — restart-new-session (new session)"| Impl
+    end
+
+    Impl -->|no-tasks| ExDone["Exit: no-tasks-available — pipeline complete"]:::done
+    Impl -->|blocked| ExBlocked["Exit: implementation-blocked"]:::exit
+
+    classDef entry fill:#cde4ff,stroke:#3b6db5,color:#0b2545;
+    classDef exit fill:#ffd9d9,stroke:#b53b3b,color:#451010;
+    classDef done fill:#d6f5d6,stroke:#3b9b46,color:#0f3d17;
+```
+
+The **review loops** (`design-review`/`design-fix` and `code-review`/`fix`)
+repeat `issues-found → fix → re-review` until a step reports `no-issues`. The
+**Phase 3 task loop** ends when `implement` reports `no-tasks` (graceful:
+`no-tasks-available`) or `blocked`. Other generic recipes
+(`:document-design`, `:break-down-tasks`, `:implement-and-review`,
+`:review-and-commit`, `:refine-design`, `:rebase`, `:retrospective`) reuse the
+same step vocabulary; see
+[`recipes.clj`](backend/src/voice_code/recipes.clj) for the full registry.
 
 ## Development
 
