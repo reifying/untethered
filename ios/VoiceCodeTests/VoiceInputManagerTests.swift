@@ -398,4 +398,36 @@ final class VoiceInputManagerTests: XCTestCase {
         manager.stopRecording()   // second stop is a safe no-op (no monitor, no crash)
         XCTAssertNil(manager.captureMonitor)
     }
+
+    // MARK: - Capture audio-session options (BlueParrott HFP mic vs built-in mic)
+
+    #if os(iOS)
+    /// Default capture options allow A2DP output but NOT HFP. This is the AirPods-safe
+    /// baseline: `.allowBluetooth` (HFP) would force AirPods to 16 kHz and break AVRCP
+    /// stem-press delivery, so input stays on the built-in mic unless explicitly opted in.
+    func testRecordingCategoryOptions_default_a2dpOnly_noHFP() {
+        let options = VoiceInputManager.recordingCategoryOptions(prefersBluetoothHFP: false)
+        XCTAssertTrue(options.contains(.allowBluetoothA2DP), "A2DP output must always be allowed")
+        XCTAssertFalse(options.contains(.allowBluetoothHFP), "HFP mic must be off by default (AirPods-safe)")
+        XCTAssertFalse(options.contains(.mixWithOthers), "mixWithOthers loses the Now Playing slot — never set")
+    }
+
+    /// Opting in (a BlueParrott is connected) adds `.allowBluetooth` — the HFP/SCO
+    /// profile that routes *input* through the headset mic instead of the phone's
+    /// built-in mic. A2DP stays on so output + the Now Playing keep-alive still reach
+    /// the headset. This is the fix for the "mic across the car" capture bug.
+    func testRecordingCategoryOptions_prefersHFP_addsAllowBluetooth() {
+        let options = VoiceInputManager.recordingCategoryOptions(prefersBluetoothHFP: true)
+        XCTAssertTrue(options.contains(.allowBluetoothHFP), "HFP mic must be engaged when opted in")
+        XCTAssertTrue(options.contains(.allowBluetoothA2DP), "A2DP output must remain allowed")
+        XCTAssertFalse(options.contains(.mixWithOthers))
+    }
+
+    /// Until a headset manager wires the seam, capture must default to AirPods-safe
+    /// behavior (built-in mic / A2DP). Guards against a regression that silently
+    /// switches every recording to HFP.
+    func testPrefersBluetoothHFPInput_defaultsFalse() {
+        XCTAssertFalse(manager.prefersBluetoothHFPInput(), "must default to false (built-in mic / A2DP)")
+    }
+    #endif
 }

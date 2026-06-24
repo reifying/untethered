@@ -88,7 +88,7 @@ final class HeadsetRemoteCommandManagerMacTests: XCTestCase {
     /// real CoreBluetooth/audio.
     private func makeFixture(engaged: Bool = true,
                              connected: Bool = true,
-                             resolveSession: (() -> (sessionId: UUID, workingDirectory: String)?)? = nil) -> Fixture {
+                             resolveSession: (() -> (sessionId: UUID, workingDirectory: String, isNewSession: Bool, provider: String)?)? = nil) -> Fixture {
         let settings = AppSettings()
         let output = MockVoiceOutputForHeadset()
         let input = MockVoiceInputForHeadset(voiceOutputManager: output)
@@ -106,7 +106,7 @@ final class HeadsetRemoteCommandManagerMacTests: XCTestCase {
         client.isConnected = connected
         let central = FakeBLECentralForSession()
         let sessionId = testSessionId
-        let resolve = resolveSession ?? { (sessionId, "/test/working-dir") }
+        let resolve = resolveSession ?? { (sessionId, "/test/working-dir", false, "claude") }
         let manager = HeadsetRemoteCommandManager(
             voiceInput: input,
             voiceOutput: output,
@@ -390,6 +390,47 @@ final class HeadsetRemoteCommandManagerMacTests: XCTestCase {
 
         XCTAssertEqual(f.manager.testSessionState, .idle, "a failed send must not strand awaitingResponse")
         XCTAssertNil(f.client.lastSentMessage, "no active session → nothing sent")
+    }
+
+    // MARK: - Message shape (new-session kickoff)
+
+    /// macOS reducer → executor → buildAndSend: a fresh active session (isNewSession
+    /// true) must MINT via new_session_id+provider, not resume_session_id. The macOS
+    /// mic-button / BlueParrott path shares buildAndSend, so this is the macOS twin of
+    /// the iOS new-session guard. Regression guard for the phantom-resume kickoff bug.
+    func testReducerSend_newSession_usesNewSessionId() {
+        let newId = UUID()
+        let f = makeFixture(resolveSession: { (newId, "/test/working-dir", true, "claude") })
+        f.input.transcribedText = "start a new session"
+        f.manager.handleButtonEvent(.tap, source: .blueParrottBLE)   // idle → recording
+        f.manager.handleButtonEvent(.tap, source: .blueParrottBLE)   // recording → finalizing → send
+        drainMainQueue()
+
+        guard let msg = f.client.lastSentMessage else {
+            XCTFail("No message sent")
+            return
+        }
+        XCTAssertEqual(msg["new_session_id"] as? String, newId.uuidString.lowercased())
+        XCTAssertEqual(msg["provider"] as? String, "claude")
+        XCTAssertNil(msg["resume_session_id"], "new session must not resume")
+        XCTAssertEqual(msg["working_directory"] as? String, "/test/working-dir")
+    }
+
+    /// Twin of the above: an existing session (isNewSession false) still resumes.
+    func testReducerSend_existingSession_usesResumeSessionId() {
+        let existingId = UUID()
+        let f = makeFixture(resolveSession: { (existingId, "/test/working-dir", false, "claude") })
+        f.input.transcribedText = "continue the session"
+        f.manager.handleButtonEvent(.tap, source: .blueParrottBLE)
+        f.manager.handleButtonEvent(.tap, source: .blueParrottBLE)
+        drainMainQueue()
+
+        guard let msg = f.client.lastSentMessage else {
+            XCTFail("No message sent")
+            return
+        }
+        XCTAssertEqual(msg["resume_session_id"] as? String, existingId.uuidString.lowercased())
+        XCTAssertNil(msg["new_session_id"], "existing session must not mint a new one")
     }
 
     // MARK: - Earcons (executor cues: .listening on record, .sent on confirmed send, .error)

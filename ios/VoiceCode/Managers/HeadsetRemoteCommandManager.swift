@@ -52,7 +52,7 @@ class HeadsetRemoteCommandManager: ObservableObject {
     private let voiceOutput: VoiceOutputManager
     private let client: VoiceCodeClient
     private let settings: AppSettings
-    private let resolveActiveSession: () -> (sessionId: UUID, workingDirectory: String)?
+    private let resolveActiveSession: () -> (sessionId: UUID, workingDirectory: String, isNewSession: Bool, provider: String)?
     private var cancellables = Set<AnyCancellable>()
 
     #if os(macOS)
@@ -141,6 +141,28 @@ class HeadsetRemoteCommandManager: ObservableObject {
     private var interruptionObserver: NSObjectProtocol?
     private(set) var blueParrottManager: BlueParrottButtonManager?
 
+    /// True when a BlueParrott comms headset is connected — the condition under which
+    /// the capture session engages the Bluetooth HFP mic (`.allowBluetooth`) instead of
+    /// the phone's built-in mic. Set in init to read `blueParrottManager?.isConnected`;
+    /// overridable as a test seam so audio-session option tests don't need a live
+    /// BPHeadset SDK.
+    var isBlueParrottConnected: () -> Bool = { false }
+
+    /// De-bracketer between the BPHeadset SDK's raw button stream and the recording
+    /// actions. The SDK fires `down`/`up` PLUS a derived `tap`/`long-press` for the SAME
+    /// physical press (a tap is `down,up,tapCode`; a hold is `down,longPressCode,up`).
+    /// Handling those raw events independently made a hold's long-press fire interrupt
+    /// mid-press (so the release never sent) and a tap's trailing code reset a
+    /// just-started send. This collapses each press into exactly one clean gesture —
+    /// the same `BlueParrottGestureRecognizer` the macOS path uses.
+    private var gestureRecognizer: BlueParrottGestureRecognizer?
+
+    /// Scheduler for the recognizer's hold timer. Test seam: tests inject a recorder and
+    /// fire the captured block deterministically (no wall-clock read).
+    var gestureScheduleAfter: (TimeInterval, @escaping () -> Void) -> Void = { delay, block in
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: block)
+    }
+
     enum HeadsetState: CustomStringConvertible, Equatable {
         case ready
         case recording
@@ -162,13 +184,19 @@ class HeadsetRemoteCommandManager: ObservableObject {
          voiceOutput: VoiceOutputManager,
          client: VoiceCodeClient,
          settings: AppSettings,
-         resolveActiveSession: @escaping () -> (sessionId: UUID, workingDirectory: String)? = {
+         resolveActiveSession: @escaping () -> (sessionId: UUID, workingDirectory: String, isNewSession: Bool, provider: String)? = {
              guard let sessionId = ActiveSessionManager.shared.activeSessionId else { return nil }
              let context = PersistenceController.shared.container.viewContext
              guard let session = try? context.fetch(
                  CDBackendSession.fetchBackendSession(id: sessionId)
              ).first else { return nil }
-             return (sessionId, session.workingDirectory)
+             // Mirror ConversationView.sendPromptText: a session with no messages
+             // yet is NEW (mint it on the backend via new_session_id); otherwise
+             // resume. Without this, the headset path always resumed and a
+             // first-time Bluetooth send to a fresh session created a phantom the
+             // backend never had — `claude --resume <uuid>` then timed out.
+             let provider = session.provider.isEmpty ? "claude" : session.provider
+             return (sessionId, session.workingDirectory, session.messageCount == 0, provider)
          }) {
         self.voiceInput = voiceInput
         self.voiceOutput = voiceOutput
@@ -252,6 +280,13 @@ class HeadsetRemoteCommandManager: ObservableObject {
                 }
             }
             .store(in: &cancellables)
+
+        // Engage the Bluetooth HFP mic for capture while a BlueParrott is connected.
+        // Its buttons arrive over BLE (not AVRCP), so HFP costs no button delivery and
+        // is the only way to record from the headset mic rather than the built-in mic.
+        // VoiceInputManager reads this each time it (re)configures the capture session.
+        isBlueParrottConnected = { [weak self] in self?.blueParrottManager?.isConnected == true }
+        voiceInput.prefersBluetoothHFPInput = { [weak self] in self?.isBlueParrottConnected() ?? false }
         #else
         // macOS: capture ending with no `up` (recognizer silence auto-finalize /
         // engine failure) feeds `captureEnded` so `.recording` can't strand (Goal #2).
@@ -491,32 +526,35 @@ class HeadsetRemoteCommandManager: ObservableObject {
     /// NOT touch state, so it stays platform-neutral.
     @discardableResult
     fileprivate func buildAndSend(_ text: String) -> Bool {
-        guard let (sessionId, workingDirectory) = resolveActiveSession() else {
+        guard let (sessionId, workingDirectory, isNewSession, provider) = resolveActiveSession() else {
             hLogWarning("Headset: auto-send failed — no active session")
             return false
         }
 
         let sessionIdStr = sessionId.uuidString.lowercased()
-        hLog("Headset: sending prompt to session=\(sessionIdStr) textLength=\(text.count) dir=\(workingDirectory)")
+        hLog("Headset: sending prompt to session=\(sessionIdStr) new=\(isNewSession) provider=\(provider) textLength=\(text.count) dir=\(workingDirectory)")
 
         client.sessionSyncManager.createOptimisticMessage(
             sessionId: sessionId,
             text: text
         ) { _ in }
 
-        var message: [String: Any] = [
-            "type": "prompt",
-            "text": text,
-            "resume_session_id": sessionIdStr,
-            "working_directory": workingDirectory
-        ]
-
-        if !settings.systemPrompt.isEmpty {
-            message["system_prompt"] = settings.systemPrompt
-        }
+        // Reuse the canonical builder ConversationView.sendPromptText uses so the
+        // headset/Bluetooth send shares one wire contract: new_session_id+provider
+        // for a fresh session, resume_session_id for an existing one, plus
+        // working_directory and an optional non-empty system_prompt. Ghost is
+        // never honored here (the headset has no ghost gesture).
+        let message = PromptMessageBuilder.build(
+            text: text,
+            sessionId: sessionIdStr,
+            workingDirectory: workingDirectory,
+            isNewSession: isNewSession,
+            provider: provider,
+            systemPrompt: settings.systemPrompt
+        )
 
         client.sendMessage(message)
-        hLog("Headset: prompt sent to session \(sessionIdStr)")
+        hLog("Headset: prompt sent to session \(sessionIdStr) (new=\(isNewSession))")
         return true
     }
 }
@@ -600,6 +638,42 @@ extension HeadsetRemoteCommandManager {
         state = .ready
         updateNowPlayingState()
         hLog("Headset interrupt: stopped TTS")
+    }
+
+    /// Apply ONE clean, de-bracketed gesture from `BlueParrottGestureRecognizer`. This is
+    /// the single place the BlueParrott drives recording — raw `down`/`up`/`tap`/`long-press`
+    /// no longer act independently. A hold is press-and-hold-to-talk (release sends); a tap
+    /// toggles record/stop and dismisses a busy state; a double-tap interrupts.
+    private func handleHeadsetGesture(_ gesture: HeadsetGesture) {
+        hLog("Headset: ▶︎ de-bracketed gesture=\(gesture) state=\(self.state)")
+        switch gesture {
+        case .holdStarted:
+            switch state {
+            case .ready:     hLog("Headset: holdStarted (ready) → startRecording"); startRecording()
+            case .speaking:  hLog("Headset: holdStarted (speaking) → interrupt + startRecording [barge-in]"); performInterrupt(); startRecording()
+            case .sending:   hLog("Headset: holdStarted (sending) → startRecording [talk over pending]"); startRecording()
+            case .recording: hLog("Headset: holdStarted (recording) → ignored, already recording")
+            }
+        case .holdEnded:
+            if state == .recording {
+                hLog("Headset: holdEnded (recording) → stopRecordingAndSend")
+                stopRecordingAndSend()
+            } else {
+                hLog("Headset: holdEnded (\(state)) → ignored, not recording")
+            }
+        case .tap:
+            switch state {
+            case .ready:     hLog("Headset: tap (ready) → startRecording"); startRecording()
+            case .recording: hLog("Headset: tap (recording) → stopRecordingAndSend"); stopRecordingAndSend()
+            case .speaking:  hLog("Headset: tap (speaking) → interrupt"); performInterrupt()
+            case .sending:
+                hLog("Headset: tap (sending) → resetting to ready")
+                state = .ready
+                updateNowPlayingState()
+            }
+        case .doubleTap:
+            hLog("Headset: doubleTap (\(state)) → interrupt"); performInterrupt()
+        }
     }
 
     // MARK: - Recording Lifecycle
@@ -731,7 +805,13 @@ extension HeadsetRemoteCommandManager {
         do {
             let session = AVAudioSession.sharedInstance()
             let prevCategory = session.category.rawValue
-            try session.setCategory(.playAndRecord, mode: .default, options: [.allowBluetoothA2DP])
+            // Keep the ready/keep-alive session options in lockstep with the capture
+            // session (VoiceInputManager) so the route doesn't flip A2DP↔HFP between
+            // ready and recording — flipping re-runs the SCO handshake on every press
+            // and clips the first word. When a BlueParrott is connected this keeps HFP
+            // warm; otherwise it stays A2DP-only (AirPods-safe).
+            let options = VoiceInputManager.recordingCategoryOptions(prefersBluetoothHFP: isBlueParrottConnected())
+            try session.setCategory(.playAndRecord, mode: .default, options: options)
             try session.setActive(true)
             startKeepAlive()
             let outputs = session.currentRoute.outputs.map(\.portName).joined(separator: ", ")
@@ -763,6 +843,10 @@ extension HeadsetRemoteCommandManager {
         // write + per-gesture notification bytes) for the macOS reimplementation.
         BPSniffer.install()
         #endif
+        // De-bracket the SDK's raw button stream into one clean gesture per press.
+        gestureRecognizer = BlueParrottGestureRecognizer(
+            emit: { [weak self] gesture in self?.handleHeadsetGesture(gesture) },
+            scheduleAfter: { [weak self] delay, block in self?.gestureScheduleAfter(delay, block) })
         let bp = BlueParrottButtonManager()
         bp.delegate = self
         bp.start()
@@ -773,6 +857,7 @@ extension HeadsetRemoteCommandManager {
     func stopBlueParrott() {
         blueParrottManager?.stop()
         blueParrottManager = nil
+        gestureRecognizer = nil
         hLog("Headset: BlueParrott SDK stopped")
     }
 }
@@ -784,46 +869,27 @@ extension HeadsetRemoteCommandManager {
 // drives the pure `SessionReducer` via the gesture recognizer instead (the shared
 // `BlueParrottPTTArbitrator` is retired).
 
+// The BPHeadset SDK brackets EVERY gesture with raw down/up and adds a derived
+// tap/long-press for the same press. These handlers therefore feed the RAW signals
+// into `BlueParrottGestureRecognizer`, which collapses each press into exactly one
+// clean `HeadsetGesture` (`handleHeadsetGesture`) — so a hold isn't interrupted
+// mid-press by its long-press code, and a tap's trailing code can't reset a send.
 extension HeadsetRemoteCommandManager: BlueParrottButtonDelegate {
-    func blueParrottButtonDown() {
-        hLog("Headset: BlueParrott button DOWN — state=\(self.state)")
-        if state == .ready {
-            startRecording()
+    /// Feed one raw SDK signal into the recognizer, logging it so the full chain
+    /// (raw signal → de-bracketed gesture → action) is reconstructable from shared logs.
+    private func feedRaw(_ signal: RawButtonSignal, _ label: String) {
+        if gestureRecognizer == nil {
+            hLogWarning("Headset: raw \(label) but gestureRecognizer is nil — dropped (BlueParrott not started?)")
+            return
         }
+        hLog("Headset: ◀︎ raw \(label) → recognizer (state=\(state))")
+        gestureRecognizer?.feed(signal)
     }
-
-    func blueParrottButtonUp() {
-        hLog("Headset: BlueParrott button UP — state=\(self.state)")
-        if state == .recording {
-            stopRecordingAndSend()
-        }
-    }
-
-    func blueParrottTap() {
-        hLog("Headset: BlueParrott tap — state=\(self.state)")
-        switch state {
-        case .ready:
-            startRecording()
-        case .recording:
-            stopRecordingAndSend()
-        case .speaking:
-            performInterrupt()
-        case .sending:
-            hLog("Headset: BlueParrott tap while sending — resetting to ready")
-            state = .ready
-            updateNowPlayingState()
-        }
-    }
-
-    func blueParrottDoubleTap() {
-        hLog("Headset: BlueParrott double-tap — state=\(self.state)")
-        performInterrupt()
-    }
-
-    func blueParrottLongPress() {
-        hLog("Headset: BlueParrott long-press — state=\(self.state)")
-        performInterrupt()
-    }
+    func blueParrottButtonDown()  { feedRaw(.down, "DOWN") }
+    func blueParrottButtonUp()    { feedRaw(.up, "UP") }
+    func blueParrottTap()         { feedRaw(.tapCode, "TAP-code") }
+    func blueParrottDoubleTap()   { feedRaw(.doubleTapCode, "DOUBLE-TAP-code") }
+    func blueParrottLongPress()   { feedRaw(.longPressCode, "LONG-PRESS-code (dropped by de-bracketer)") }
 }
 #endif
 
@@ -1177,6 +1243,16 @@ extension HeadsetRemoteCommandManager {
 
     func simulateInterrupt() {
         performInterrupt()
+    }
+
+    /// Test hook: stand up the gesture recognizer (as `startBlueParrott` does), wired to
+    /// `handleHeadsetGesture` and the injectable `gestureScheduleAfter`, WITHOUT a live
+    /// BPHeadset SDK — so wiring tests can drive the real `BlueParrottButtonDelegate`
+    /// methods and fire the hold timer deterministically.
+    func testInstallGestureRecognizer() {
+        gestureRecognizer = BlueParrottGestureRecognizer(
+            emit: { [weak self] g in self?.handleHeadsetGesture(g) },
+            scheduleAfter: { [weak self] delay, block in self?.gestureScheduleAfter(delay, block) })
     }
     #else
     // macOS test hooks: drive the session executor directly (gesture / media-key

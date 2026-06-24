@@ -61,6 +61,41 @@ class VoiceInputManager: NSObject, ObservableObject {
 
     var onTranscriptionComplete: ((String) -> Void)?
 
+    #if os(iOS)
+    /// When this returns true, the recording audio session adds `.allowBluetoothHFP`
+    /// (the HFP/SCO profile), engaging a Bluetooth headset's mic for input instead
+    /// of the phone's built-in mic. Default false keeps AirPods and other AVRCP
+    /// headsets in A2DP so MPRemoteCommandCenter keeps delivering stem presses.
+    /// `HeadsetRemoteCommandManager` sets this to follow BlueParrott connection —
+    /// the BlueParrott's buttons arrive over BLE, not AVRCP, so HFP costs us no
+    /// button delivery and is the only way to capture from its mic. See
+    /// `recordingCategoryOptions(prefersBluetoothHFP:)`.
+    var prefersBluetoothHFPInput: () -> Bool = { false }
+
+    /// Pure decision for the `.playAndRecord` capture category options, factored out
+    /// for unit testing without touching the real `AVAudioSession`.
+    ///
+    /// `.allowBluetoothA2DP` is always present: without it `.playAndRecord` routes
+    /// output to the earpiece [Receiver] rather than a Bluetooth headset, and the
+    /// silence keep-alive player must reach the headset via A2DP to hold the Now
+    /// Playing slot. It does NOT activate HFP — the headset stays in A2DP.
+    ///
+    /// `.allowBluetoothHFP` (HFP/SCO) is added only when `prefersBluetoothHFP` is true.
+    /// It is what actually routes the *input* through the headset mic, but it also
+    /// forces AirPods into HFP (16 kHz narrowband output) and breaks AVRCP stem-press
+    /// delivery — so it is opt-in, enabled for the BlueParrott (BLE buttons) only.
+    ///
+    /// `.mixWithOthers` is deliberately never set: it disqualifies us from being the
+    /// Now Playing app, so iOS stops delivering AVRCP commands to our handlers.
+    static func recordingCategoryOptions(prefersBluetoothHFP: Bool) -> AVAudioSession.CategoryOptions {
+        var options: AVAudioSession.CategoryOptions = [.allowBluetoothA2DP]
+        if prefersBluetoothHFP {
+            options.insert(.allowBluetoothHFP)
+        }
+        return options
+    }
+    #endif
+
     init(voiceOutputManager: VoiceOutputManager? = nil) {
         self.voiceOutputManager = voiceOutputManager
         super.init()
@@ -153,24 +188,19 @@ class VoiceInputManager: NSObject, ObservableObject {
         // continues delivering AirPod/headset button events during recording.
         // .record alone loses playback capability and causes the second button press
         // to be routed to another app instead of ours.
-        // .allowBluetooth enables the Bluetooth HFP mic (AirPods, headsets) for input.
         let audioSession = AVAudioSession.sharedInstance()
         let prevCategory = audioSession.category.rawValue
         let prevMode = audioSession.mode.rawValue
         do {
-            // No .allowBluetooth — that forces AirPods into HFP mode which breaks
-            // MPRemoteCommandCenter stem-press delivery. Device mic is used instead,
-            // which gives better quality than HFP's 16kHz anyway.
-            // No .mixWithOthers — it disqualifies us from being the Now Playing app,
-            // which means iOS stops delivering AVRCP commands (AirPod stem clicks)
-            // to our MPRemoteCommandCenter handlers.
-            // .allowBluetoothA2DP: without this, .playAndRecord routes output to
-            // the earpiece [Receiver] rather than AirPods. Our silence keep-alive
-            // player must output to AirPods via A2DP or they route stem presses
-            // elsewhere. Does NOT activate HFP — AirPods stay in A2DP mode.
-            try audioSession.setCategory(.playAndRecord, mode: .default, options: [.allowBluetoothA2DP])
+            // Options decided by recordingCategoryOptions(prefersBluetoothHFP:):
+            // always .allowBluetoothA2DP (output to the headset + Now Playing slot),
+            // plus .allowBluetooth (HFP mic) only when a BlueParrott is connected.
+            // Without HFP, .playAndRecord captures from the phone's built-in mic
+            // even while a Bluetooth headset is worn — the "mic across the car" bug.
+            let options = Self.recordingCategoryOptions(prefersBluetoothHFP: prefersBluetoothHFPInput())
+            try audioSession.setCategory(.playAndRecord, mode: .default, options: options)
             try audioSession.setActive(true)
-            log("VoiceInput: audio session → .playAndRecord/.default (was \(prevCategory)/\(prevMode)) route=\(audioSession.currentRoute.inputs.map(\.portName))")
+            log("VoiceInput: audio session → .playAndRecord/.default opts=\(options.rawValue) (was \(prevCategory)/\(prevMode)) route=\(audioSession.currentRoute.inputs.map(\.portName))")
             // Notify caller that session is in .playAndRecord context. Dispatched
             // async on main so it runs after this function returns and after
             // audioEngine.start() — but still in the .playAndRecord session.

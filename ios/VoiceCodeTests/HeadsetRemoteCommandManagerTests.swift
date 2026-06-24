@@ -106,6 +106,78 @@ final class HeadsetRemoteCommandManagerTests: XCTestCase {
     // run only in the iOS target.
     #if os(iOS)
 
+    // MARK: - BlueParrott gesture de-bracketing (raw down/up/tap/long-press → one gesture)
+
+    /// Flush the initial Combine deliveries (e.g. blueParrottEnabled=false → stopBlueParrott,
+    /// which nils the recognizer) so a test can install its own recognizer afterward.
+    private func drainMain() {
+        let e = expectation(description: "main drain")
+        DispatchQueue.main.async { e.fulfill() }
+        wait(for: [e], timeout: 1.0)
+    }
+
+    /// Hold-to-talk: a held press is the raw stream `down, [hold timer], longPressCode, up`.
+    /// It must RECORD on hold and SEND on release — and the `longPressCode` arriving
+    /// mid-hold must be DROPPED, not fire an interrupt (the bug where releasing didn't send).
+    func testBlueParrottHold_recordsThenSendsOnRelease_longPressCodeDropped() {
+        let (manager, mocks) = makeManager()
+        manager.activate()
+        drainMain()
+        var holdBlock: (() -> Void)?
+        manager.gestureScheduleAfter = { _, block in holdBlock = block }   // capture, fire manually
+        manager.testInstallGestureRecognizer()
+        XCTAssertEqual(manager.state, .ready)
+
+        manager.blueParrottButtonDown()          // arms the hold timer (captured)
+        holdBlock?()                             // threshold elapses while still down → holdStarted
+        XCTAssertEqual(manager.state, .recording, "hold past threshold starts recording")
+        XCTAssertTrue(mocks.voiceInput.startRecordingCalled)
+
+        manager.blueParrottLongPress()           // raw 0x04 inside the hold bracket — must be DROPPED
+        XCTAssertEqual(manager.state, .recording, "long-press code must NOT interrupt a hold")
+        XCTAssertFalse(mocks.voiceOutput.stopCalled, "no TTS interrupt during hold-to-talk")
+
+        manager.blueParrottButtonUp()            // release → holdEnded → stop + send
+        XCTAssertEqual(manager.state, .sending, "releasing a hold sends (leaves .recording via stop+send)")
+        XCTAssertTrue(mocks.voiceInput.stopRecordingCalled)
+    }
+
+    /// Quick tap: the raw stream is `down, up, tapCode`, but only ONE clean `.tap` must act —
+    /// NOT down→start + up→stop + tap→reset (the bug where a tap reset a just-started send).
+    func testBlueParrottTap_singleAction_rawDownUpDoNotActIndependently() {
+        let (manager, mocks) = makeManager()
+        manager.activate()
+        drainMain()
+        manager.gestureScheduleAfter = { _, _ in }   // never fire the hold timer (quick release)
+        manager.testInstallGestureRecognizer()
+        XCTAssertEqual(manager.state, .ready)
+
+        manager.blueParrottButtonDown()   // arms hold timer (never fires)
+        manager.blueParrottButtonUp()     // quick release — no holdStarted; classified by trailing code
+        manager.blueParrottTap()          // tapCode → exactly one .tap
+
+        XCTAssertEqual(manager.state, .recording, "one tap from ready starts recording, exactly once")
+        XCTAssertTrue(mocks.voiceInput.startRecordingCalled)
+        XCTAssertFalse(mocks.voiceInput.stopRecordingCalled, "the raw `up` must not independently stop/send")
+    }
+
+    /// A second tap toggles the recording closed (stop+send); the bracketing raw down/up
+    /// don't double-fire.
+    func testBlueParrottTap_secondTap_finalizesAndSends() {
+        let (manager, mocks) = makeManager()
+        manager.activate()
+        drainMain()
+        manager.gestureScheduleAfter = { _, _ in }
+        manager.testInstallGestureRecognizer()
+
+        manager.blueParrottButtonDown(); manager.blueParrottButtonUp(); manager.blueParrottTap()
+        XCTAssertEqual(manager.state, .recording)
+
+        manager.blueParrottButtonDown(); manager.blueParrottButtonUp(); manager.blueParrottTap()
+        XCTAssertEqual(manager.state, .sending, "second tap finalizes and sends")
+        XCTAssertTrue(mocks.voiceInput.stopRecordingCalled)
+    }
+
     // MARK: - State Machine: Toggle Play/Pause
 
     func testTogglePlayPause_fromReady_startsRecording() {
@@ -465,6 +537,44 @@ final class HeadsetRemoteCommandManagerTests: XCTestCase {
         wait(for: [expectation], timeout: 1.0)
     }
 
+    func testSentMessage_newSession_usesNewSessionIdAndProvider() {
+        // A fresh session (messageCount == 0 → isNewSession true) initiated via the
+        // headset must MINT the session on the backend with new_session_id+provider,
+        // NOT resume_session_id. Regression guard for the phantom-resume kickoff bug:
+        // the headset path previously always resumed, so a first-time Bluetooth send
+        // to a never-created session left `claude --resume <uuid>` to time out.
+        let mocks = HeadsetMockDependencies()
+        let sessionId = testSessionId
+        let manager = HeadsetRemoteCommandManager(
+            voiceInput: mocks.voiceInput,
+            voiceOutput: mocks.voiceOutput,
+            client: mocks.client,
+            settings: mocks.settings,
+            resolveActiveSession: { (sessionId, "/test/working-dir", true, "claude") }
+        )
+        let expectedSessionId = sessionId.uuidString.lowercased()
+        manager.activate()
+        manager.simulateTogglePlayPause()
+        mocks.voiceInput.transcribedText = "start a new session"
+
+        manager.simulateTogglePlayPause()
+
+        let expectation = expectation(description: "new-session message shape")
+        DispatchQueue.main.async {
+            guard let msg = mocks.client.lastSentMessage else {
+                XCTFail("No message sent")
+                expectation.fulfill()
+                return
+            }
+            XCTAssertEqual(msg["new_session_id"] as? String, expectedSessionId)
+            XCTAssertEqual(msg["provider"] as? String, "claude")
+            XCTAssertNil(msg["resume_session_id"], "new session must not resume")
+            XCTAssertEqual(msg["working_directory"] as? String, "/test/working-dir")
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 1.0)
+    }
+
     func testSentMessage_includesSystemPrompt_whenNonEmpty() {
         let mocks = HeadsetMockDependencies()
         mocks.settings.systemPrompt = "You are a coding assistant."
@@ -529,7 +639,7 @@ final class HeadsetRemoteCommandManagerTests: XCTestCase {
             voiceOutput: mocks.voiceOutput,
             client: mocks.client,
             settings: mocks.settings,
-            resolveActiveSession: { (sessionId, "/test/working-dir") }
+            resolveActiveSession: { (sessionId, "/test/working-dir", false, "claude") }
         )
     }
 }

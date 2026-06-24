@@ -196,7 +196,7 @@ final class BlueParrottButtonManagerTests: XCTestCase {
             voiceOutput: mocks.voiceOutput,
             client: mocks.client,
             settings: mocks.settings,
-            resolveActiveSession: { (UUID(), "/test") }
+            resolveActiveSession: { (UUID(), "/test", false, "claude") }
         )
         drainMainQueue()
         XCTAssertNil(manager.blueParrottManager)
@@ -215,7 +215,7 @@ final class BlueParrottButtonManagerTests: XCTestCase {
             voiceOutput: mocks.voiceOutput,
             client: mocks.client,
             settings: mocks.settings,
-            resolveActiveSession: { (UUID(), "/test") }
+            resolveActiveSession: { (UUID(), "/test", false, "claude") }
         )
         drainMainQueue()
         XCTAssertNotNil(manager.blueParrottManager)
@@ -406,7 +406,7 @@ final class BlueParrottButtonManagerTests: XCTestCase {
             voiceOutput: mocks.voiceOutput,
             client: mocks.client,
             settings: mocks.settings,
-            resolveActiveSession: { (UUID(), "/test/working-dir") }
+            resolveActiveSession: { (UUID(), "/test/working-dir", false, "claude") }
         )
         return (manager, mocks)
     }
