@@ -234,6 +234,36 @@ final class HeadsetRemoteCommandManagerMacTests: XCTestCase {
         XCTAssertTrue(f.input.startRecordingCalled, "a press after the timeout records again (F4 regression)")
     }
 
+    // MARK: - Engagement gate: the UI mic button is independent of hands-free
+
+    /// The on-screen mic button (.ui) records even when hands-free is OFF (not engaged),
+    /// while a headset/BLE event in the same un-engaged state is dropped.
+    func testUIButton_recordsWhenNotEngaged_headsetEventDropped() {
+        let f = makeFixture(engaged: false)   // headset/BlueParrott off → not engaged
+
+        f.manager.handleButtonEvent(.tap, source: .blueParrottBLE)
+        XCTAssertEqual(f.manager.testSessionState, .idle, "headset events are gated off when not engaged")
+
+        f.manager.handleButtonEvent(.tap, source: .ui)
+        XCTAssertEqual(f.manager.testSessionState, .recording, "the UI mic button records regardless of engagement")
+        XCTAssertTrue(f.input.startRecordingCalled)
+    }
+
+    /// A UI-started recording's system events still flow when not engaged, so it finalizes
+    /// instead of stranding `.recording` (the engagement gate must not drop `captureEnded`
+    /// for a turn already in flight).
+    func testUIButton_recordingFinalizesWhenNotEngaged_noStrand() {
+        let f = makeFixture(engaged: false)
+        f.input.transcribedText = ""   // nothing recognized → finalize to idle
+
+        f.manager.handleButtonEvent(.tap, source: .ui)   // → recording
+        XCTAssertEqual(f.manager.testSessionState, .recording)
+
+        f.manager.handleSystemEvent(.captureEnded)       // recognizer silence / engine stop
+        drainMainQueue()                                 // stopCapture defers the transcription read
+        XCTAssertEqual(f.manager.testSessionState, .idle, "UI recording finalizes; system events flow when not engaged")
+    }
+
     // MARK: - F3: capture readiness (restart once, then finalize — never loop)
 
     func testCaptureStalled_restartsExactlyOnce_thenFinalizes_F3() {

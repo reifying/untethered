@@ -945,7 +945,11 @@ extension HeadsetRemoteCommandManager {
         // other trace — this is what makes a UI toggle / cross-source state issue
         // diagnosable from shared logs.
         hLog("Session: button \(event) source=\(source) state=\(state)")
-        guard stateMachineEngaged else {
+        // The on-screen mic button (.ui) is a deliberate in-app action and ALWAYS acts.
+        // The engagement gate exists only to suppress HEADSET / media-key events when
+        // hands-free is off (so a disabled headset can't drive recording) — it must not
+        // disable a UI affordance the user clicked on purpose.
+        guard source == .ui || stateMachineEngaged else {
             hLog("Session: \(event) dropped — not engaged")
             return
         }
@@ -961,7 +965,11 @@ extension HeadsetRemoteCommandManager {
     /// disconnect). Gated on engagement; uses the last real button source (no
     /// source-gated effect is reachable from these events).
     func handleSystemEvent(_ event: SessionEvent) {
-        guard stateMachineEngaged else { return }
+        // Allow system events when engaged OR when a turn is already in flight
+        // (state != idle). A UI-button recording started while hands-free is off must
+        // still receive its capture / transcription / TTS events to finalize — otherwise
+        // `.recording` would strand with the engagement gate dropping `captureEnded`.
+        guard stateMachineEngaged || state != .idle else { return }
         ingest(event, source: lastButtonSource)
     }
 
