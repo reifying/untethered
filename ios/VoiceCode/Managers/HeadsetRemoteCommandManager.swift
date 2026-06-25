@@ -141,6 +141,12 @@ class HeadsetRemoteCommandManager: ObservableObject {
     /// tests assert the BlueParrott path never streams the A2DP keep-alive that would starve
     /// the HFP mic, even though the `.resumeKeepAlive` effect still fires.
     private(set) var keepAliveStartedCount = 0
+    /// Test observability: how many times the output reroute / restore were INVOKED (counted
+    /// at entry, before the CoreAudio guards). Lets tests assert the wiring — reroute fires on
+    /// capture start, restore fires on TTS start and NOT after every capture — without a real
+    /// audio device. The actual device switch is hardware-validated.
+    private(set) var rerouteOutputInvokedCount = 0
+    private(set) var restoreOutputInvokedCount = 0
     #endif
     #endif
 
@@ -250,11 +256,19 @@ class HeadsetRemoteCommandManager: ObservableObject {
             }
             .store(in: &cancellables)
         #else
-        // macOS: TTS start/end feed the session reducer (ttsStarted/ttsEnded).
+        // macOS: TTS start/end feed the session reducer (ttsStarted/ttsEnded). On TTS
+        // START, restore output to the headset so the spoken response plays IN-EAR — this
+        // is the ONLY time we move output back onto the headset (not after every capture),
+        // because re-establishing A2DP and then yanking it for the next recording silences
+        // the mic (confirmed: capture 1 works, every post-restore capture is digital
+        // silence). Back-to-back recordings now never cycle the route; only an actual
+        // spoken response does.
         voiceOutput.$isSpeaking
             .receive(on: DispatchQueue.main)
             .sink { [weak self] isSpeaking in
-                self?.handleSystemEvent(isSpeaking ? .ttsStarted : .ttsEnded)
+                guard let self = self else { return }
+                if isSpeaking { self.restoreOutputAfterCapture() }
+                self.handleSystemEvent(isSpeaking ? .ttsStarted : .ttsEnded)
             }
             .store(in: &cancellables)
         // macOS: a backend drop mid-await must not strand `.awaitingResponse` (F4).
@@ -1113,6 +1127,9 @@ extension HeadsetRemoteCommandManager {
     /// is already a different device, when there's no built-in output, or when the BlueParrott
     /// isn't the active source. Idempotent (won't double-save).
     func rerouteOutputForCaptureIfNeeded() {
+        #if DEBUG
+        rerouteOutputInvokedCount += 1
+        #endif
         guard settings.blueParrottEnabled, savedOutputDeviceID == nil else { return }
         let outputID = MacAudioOutput.defaultOutputDeviceID()
         let outputUID = MacAudioOutput.deviceUID(outputID)
@@ -1124,9 +1141,13 @@ extension HeadsetRemoteCommandManager {
         hLog("Headset: routed output off the headset for capture (\(outputUID ?? "?") → built-in, ok=\(ok)) so the HFP mic frees up")
     }
 
-    /// Restore the headset as the default output after capture, so the "sent" cue and the
-    /// spoken response play in-ear. No-op when we didn't reroute.
+    /// Restore the headset as the default output so a spoken response plays in-ear. Called
+    /// on TTS START (and as a deactivate cleanup) — NOT after every capture: re-establishing
+    /// A2DP between back-to-back recordings silenced the mic. No-op when we didn't reroute.
     func restoreOutputAfterCapture() {
+        #if DEBUG
+        restoreOutputInvokedCount += 1
+        #endif
         guard let saved = savedOutputDeviceID else { return }
         savedOutputDeviceID = nil
         let ok = MacAudioOutput.setDefaultOutputDevice(saved)
@@ -1136,11 +1157,11 @@ extension HeadsetRemoteCommandManager {
 
     private func stopSessionCaptureAndReadTranscription() {
         voiceInput.stopRecording()
-        #if os(macOS)
-        // Capture is done — restore output to the headset so the "sent" cue and the spoken
-        // response play back in-ear.
-        restoreOutputAfterCapture()
-        #endif
+        // NOTE: output is deliberately LEFT on the built-in device here — it is restored to
+        // the headset only when a spoken response actually starts (the $isSpeaking sink).
+        // Restoring after every capture re-established A2DP and the next recording's reroute
+        // silenced the mic (rapid A2DP↔built-in cycling). Back-to-back recordings stay on
+        // built-in so the mic keeps working.
         // ALWAYS emit transcription after stopCapture so `.finalizing` can't strand
         // (nil when nothing was recognized / on error). Deferred one run-loop hop so
         // the final recognition callback lands first.

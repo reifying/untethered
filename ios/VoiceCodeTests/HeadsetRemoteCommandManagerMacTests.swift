@@ -418,6 +418,56 @@ final class HeadsetRemoteCommandManagerMacTests: XCTestCase {
                        "the keep-alive streams normally when BlueParrott is not the active source")
     }
 
+    // MARK: - Output reroute timing (A2DP/HFP: free the mic for capture, restore on TTS)
+
+    /// Starting a capture invokes the output reroute (move output off the headset so the HFP
+    /// mic frees up). The actual CoreAudio switch is hardware-validated; this asserts the
+    /// wiring fires at capture start.
+    func testRecordStart_reroutesOutputForCapture() {
+        let f = makeFixture()
+        f.manager.handleButtonEvent(.tap, source: .blueParrottBLE)   // idle → recording
+        XCTAssertEqual(f.manager.testSessionState, .recording)
+        XCTAssertEqual(f.manager.rerouteOutputInvokedCount, 1, "reroute fires when capture starts")
+    }
+
+    /// Stopping a capture must NOT restore output — restoring re-established A2DP and the next
+    /// recording's reroute silenced the mic (rapid cycling). Back-to-back records stay on the
+    /// built-in device.
+    func testStopCapture_doesNotRestoreOutput() {
+        let f = makeFixture()
+        f.input.transcribedText = ""                                 // empty → finalize to idle, no TTS
+        f.manager.handleButtonEvent(.tap, source: .blueParrottBLE)   // → recording
+        f.manager.handleButtonEvent(.tap, source: .blueParrottBLE)   // → finalizing → stopCapture
+        drainMainQueue()
+        XCTAssertEqual(f.manager.restoreOutputInvokedCount, 0,
+                       "output is NOT restored after capture — only on TTS start (avoids the A2DP cycling that silences the mic)")
+    }
+
+    /// Two back-to-back recordings (no TTS between) reroute but never restore — so the route
+    /// never cycles A2DP↔built-in, which is what silenced the mic after the first capture.
+    func testBackToBackRecordings_noRestoreBetween() {
+        let f = makeFixture()
+        f.input.transcribedText = ""
+        f.manager.handleButtonEvent(.tap, source: .blueParrottBLE)   // rec 1 start (reroute)
+        f.manager.handleButtonEvent(.tap, source: .blueParrottBLE)   // rec 1 stop (no restore)
+        drainMainQueue()
+        f.manager.handleButtonEvent(.tap, source: .blueParrottBLE)   // rec 2 start
+        f.manager.handleButtonEvent(.tap, source: .blueParrottBLE)   // rec 2 stop
+        drainMainQueue()
+        XCTAssertEqual(f.manager.restoreOutputInvokedCount, 0,
+                       "no restore between back-to-back records — the route must not cycle A2DP")
+    }
+
+    /// A spoken response (TTS start) is the ONLY trigger that restores output to the headset,
+    /// so the response plays in-ear.
+    func testTTSStart_restoresOutputForInEarPlayback() {
+        let f = makeFixture()
+        f.output.isSpeaking = true                                   // TTS begins
+        drainMainQueue()                                             // $isSpeaking sink (receive on main)
+        XCTAssertGreaterThanOrEqual(f.manager.restoreOutputInvokedCount, 1,
+                                    "TTS start restores output to the headset for in-ear playback")
+    }
+
     // MARK: - Executor-input gating
 
     func testGating_dropsButtonEventsWhenDisengaged() {
