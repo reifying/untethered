@@ -45,9 +45,7 @@ enum SessionEvent: Equatable {
     case tap                   // quick press-release
     case doubleTap             // (no `longPress` — a hold is PTT; the raw `04` code is dropped)
     case captureProducedAudio  // first non-silent buffer arrived (F3 readiness)
-    case captureStalled        // grace elapsed with zero/frozen buffers (F3) → restart
-    case captureProgressing    // grace elapsed with buffers still ADVANCING but no audio
-                               // yet → keep the stall watchdog armed (re-sample next window)
+    case captureStalled        // grace elapsed with zero buffers (F3)
     case captureEnded          // capture stopped with NO `up` gesture: recognizer silence
                                // auto-finalize, engine failure, or forced on BLE disconnect.
                                // Safety net so `.recording` can't strand (preserves the
@@ -78,11 +76,8 @@ enum SessionEffect: Equatable {
     case stopCapture
     case sendPrompt(String)
     case interruptTTS
-    case suspendKeepAlive      // DISABLED: never emitted — the keep-alive output must stay
-                               // ON for the SCO mic to come up (see beginRecording). Kept
-                               // as plumbing so the lesson is greppable and re-enabling is
-                               // a one-line change if a future device needs it.
-    case resumeKeepAlive       // DISABLED (paired with suspendKeepAlive)
+    case suspendKeepAlive      // BLE path only (F2)
+    case resumeKeepAlive
     case armTimer(SessionTimer)
     case cancelTimer(SessionTimer)
     case updateNowPlaying
@@ -133,11 +128,7 @@ enum SessionReducer {
         // `captureStalled` after one retry). Keep that guard downstream when wiring task .7.
         case (.recording, .captureStalled):
             return (.recording, [.restartCapture, .armTimer(.captureGrace),
-                                 .log("capture stalled (cold/frozen route) — restarting")])
-        // Buffers still advancing but no real audio yet → re-arm the watchdog to keep
-        // sampling the delta (catches a route that goes dead mid-recording, not just cold).
-        case (.recording, .captureProgressing):
-            return (.recording, [.armTimer(.captureGrace)])
+                                 .log("capture stalled (0 buffers) — restarting")])
         case (.recording, .captureProducedAudio):
             return (.recording, [.cancelTimer(.captureGrace)])
 
@@ -145,7 +136,7 @@ enum SessionReducer {
         // (recognizer silence auto-finalize / engine failure / forced on disconnect —
         // the safety net that keeps `.recording` from stranding) → finalize.
         case (.recording, .holdEnded), (.recording, .tap), (.recording, .captureEnded):
-            return (.finalizing, [.stopCapture, .cancelTimer(.captureGrace)])
+            return (.finalizing, [.stopCapture, .resumeKeepAlive, .cancelTimer(.captureGrace)])
 
         case (.finalizing, .transcription(let text)):
             if let text, !text.trimmed.isEmpty {
@@ -183,18 +174,11 @@ enum SessionReducer {
     }
 
     /// Shared "start a recording turn" effects, optionally preceded by interrupt/cleanup
-    /// effects when barging in from a busy state.
-    ///
-    /// The keep-alive output is deliberately LEFT RUNNING for every source. On macOS its
-    /// A2DP output stream is what lets the headset's Bluetooth SCO mic come up — suspending
-    /// it (the old F2 "no output during the warm-up window") leaves the route cold and
-    /// captures NOTHING over the BlueParrott button. Hardware proof (logs-20260624-211435):
-    /// UI captures with the keep-alive ON got a live route + real audio (peak 0.54); BLE
-    /// captures with it suspended got 3 dead buffers (`firstAudio=never`). So no
-    /// `.suspendKeepAlive` here — F2 was a misdiagnosis on this device.
+    /// effects when barging in from a busy state. Keep-alive suspend is BLE-only (F2).
     private static func beginRecording(source: ButtonSource,
                                        interrupting: [SessionEffect]) -> (SessionState, [SessionEffect]) {
         var fx = interrupting
+        if source == .blueParrottBLE { fx.append(.suspendKeepAlive) }
         // `.playEarcon(.listening)` fires on EVERY recording-start (idle start AND barge-in,
         // any source) — the eyes-free "mic is live, talk now" cue (executor gates it).
         fx.append(contentsOf: [.startCapture, .playEarcon(.listening),
@@ -234,45 +218,4 @@ enum CaptureReadiness {
         if bufferCount >= minLiveBufferCount { return .live }
         return restartCount < maxRestarts ? .restart : .finalize
     }
-
-    /// Recurring stall-watchdog decision, sampled REPEATEDLY while recording until real
-    /// audio is produced (`captureProducedAudio` cancels the grace upstream). Unlike the
-    /// one-shot `graceOutcome`, the route is healthy only while the buffer count keeps
-    /// ADVANCING: a live 16 kHz route streams ~10 buffers/grace even when the user is
-    /// silent, so a count that is FROZEN since the last sample (or still below the live
-    /// bar) is a dead/stalled SCO link — restart while the budget remains, else finalize.
-    ///
-    /// Why this is needed (the bug `graceOutcome` alone misses): on the B450-XT the SCO
-    /// route can deliver a few priming buffers and then go dead for the whole recording
-    /// (`buffers=3, silent=100%, firstAudio=never`). The one-shot check sees `3 ≥ 2` and
-    /// declares the route live, then stops watching — the user's words are lost to "No
-    /// speech detected". Sampling the DELTA catches the freeze and restarts (the same
-    /// rebuild that recovers a cold route). `lastBufferCount` is the previous sample (0 on
-    /// the first tick and after each restart, since a rebuilt engine's count resets).
-    static func stallOutcome(bufferCount: Int, lastBufferCount: Int, restartCount: Int) -> Outcome {
-        if bufferCount >= minLiveBufferCount && bufferCount > lastBufferCount { return .live }
-        return restartCount < maxRestarts ? .restart : .finalize
-    }
 }
-
-#if os(macOS)
-/// Pure policy for the SCO mic pre-warm (the first-word fix) — the testable when/how-long
-/// decisions, no I/O. The headset mic only works over HFP/SCO, and bringing that link up
-/// from cold (A2DP→HFP switch + SCO establishment) can take seconds — so the FIRST press
-/// after a BLE (re)connect talks into a route that isn't live yet (buffers=…, silent=100%,
-/// firstAudio=never). On the connect edge we open a brief, discarding pre-warm capture to
-/// bring SCO up before the press; a real press adopts the already-live engine.
-/// macOS-only: iOS drives the route via AVAudioSession (.allowBluetoothHFP). See
-/// @docs/design/macos-headset-sco-prewarm.md.
-enum ScoPrewarm {
-    /// How long the pre-warm capture is held open with no press before releasing the mic.
-    /// Covers "reconnect → user presses" (observed ~1.5s) with margin; short enough not to
-    /// sit on the mic (privacy indicator / battery).
-    static let holdDuration: TimeInterval = 8.0
-
-    /// Pre-warm only on a fresh connect, while idle, and not already warming/recording.
-    static func shouldPrewarm(connected: Bool, isRecording: Bool, isPrewarming: Bool) -> Bool {
-        connected && !isRecording && !isPrewarming
-    }
-}
-#endif

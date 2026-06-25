@@ -63,10 +63,10 @@ class HeadsetRemoteCommandManager: ObservableObject {
     private(set) var blueParrottBLEManager: BlueParrottBLEManager?
     /// De-bracketer between the BLE raw-signal stream and the session reducer.
     private var gestureRecognizer: BlueParrottGestureRecognizer?
-    /// Connection observation for the live BLE manager — the connect edge pre-warms the
-    /// SCO mic (first-word fix); a disconnect WHILE recording feeds `captureEnded` so
-    /// `.recording` can't strand (Goal #2). Replaced on each `startBlueParrott()`.
-    private var bleConnectionCancellable: AnyCancellable?
+    /// Disconnect observation for the live BLE manager — a disconnect WHILE recording
+    /// feeds `captureEnded` so `.recording` can't strand (Goal #2). Replaced on each
+    /// `startBlueParrott()`.
+    private var bleDisconnectCancellable: AnyCancellable?
     /// The source of the most recent button-driven event, used to label the
     /// system-derived events (TTS / capture / timers) the reducer requires a source
     /// for. None of those events trigger a source-gated effect, so this only matters
@@ -76,10 +76,6 @@ class HeadsetRemoteCommandManager: ObservableObject {
     /// EVERY stall, so the executor stops re-feeding `captureStalled` after one retry
     /// and finalizes instead of looping. Reset on each fresh `startCapture`.
     private var captureRestartCount = 0
-    /// Previous buffer-count sample for the delta stall-watchdog: the route is healthy
-    /// only while this keeps advancing. 0 on a fresh capture and after each restart (a
-    /// rebuilt engine's count resets). See `CaptureReadiness.stallOutcome`.
-    private var captureLastBufferSample = 0
 
     /// Session-timer (captureGrace / awaitResponse) generation guards + retained work
     /// items, mirroring the BLE manager's pattern: arming or cancelling bumps the
@@ -114,16 +110,6 @@ class HeadsetRemoteCommandManager: ObservableObject {
     var gestureScheduleAfter: (TimeInterval, @escaping () -> Void) -> Void = { delay, block in
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: block)
     }
-
-    /// Scheduler for the SCO pre-warm bounded warm-hold. Test seam: defaults to
-    /// `main.asyncAfter`; tests inject a non-firing recorder and fire via
-    /// `testFirePrewarmHold()`.
-    var prewarmScheduleWork: (TimeInterval, DispatchWorkItem) -> Void = { delay, work in
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
-    }
-    /// Retained pre-warm hold work item so a real press can cancel it (and the test hook
-    /// fire it). Replaced on each connect-edge pre-warm.
-    private var prewarmHoldWorkItem: DispatchWorkItem?
 
     /// Session-timer durations (tunable; grounded in the findings). `captureGrace`: a
     /// live route delivers buffers within ~300 ms even when silent, so zero buffers by
@@ -1076,51 +1062,8 @@ extension HeadsetRemoteCommandManager {
 
     private func startSessionCapture() {
         captureRestartCount = 0
-        captureLastBufferSample = 0
-        // A real press adopts (or replaces) any in-flight SCO pre-warm: cancel the bounded
-        // release so it can't tear the now-adopted route down. `startRecording` does the
-        // engine adoption when `voiceInput.isPrewarming`. The keep-alive stays playing
-        // throughout (it's what keeps the SCO mic live — see beginRecording).
-        prewarmHoldWorkItem?.cancel()
-        prewarmHoldWorkItem = nil
         voiceInput.startRecording()
         hLog("Session: capture started")
-    }
-
-    // MARK: - SCO mic pre-warm (first-word fix on BLE reconnect)
-
-    /// Connect-edge handler: open a brief, discarding pre-warm capture to bring the
-    /// Bluetooth HFP/SCO mic route up BEFORE the user's first press, so the first word
-    /// isn't lost to a cold route (`firstAudio=never`). Suspends the keep-alive for the
-    /// warm-up window (F2 — no output contention) and bounds the hold so the mic is
-    /// released if no press lands. A real press adopts the live engine (see
-    /// `VoiceInputManager.adoptPrewarmEngineForRecognition`). macOS-only. See
-    /// @docs/design/macos-headset-sco-prewarm.md.
-    private func prewarmScoOnReconnect() {
-        guard stateMachineEngaged,
-              ScoPrewarm.shouldPrewarm(connected: true,
-                                       isRecording: voiceInput.isRecording,
-                                       isPrewarming: voiceInput.isPrewarming) else { return }
-        hLog("Headset: BLE reconnect — pre-warming SCO mic (first-word fix)")
-        // Keep the keep-alive PLAYING through the warm-up: its output stream is what lets
-        // the SCO mic come up (stopping it leaves the route cold — see beginRecording).
-        voiceInput.prewarmCapture(onWarm: {
-            hLog("Headset: SCO mic warm (pre-warm) — first press will be live")
-        })
-        // Bounded warm-hold: release the mic if no press lands within holdDuration.
-        let work = DispatchWorkItem { [weak self] in self?.endPrewarmIfIdle() }
-        prewarmHoldWorkItem = work
-        prewarmScheduleWork(ScoPrewarm.holdDuration, work)
-    }
-
-    /// Bounded warm-hold expiry: if no press adopted the pre-warm within `holdDuration`,
-    /// release the mic and resume the keep-alive. A press (which clears `isPrewarming` and
-    /// cancels this work) makes it a no-op.
-    private func endPrewarmIfIdle() {
-        prewarmHoldWorkItem = nil
-        guard voiceInput.isPrewarming, state == .idle else { return }  // a press adopted it
-        voiceInput.stopPrewarm()   // keep-alive is already playing — nothing to resume
-        hLog("Headset: pre-warm hold elapsed — released SCO mic")
     }
 
     private func stopSessionCaptureAndReadTranscription() {
@@ -1168,29 +1111,22 @@ extension HeadsetRemoteCommandManager {
     private func sessionTimerFired(_ timer: SessionTimer) {
         switch timer {
         case .captureGrace:
-            // Recurring stall watchdog (until real audio cancels the grace). A cold OR
-            // mid-recording-dead SCO route is caught by sampling the buffer DELTA: a live
-            // 16 kHz route streams ~10 buffers/grace even when silent, so a count that's
-            // frozen since the last sample (or still below the live bar) is a dead route —
-            // restart it up to `maxRestarts`, then finalize rather than looping (Risk 7).
-            // Advancing-but-silent re-arms to keep watching. Decision is the pure
-            // `CaptureReadiness.stallOutcome`.
+            // The grace window elapsed. A cold Bluetooth SCO route delivers ≤1 silent
+            // priming buffer then nothing (≥2 ⇒ a live ~10/grace stream): restart it,
+            // up to `maxRestarts`, then finalize rather than looping (Risk 7). A live
+            // but silent route (F2 warm-up) clears the bar and just lets the window
+            // lapse. Decision is the pure `CaptureReadiness.graceOutcome`.
             let buffers = voiceInput.capturedBufferCount
-            switch CaptureReadiness.stallOutcome(bufferCount: buffers,
-                                                 lastBufferCount: captureLastBufferSample,
-                                                 restartCount: captureRestartCount) {
+            switch CaptureReadiness.graceOutcome(bufferCount: buffers, restartCount: captureRestartCount) {
             case .restart:
                 captureRestartCount += 1
-                captureLastBufferSample = 0   // the rebuilt engine's count restarts at 0
-                hLog("Session: captureGrace — route dead (\(buffers) buffers, frozen) → restart \(captureRestartCount)/\(CaptureReadiness.maxRestarts)")
+                hLog("Session: captureGrace — route cold (\(buffers) buffers) → restart \(captureRestartCount)/\(CaptureReadiness.maxRestarts)")
                 handleSystemEvent(.captureStalled)
             case .finalize:
-                hLog("Session: capture still dead after \(captureRestartCount) restart(s) (\(buffers) buffers) — finalizing (no loop)")
+                hLog("Session: capture still cold after \(captureRestartCount) restart(s) (\(buffers) buffers) — finalizing (no loop)")
                 handleSystemEvent(.captureEnded)
             case .live:
-                hLog("Session: captureGrace — route advancing (\(buffers) buffers, was \(captureLastBufferSample)), no audio yet — watching for stall")
-                captureLastBufferSample = buffers
-                handleSystemEvent(.captureProgressing)   // re-arm the watchdog
+                hLog("Session: captureGrace elapsed — route live (\(buffers) buffers)")
             }
         case .awaitResponse:
             handleSystemEvent(.awaitTimedOut)
@@ -1260,31 +1196,18 @@ extension HeadsetRemoteCommandManager {
             hLog("Headset: raw signal \(signal)")
             recognizer?.feed(signal)
         }
-        // The $isConnected sink handles BOTH edges:
-        //  • connect    → pre-warm the SCO mic so the user's first press lands on a live
-        //    route (first-word fix; @docs/design/macos-headset-sco-prewarm.md).
-        //  • disconnect → feed `captureEnded` so a mid-recording out-of-range can't strand
-        //    `.recording` (Goal #2), and release any in-flight pre-warm.
-        // `dropFirst` skips the initial `isConnected == false`.
-        bleConnectionCancellable = ble.$isConnected
+        // A disconnect WHILE recording feeds `captureEnded` so `.recording` can't
+        // strand on an out-of-range mid-recording (Goal #2). `dropFirst` skips the
+        // initial `isConnected == false`.
+        bleDisconnectCancellable = ble.$isConnected
             .receive(on: DispatchQueue.main)
             .dropFirst()
             .sink { [weak self] connected in
-                guard let self = self else { return }
-                if connected {
-                    self.prewarmScoOnReconnect()
-                } else {
-                    if self.voiceInput.isPrewarming { self.voiceInput.stopPrewarm() }
-                    self.handleSystemEvent(.captureEnded)
-                }
+                guard let self = self, !connected else { return }
+                self.handleSystemEvent(.captureEnded)
             }
         ble.start()
         blueParrottBLEManager = ble
-        // The BlueParrott mic captures over Bluetooth SCO, which only comes up while an
-        // output stream (the keep-alive) is playing — so the button source OWNS the
-        // keep-alive too, independent of `headsetModeEnabled`/`activate()`. Without this a
-        // BlueParrott-only config (headset control off) would record nothing.
-        startKeepAlive()
         #if DEBUG
         // The Phase A2 explorer and the live client would otherwise both stand up a
         // CBCentralManager scanning the same service and contend; the persistence
@@ -1298,12 +1221,7 @@ extension HeadsetRemoteCommandManager {
         blueParrottBLEManager?.stop()
         blueParrottBLEManager = nil
         gestureRecognizer = nil
-        bleConnectionCancellable = nil
-        if voiceInput.isPrewarming { voiceInput.stopPrewarm() }
-        prewarmHoldWorkItem?.cancel()
-        prewarmHoldWorkItem = nil
-        // Release the keep-alive this source owns unless headset-control still needs it.
-        if !isActive { stopKeepAlive() }
+        bleDisconnectCancellable = nil
         hLog("Headset: BlueParrott BLE stopped (macOS)")
     }
 
@@ -1380,8 +1298,6 @@ extension HeadsetRemoteCommandManager {
     func testFireSessionTimer(_ timer: SessionTimer) { sessionTimerWorkItems[timer]?.perform() }
     func testHasArmedSessionTimer(_ timer: SessionTimer) -> Bool { sessionTimerWorkItems[timer] != nil }
     var testSessionState: SessionState { state }
-    /// Fire the bounded SCO pre-warm hold (the `holdDuration` release) deterministically.
-    func testFirePrewarmHold() { prewarmHoldWorkItem?.perform() }
     #endif
 }
 #endif

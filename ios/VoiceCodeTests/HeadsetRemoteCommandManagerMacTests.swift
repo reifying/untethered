@@ -125,7 +125,6 @@ final class HeadsetRemoteCommandManagerMacTests: XCTestCase {
             )
         }
         manager.sessionScheduleWork = { _, _ in }                       // non-firing
-        manager.prewarmScheduleWork = { _, _ in }                       // non-firing (fired via testFirePrewarmHold)
         manager.gestureScheduleAfter = { [weak self] _, block in self?.capturedHoldBlock = block }
         let earconSpy = EarconSpy()
         manager.earconPlayer = earconSpy                                // spy in place of the live player
@@ -265,20 +264,20 @@ final class HeadsetRemoteCommandManagerMacTests: XCTestCase {
         XCTAssertEqual(f.manager.testSessionState, .idle, "UI recording finalizes; system events flow when not engaged")
     }
 
-    // MARK: - F3: capture readiness (restart up to max, then finalize — never loop)
+    // MARK: - F3: capture readiness (restart up to maxRestarts, then finalize — never loop)
 
     func testCaptureStalled_restartsUpToMax_thenFinalizes_F3() {
         let f = makeFixture()
-        f.input.stubBufferCount = 0                                  // dead route: no buffers ever
+        f.input.stubBufferCount = 0                                  // dead route: no buffers
 
         f.manager.handleButtonEvent(.tap, source: .blueParrottBLE)   // idle → recording, arms captureGrace
         XCTAssertEqual(f.manager.testSessionState, .recording)
         XCTAssertTrue(f.manager.testHasArmedSessionTimer(.captureGrace))
 
-        // Each grace lapse with zero buffers restarts + re-arms, up to maxRestarts.
+        // Each grace lapse with zero buffers restarts capture + re-arms, up to maxRestarts.
         for n in 1...CaptureReadiness.maxRestarts {
             f.manager.testFireSessionTimer(.captureGrace)
-            XCTAssertEqual(f.input.restartCaptureCallCount, n, "stall \(n) restarts the capture")
+            XCTAssertEqual(f.input.restartCaptureCallCount, n, "stall \(n) restarts the cold route")
             XCTAssertEqual(f.manager.testSessionState, .recording)
             XCTAssertTrue(f.manager.testHasArmedSessionTimer(.captureGrace), "the retry re-arms the grace window")
         }
@@ -290,55 +289,16 @@ final class HeadsetRemoteCommandManagerMacTests: XCTestCase {
         XCTAssertEqual(f.manager.testSessionState, .finalizing, "a stall past the budget finalizes")
     }
 
-    /// First grace lapse with buffers present (the primed-but-silent F2 warm-up) does not
-    /// restart — it re-arms the watchdog to keep sampling.
-    func testCaptureGrace_withBuffers_doesNotRestart_keepsWatching() {
+    /// A live buffer count cancels the stall path: the grace timer lapsing with buffers
+    /// present (e.g. the F2 silent warm-up) does not restart capture.
+    func testCaptureGrace_withBuffers_doesNotRestart() {
         let f = makeFixture()
-        f.input.stubBufferCount = 3                                  // primed route
+        f.input.stubBufferCount = 3                                  // live route
 
         f.manager.handleButtonEvent(.tap, source: .blueParrottBLE)
         f.manager.testFireSessionTimer(.captureGrace)
 
-        XCTAssertEqual(f.input.restartCaptureCallCount, 0, "a primed route must not restart on the first sample")
-        XCTAssertEqual(f.manager.testSessionState, .recording)
-        XCTAssertTrue(f.manager.testHasArmedSessionTimer(.captureGrace), "progressing re-arms the stall watchdog")
-    }
-
-    // MARK: - Delta stall-watchdog: a route that goes dead MID-recording is restarted
-
-    /// The bug behind "ignored almost all my words": the SCO route delivers a few priming
-    /// buffers then freezes for the whole recording. The first sample sees buffers and
-    /// re-arms; the next sample sees the SAME count (frozen) → dead route → restart. The
-    /// old one-shot check declared `3 ≥ 2` live and never looked again.
-    func testStall_frozenBuffersMidRecording_restarts() {
-        let f = makeFixture()
-        f.input.stubBufferCount = 3                                  // primes 3 buffers...
-
-        f.manager.handleButtonEvent(.tap, source: .blueParrottBLE)
-        f.manager.testFireSessionTimer(.captureGrace)                // sample 1: 3 (advancing from 0) → live, re-arm
-        XCTAssertEqual(f.input.restartCaptureCallCount, 0)
-        XCTAssertEqual(f.manager.testSessionState, .recording)
-
-        // ...then the route goes dead: buffers frozen at 3.
-        f.manager.testFireSessionTimer(.captureGrace)                // sample 2: still 3 → frozen → restart
-        XCTAssertEqual(f.input.restartCaptureCallCount, 1, "a frozen buffer count mid-recording restarts the route")
-        XCTAssertEqual(f.manager.testSessionState, .recording)
-    }
-
-    /// A genuinely live route (buffers keep climbing) is never restarted by the watchdog,
-    /// no matter how many windows elapse — only a FROZEN count triggers a restart.
-    func testStall_advancingBuffers_neverRestarts() {
-        let f = makeFixture()
-        f.input.stubBufferCount = 3
-
-        f.manager.handleButtonEvent(.tap, source: .blueParrottBLE)
-        f.manager.testFireSessionTimer(.captureGrace)                // 3 (from 0) → live
-        f.input.stubBufferCount = 14                                 // climbed
-        f.manager.testFireSessionTimer(.captureGrace)                // 14 (from 3) → live
-        f.input.stubBufferCount = 27                                 // climbed again
-        f.manager.testFireSessionTimer(.captureGrace)                // 27 (from 14) → live
-
-        XCTAssertEqual(f.input.restartCaptureCallCount, 0, "an advancing route is live — never restarted")
+        XCTAssertEqual(f.input.restartCaptureCallCount, 0, "a live route must not trigger the F3 restart")
         XCTAssertEqual(f.manager.testSessionState, .recording)
     }
 
@@ -407,26 +367,26 @@ final class HeadsetRemoteCommandManagerMacTests: XCTestCase {
         XCTAssertTrue(f.output.stopCalled)
     }
 
-    // MARK: - Keep-alive stays ON during recording (the SCO-mic fix)
+    // MARK: - Acceptance #7: source-gated keep-alive
 
-    /// NO source suspends the keep-alive: its output stream is what lets the Bluetooth SCO
-    /// mic come up. The old F2 "BLE suspends during capture" left the headset route cold
-    /// and captured nothing (logs-20260624-211435) — this guards against re-adding it.
-    func testRecording_neverSuspendsKeepAlive_anySource() {
+    func testMediaKeyRecording_keepsKeepAlive_butBLESuspendsIt() {
         let f = makeFixture()
 
+        // A media-key recording must NOT suspend the keep-alive (stem-press stop needs it).
         f.manager.simulateMediaTap()                                 // .tap, source .mediaKey
         XCTAssertEqual(f.manager.testSessionState, .recording)
-        XCTAssertEqual(f.manager.suspendKeepAliveCount, 0, "media-key keeps the keep-alive output")
+        XCTAssertEqual(f.manager.suspendKeepAliveCount, 0,
+                       "the media-key path keeps the keep-alive output (acceptance #7)")
 
+        // Stop the media turn (empty transcription → idle), then a BLE recording DOES
+        // suspend the keep-alive (F2).
         f.manager.handleSystemEvent(.captureEnded)
         drainMainQueue()
         XCTAssertEqual(f.manager.testSessionState, .idle)
 
         f.manager.handleButtonEvent(.tap, source: .blueParrottBLE)
         XCTAssertEqual(f.manager.testSessionState, .recording)
-        XCTAssertEqual(f.manager.suspendKeepAliveCount, 0,
-                       "the BLE path must keep the keep-alive ON — suspending it kills the SCO mic")
+        XCTAssertEqual(f.manager.suspendKeepAliveCount, 1, "the BLE path suspends the keep-alive (F2)")
     }
 
     // MARK: - Executor-input gating
@@ -550,97 +510,6 @@ final class HeadsetRemoteCommandManagerMacTests: XCTestCase {
         f.manager.handleButtonEvent(.tap, source: .blueParrottBLE)   // would emit .listening
         XCTAssertEqual(f.manager.testSessionState, .recording)
         XCTAssertEqual(f.earconSpy.played, [])
-    }
-
-    // MARK: - SCO mic pre-warm (first-word fix on BLE reconnect)
-
-    /// The BLE connect edge starts a discarding pre-warm capture (keep-alive stays ON
-    /// through the warm-up — it's what brings the SCO route up). `driveBLELive` runs the
-    /// full advertise → connect → subscribe sequence that flips `isConnected` true.
-    func testReconnect_startsPrewarm_keepAliveStaysOn() {
-        let f = makeFixture()                                        // engaged, idle
-        driveBLELive(f.central)                                      // → isConnected true (connect edge)
-
-        XCTAssertTrue(f.input.prewarmCaptureCalled, "the connect edge opens a pre-warm capture")
-        XCTAssertEqual(f.manager.suspendKeepAliveCount, 0, "the keep-alive is never suspended for the pre-warm")
-    }
-
-    /// With no press inside the hold window, the bounded warm-hold releases the mic (the
-    /// keep-alive was never stopped, so there's nothing to resume).
-    func testPrewarmHoldElapsed_whileIdle_releasesMic() {
-        let f = makeFixture()
-        driveBLELive(f.central)
-        XCTAssertTrue(f.input.prewarmCaptureCalled)
-
-        f.manager.testFirePrewarmHold()                             // injected scheduler fires
-
-        XCTAssertTrue(f.input.stopPrewarmCalled, "the hold elapsing releases the pre-warm mic")
-    }
-
-    /// A real press during pre-warm records (adopting the live route) and leaves no
-    /// dangling pre-warm: firing the (now-stale) hold afterward does not stop a recording.
-    func testPressDuringPrewarm_recordsAndDoesNotStrandPrewarm() {
-        let f = makeFixture()
-        driveBLELive(f.central)                                     // pre-warming
-        XCTAssertTrue(f.input.prewarmCaptureCalled)
-
-        f.manager.handleButtonEvent(.tap, source: .blueParrottBLE)  // press adopts the route → recording
-        XCTAssertEqual(f.manager.testSessionState, .recording)
-        XCTAssertTrue(f.input.startRecordingCalled)
-
-        // The stale hold must not tear down the now-adopted recording route.
-        f.input.stopPrewarmCalled = false
-        f.manager.testFirePrewarmHold()
-        XCTAssertFalse(f.input.stopPrewarmCalled, "a press adopted the engine — the hold is a no-op")
-        XCTAssertEqual(f.manager.testSessionState, .recording)
-    }
-
-    /// No pre-warm starts while a recording is already open (the mic is already warm). A
-    /// BLE connect flap mid-record must not open a second pre-warm capture. Modelled by
-    /// setting `isRecording` directly (the precondition `ScoPrewarm.shouldPrewarm` reads)
-    /// rather than driving the state machine — keeps the assertion on the guard, not on
-    /// mock capture-event timing.
-    func testNoPrewarmWhileRecording() {
-        let f = makeFixture()
-        f.input.isRecording = true                                 // a recording is already open
-        drainMainQueue()                                           // settle the $isRecording sink (no-op, state idle)
-
-        driveBLELive(f.central)                                    // a connect flap mid-record
-        XCTAssertFalse(f.input.prewarmCaptureCalled, "no pre-warm while a recording is already open")
-    }
-
-    /// A disconnect during pre-warm tears it down (alongside the existing no-strand
-    /// captureEnded).
-    func testDisconnectDuringPrewarm_releasesMic() {
-        let f = makeFixture()
-        driveBLELive(f.central)                                     // pre-warming
-        XCTAssertTrue(f.input.prewarmCaptureCalled)
-
-        f.central.centralDelegate?.bleDidDisconnect()
-        drainMainQueue()                                            // $isConnected sink (disconnect edge)
-
-        XCTAssertTrue(f.input.stopPrewarmCalled, "a disconnect during pre-warm releases the mic")
-    }
-}
-
-// MARK: - ScoPrewarm pure policy
-
-final class ScoPrewarmTests: XCTestCase {
-    func testPrewarmsOnConnectWhenIdle() {
-        XCTAssertTrue(ScoPrewarm.shouldPrewarm(connected: true, isRecording: false, isPrewarming: false))
-    }
-
-    func testNoPrewarmWhileRecordingOrAlreadyWarming() {
-        XCTAssertFalse(ScoPrewarm.shouldPrewarm(connected: true, isRecording: true, isPrewarming: false))
-        XCTAssertFalse(ScoPrewarm.shouldPrewarm(connected: true, isRecording: false, isPrewarming: true))
-    }
-
-    func testNoPrewarmOnDisconnect() {
-        XCTAssertFalse(ScoPrewarm.shouldPrewarm(connected: false, isRecording: false, isPrewarming: false))
-    }
-
-    func testHoldDurationIsPositive() {
-        XCTAssertGreaterThan(ScoPrewarm.holdDuration, 0)
     }
 }
 #endif

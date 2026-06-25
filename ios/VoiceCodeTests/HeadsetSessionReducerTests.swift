@@ -32,11 +32,10 @@ final class HeadsetSessionReducerTests: XCTestCase {
 
     // MARK: - Start recording from idle (PTT + toggle)
 
-    func testIdle_holdStarted_startsRecording_keepsKeepAliveOn() {
+    func testIdle_holdStarted_startsRecording_BLEsuspendsKeepAlive() {
         let (state, fx) = SessionReducer.reduce(.idle, .holdStarted, source: .blueParrottBLE)
         XCTAssertEqual(state, .recording)
-        // No .suspendKeepAlive: the keep-alive output must stay on for the SCO mic.
-        XCTAssertEqual(fx, [.startCapture, .playEarcon(.listening),
+        XCTAssertEqual(fx, [.suspendKeepAlive, .startCapture, .playEarcon(.listening),
                             .armTimer(.captureGrace), .updateNowPlaying])
     }
 
@@ -47,16 +46,15 @@ final class HeadsetSessionReducerTests: XCTestCase {
         XCTAssertTrue(fx.contains(.armTimer(.captureGrace)))
     }
 
-    /// The keep-alive is NEVER suspended on any source: its output stream is what lets the
-    /// SCO mic come up (the F2 "suspend during capture" was a misdiagnosis that left the
-    /// BlueParrott route cold — see beginRecording). Regression guard against re-adding it.
-    func testKeepAliveSuspend_neverEmitted_anySource() {
+    /// suspendKeepAlive is emitted ONLY for the BLE source (F2/F7); the media-key
+    /// path keeps the keep-alive so a stem press can still stop recording.
+    func testKeepAliveSuspend_isGatedToBLESource() {
         let (_, ble) = SessionReducer.reduce(.idle, .holdStarted, source: .blueParrottBLE)
         let (_, media) = SessionReducer.reduce(.idle, .holdStarted, source: .mediaKey)
         let (_, sdk) = SessionReducer.reduce(.idle, .tap, source: .iosSDK)
-        XCTAssertFalse(ble.contains(.suspendKeepAlive), "the BLE path must keep the keep-alive ON for the SCO mic")
-        XCTAssertFalse(media.contains(.suspendKeepAlive))
-        XCTAssertFalse(sdk.contains(.suspendKeepAlive))
+        XCTAssertTrue(ble.contains(.suspendKeepAlive))
+        XCTAssertFalse(media.contains(.suspendKeepAlive), "media-key path keeps the keep-alive for stem-press stop")
+        XCTAssertFalse(sdk.contains(.suspendKeepAlive), "only the BLE path owns the keep-alive output")
     }
 
     // MARK: - Recording → finalizing (stop, and the no-strand safety net)
@@ -64,8 +62,7 @@ final class HeadsetSessionReducerTests: XCTestCase {
     func testRecording_holdEnded_finalizes() {
         let (state, fx) = SessionReducer.reduce(.recording, .holdEnded, source: .blueParrottBLE)
         XCTAssertEqual(state, .finalizing)
-        // No .resumeKeepAlive: it was never suspended (keep-alive stays on throughout).
-        XCTAssertEqual(fx, [.stopCapture, .cancelTimer(.captureGrace)])
+        XCTAssertEqual(fx, [.stopCapture, .resumeKeepAlive, .cancelTimer(.captureGrace)])
     }
 
     func testRecording_tap_finalizes() {
@@ -80,7 +77,7 @@ final class HeadsetSessionReducerTests: XCTestCase {
         let (state, fx) = SessionReducer.reduce(.recording, .captureEnded, source: .blueParrottBLE)
         XCTAssertEqual(state, .finalizing)
         XCTAssertTrue(fx.contains(.stopCapture))
-        XCTAssertFalse(fx.contains(.resumeKeepAlive), "keep-alive was never suspended — nothing to resume")
+        XCTAssertTrue(fx.contains(.resumeKeepAlive))
     }
 
     // MARK: - Capture readiness (F3)
@@ -191,7 +188,7 @@ final class HeadsetSessionReducerTests: XCTestCase {
         XCTAssertEqual(state, .recording, "a hold during speaking must interrupt and start a new turn")
         XCTAssertTrue(fx.contains(.interruptTTS))
         XCTAssertTrue(fx.contains(.startCapture))
-        XCTAssertFalse(fx.contains(.suspendKeepAlive), "keep-alive stays on (SCO mic) — even barging in")
+        XCTAssertTrue(fx.contains(.suspendKeepAlive))
         // The interrupt must precede the fresh capture so TTS stops before the mic opens.
         XCTAssertEqual(fx.first, .interruptTTS)
     }
@@ -300,55 +297,16 @@ final class HeadsetSessionReducerTests: XCTestCase {
         XCTAssertGreaterThan(CaptureReadiness.maxRestarts, 1, "one restart was not enough for a slow SCO link")
     }
 
-    // MARK: - Delta stall-watchdog (mid-recording SCO death)
-
-    /// The dead-route signature `graceOutcome` alone misses: the SCO link delivers a few
-    /// priming buffers and then goes dead for the whole recording (observed
-    /// `buffers=3, firstAudio=never`). Sampling the DELTA — buffers frozen since the last
-    /// window — classifies it as dead and restarts, where the one-shot `3 ≥ 2` called it live.
-    func testStall_frozenBuffers_isDeadNotLive_restarts() {
-        // 3 buffers last window, still 3 now → frozen → dead route → restart.
-        XCTAssertEqual(CaptureReadiness.stallOutcome(bufferCount: 3, lastBufferCount: 3, restartCount: 0), .restart,
-                       "buffers frozen since the last sample is a dead SCO route, not a live one")
-        // Zero/below-bar is also restartable while budget remains (subsumes graceOutcome).
-        XCTAssertEqual(CaptureReadiness.stallOutcome(bufferCount: 0, lastBufferCount: 0, restartCount: 0), .restart)
-        XCTAssertEqual(CaptureReadiness.stallOutcome(bufferCount: 1, lastBufferCount: 0, restartCount: 0), .restart)
-    }
-
-    /// A live route's buffer count keeps ADVANCING (even silent), so a count above the bar
-    /// AND greater than the last sample is live — keep watching, don't restart.
-    func testStall_advancingBuffers_isLive() {
-        XCTAssertEqual(CaptureReadiness.stallOutcome(bufferCount: 13, lastBufferCount: 3, restartCount: 0), .live)
-        // First tick (no prior sample): a primed route is live.
-        XCTAssertEqual(CaptureReadiness.stallOutcome(bufferCount: 3, lastBufferCount: 0, restartCount: 0), .live)
-    }
-
-    /// The watchdog restart budget is bounded (Risk 7): a route dead past `maxRestarts`
-    /// finalizes rather than looping.
-    func testStall_deadPastMaxRestarts_finalizes_noLoop() {
-        XCTAssertEqual(CaptureReadiness.stallOutcome(bufferCount: 3, lastBufferCount: 3,
-                                                     restartCount: CaptureReadiness.maxRestarts), .finalize)
-    }
-
-    /// `captureProgressing` re-arms the grace watchdog WITHOUT restarting, so a live-but-
-    /// silent route keeps being sampled for a later stall.
-    func testRecording_captureProgressing_reArmsGrace_noRestart() {
-        let (state, effects) = SessionReducer.reduce(.recording, .captureProgressing, source: .blueParrottBLE)
-        XCTAssertEqual(state, .recording)
-        XCTAssertEqual(effects, [.armTimer(.captureGrace)],
-                       "progressing re-arms the watchdog only — no restart, no state change")
-    }
-
     // MARK: - UI source: mic button shares the reducer (cross-source fix)
 
     /// The on-screen mic button drives the reducer as `.ui` so the headset and UI share
-    /// one recording-state owner. A `.ui` tap from idle records with the keep-alive left on
-    /// (no source suspends it).
+    /// one recording-state owner. A `.ui` tap from idle records — but must NOT suspend
+    /// the keep-alive (that's the BlueParrott BLE warm-up dance only).
     func testUITap_fromIdle_records_withoutSuspendingKeepAlive() {
         let (state, fx) = SessionReducer.reduce(.idle, .tap, source: .ui)
         XCTAssertEqual(state, .recording)
         XCTAssertTrue(fx.contains(.startCapture))
-        XCTAssertFalse(fx.contains(.suspendKeepAlive), "no source suspends the keep-alive")
+        XCTAssertFalse(fx.contains(.suspendKeepAlive), "keep-alive suspend is gated to the BLE source")
     }
 
     /// A `.ui` tap while recording finalizes + sends — the same toggle the headset uses,
@@ -380,7 +338,7 @@ final class HeadsetSessionReducerTests: XCTestCase {
         XCTAssertEqual(state, .recording)
         XCTAssertTrue(fx.contains(.interruptTTS), "must interrupt the TTS it barged into")
         XCTAssertTrue(fx.contains(.startCapture), "must actually start recording, not just dismiss")
-        XCTAssertFalse(fx.contains(.suspendKeepAlive), "no source suspends the keep-alive")
+        XCTAssertFalse(fx.contains(.suspendKeepAlive), "keep-alive suspend is BLE-only")
     }
 
     /// A `.ui` tap while awaiting the backend response also barges in and records (cancel
