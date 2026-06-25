@@ -56,6 +56,13 @@ class MockVoiceCodeClientForHeadset: VoiceCodeClient {
     }
 }
 
+/// Records which earcons were requested, so audible-cue wiring can be asserted without a
+/// live audio route.
+final class SpyEarconPlayer: EarconPlaying {
+    var played: [Earcon] = []
+    func play(_ earcon: Earcon) { played.append(earcon) }
+}
+
 struct HeadsetMockDependencies {
     let voiceInput = MockVoiceInputForHeadset()
     let voiceOutput: MockVoiceOutputForHeadset
@@ -176,6 +183,79 @@ final class HeadsetRemoteCommandManagerTests: XCTestCase {
         manager.blueParrottButtonDown(); manager.blueParrottButtonUp(); manager.blueParrottTap()
         XCTAssertEqual(manager.state, .sending, "second tap finalizes and sends")
         XCTAssertTrue(mocks.voiceInput.stopRecordingCalled)
+    }
+
+    // MARK: - Audible cues (eyes-free start/stop feedback)
+
+    /// Recording start plays the `.listening` cue ("mic is live, talk now").
+    func testCue_listeningOnRecordStart() {
+        let (manager, mocks) = makeManager()
+        let spy = SpyEarconPlayer()
+        manager.earconPlayer = spy
+        mocks.settings.headsetAudibleCuesEnabled = true
+        manager.activate()
+        drainMain()
+        manager.gestureScheduleAfter = { _, _ in }
+        manager.testInstallGestureRecognizer()
+
+        manager.blueParrottButtonDown(); manager.blueParrottButtonUp(); manager.blueParrottTap()
+
+        XCTAssertEqual(manager.state, .recording)
+        XCTAssertTrue(spy.played.contains(.listening), "record start plays the listening cue")
+    }
+
+    /// Stopping with nothing recognized plays the `.error` cue (not `.sent`).
+    func testCue_errorOnEmptyTranscriptionStop() {
+        let (manager, mocks) = makeManager()
+        let spy = SpyEarconPlayer()
+        manager.earconPlayer = spy
+        mocks.settings.headsetAudibleCuesEnabled = true
+        manager.activate()
+        drainMain()
+        manager.gestureScheduleAfter = { _, _ in }
+        manager.testInstallGestureRecognizer()
+        mocks.voiceInput.transcribedText = ""   // nothing recognized
+
+        manager.blueParrottButtonDown(); manager.blueParrottButtonUp(); manager.blueParrottTap()  // record
+        manager.blueParrottButtonDown(); manager.blueParrottButtonUp(); manager.blueParrottTap()  // stop
+        drainMain()   // run the deferred transcription read + cue
+
+        XCTAssertTrue(spy.played.contains(.error), "empty transcription on stop plays the error cue")
+        XCTAssertFalse(spy.played.contains(.sent), "no 'got it' cue when nothing was recognized")
+    }
+
+    /// No cues when the user has opted out.
+    func testCue_suppressedWhenDisabled() {
+        let (manager, mocks) = makeManager()
+        let spy = SpyEarconPlayer()
+        manager.earconPlayer = spy
+        mocks.settings.headsetAudibleCuesEnabled = false
+        manager.activate()
+        drainMain()
+        manager.gestureScheduleAfter = { _, _ in }
+        manager.testInstallGestureRecognizer()
+
+        manager.blueParrottButtonDown(); manager.blueParrottButtonUp(); manager.blueParrottTap()
+        drainMain()
+
+        XCTAssertEqual(manager.state, .recording)
+        XCTAssertTrue(spy.played.isEmpty, "no cues play when audible cues are disabled")
+    }
+
+    /// Canceling the assistant's speech plays the distinct `.cancelled` cue — NOT the
+    /// `.listening` record-start chirp — so cancel and start are audibly different.
+    func testCue_cancelledOnInterrupt_distinctFromStart() {
+        let (manager, mocks) = makeManager()
+        let spy = SpyEarconPlayer()
+        manager.earconPlayer = spy
+        mocks.settings.headsetAudibleCuesEnabled = true
+        manager.activate()
+        drainMain()
+
+        manager.simulateInterrupt()   // performInterrupt → .cancelled
+
+        XCTAssertTrue(spy.played.contains(.cancelled), "canceling output plays the cancelled cue")
+        XCTAssertFalse(spy.played.contains(.listening), "an interrupt must not sound like a record-start")
     }
 
     // MARK: - State Machine: Toggle Play/Pause

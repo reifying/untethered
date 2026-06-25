@@ -163,6 +163,11 @@ class HeadsetRemoteCommandManager: ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: block)
     }
 
+    /// Audible-cue player for eyes-free start/stop feedback. Test seam: defaults to the
+    /// headset tone player; tests inject a spy. All playback routes through the gated
+    /// `playCue` (honors `headsetAudibleCuesEnabled`).
+    var earconPlayer: EarconPlaying = HeadsetEarconPlayer()
+
     enum HeadsetState: CustomStringConvertible, Equatable {
         case ready
         case recording
@@ -638,6 +643,19 @@ extension HeadsetRemoteCommandManager {
         state = .ready
         updateNowPlayingState()
         hLog("Headset interrupt: stopped TTS")
+        // Distinct "dismissed" blip so canceling the assistant's speech is audibly
+        // different from STARTING a recording (.listening's rising chirp).
+        playCue(.cancelled)
+    }
+
+    /// The single gated entry point for audible cues — honors the opt-out setting, then
+    /// plays through `earconPlayer` (routed to the active HFP headset session). Cues fire on
+    /// recording START (`.listening`) and STOP (`.sent`/`.error`) so a headset user knows
+    /// eyes-free whether recording began and whether the turn was captured + sent.
+    private func playCue(_ earcon: Earcon) {
+        guard settings.headsetAudibleCuesEnabled else { return }
+        hLog("Headset: ♪ cue \(earcon)")
+        earconPlayer.play(earcon)
     }
 
     /// Apply ONE clean, de-bracketed gesture from `BlueParrottGestureRecognizer`. This is
@@ -686,6 +704,10 @@ extension HeadsetRemoteCommandManager {
         hLog("Headset: startRecording — audioCategory=\(AVAudioSession.sharedInstance().category.rawValue) route=\(AVAudioSession.sharedInstance().currentRoute.inputs.map(\.portName))")
         state = .recording
         updateNowPlayingState()
+        // Eyes-free "recording started" cue, played IMMEDIATELY through the already-up
+        // keep-alive HFP session — don't wait for the SCO mic warm-up — so a hold gives
+        // prompt confirmation that the press registered and recording began.
+        playCue(.listening)
         // Pass onSessionReady so we restart the silence player AFTER
         // VoiceInputManager switches the audio session to .playAndRecord.
         // AVAudioPlayer binds audio routing at prepareToPlay() time. Playing or
@@ -727,6 +749,7 @@ extension HeadsetRemoteCommandManager {
                 hLog("Headset: empty transcription — returning to ready")
                 self.state = .ready
                 self.updateNowPlayingState()
+                self.playCue(.error)   // nothing recognized → "that didn't work"
                 return
             }
 
@@ -734,16 +757,21 @@ extension HeadsetRemoteCommandManager {
             if self.settings.headsetAutoSend {
                 self.sendToActiveSession(text)
             } else {
+                // Captured but not auto-sent: still a successful STOP, so cue "got it".
                 self.state = .ready
                 self.updateNowPlayingState()
+                self.playCue(.sent)
             }
         }
     }
 
     private func sendToActiveSession(_ text: String) {
-        if !buildAndSend(text) {
+        if buildAndSend(text) {
+            playCue(.sent)             // confirmed send → "got it"
+        } else {
             state = .ready
             updateNowPlayingState()
+            playCue(.error)            // no active session / send failed → "that didn't work"
         }
     }
 }

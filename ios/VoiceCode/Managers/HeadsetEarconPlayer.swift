@@ -13,14 +13,16 @@
 // `play()` logs the resolved CoreAudio default output device, mirroring `setupKeepAlive`'s
 // `outputs=[…]` logging.
 //
-// macOS-only: only macOS is driven by `SessionReducer`/the executor; iOS exercises the
-// `Earcon` type via unit tests only, never a live playback path. See
-// @docs/design/macos-headset-audible-feedback.md §3 (API Design) and §6 (Risks).
+// Cross-platform: the tone synthesis is pure AVFoundation. macOS plays cues through the
+// system default output (CoreAudio); iOS plays through the active AVAudioSession route —
+// the Bluetooth HFP headset while a recording session is up — so the user hears the cue in
+// the headset, eyes-free. See @docs/design/macos-headset-audible-feedback.md §3, §6.
 
-#if os(macOS)
 import Foundation
 import AVFoundation
+#if os(macOS)
 import CoreAudio
+#endif
 
 /// Log to the in-app LogManager so messages appear in the in-app debug log viewer
 /// (mirrors `HeadsetRemoteCommandManager`'s `hLog`). See ios/CLAUDE.md.
@@ -69,7 +71,20 @@ final class HeadsetEarconPlayer: EarconPlaying {
         }
         player.currentTime = 0
         let started = player.play()
-        eLog("Earcon: played \(earcon) — started=\(started), output=[\(Self.defaultOutputDeviceDescription())]")
+        eLog("Earcon: played \(earcon) — started=\(started), output=[\(Self.outputRouteDescription())]")
+    }
+
+    /// Resolved output route at play time, to catch a cue going somewhere other than the
+    /// headset (Risk 2). macOS reads the CoreAudio default-output device; iOS reads the
+    /// active AVAudioSession route (the HFP headset while recording).
+    static func outputRouteDescription() -> String {
+        #if os(macOS)
+        return defaultOutputDeviceDescription()
+        #else
+        let outs = AVAudioSession.sharedInstance().currentRoute.outputs
+            .map { "\($0.portName) [\($0.portType.rawValue)]" }
+        return outs.isEmpty ? "none" : outs.joined(separator: ", ")
+        #endif
     }
 
     /// Test accessor (reachable via `@testable import`, unlike the `private` cache): which
@@ -152,8 +167,9 @@ final class HeadsetEarconPlayer: EarconPlaying {
         return player
     }
 
-    // MARK: - Route diagnostics
+    // MARK: - Route diagnostics (macOS CoreAudio)
 
+    #if os(macOS)
     /// Name + UID of the system default OUTPUT device (CoreAudio). On macOS `AVAudioPlayer`
     /// plays to this device, so logging it at play time catches the cue going to the Mac
     /// speaker instead of the headset (Risk 2). Mirrors
@@ -192,5 +208,5 @@ final class HeadsetEarconPlayer: EarconPlaying {
         }
         return status == noErr ? (value as String) : nil
     }
+    #endif
 }
-#endif
