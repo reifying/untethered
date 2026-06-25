@@ -32,10 +32,11 @@ final class HeadsetSessionReducerTests: XCTestCase {
 
     // MARK: - Start recording from idle (PTT + toggle)
 
-    func testIdle_holdStarted_startsRecording_BLEsuspendsKeepAlive() {
+    func testIdle_holdStarted_startsRecording_keepsKeepAliveOn() {
         let (state, fx) = SessionReducer.reduce(.idle, .holdStarted, source: .blueParrottBLE)
         XCTAssertEqual(state, .recording)
-        XCTAssertEqual(fx, [.suspendKeepAlive, .startCapture, .playEarcon(.listening),
+        // No .suspendKeepAlive: the keep-alive output must stay on for the SCO mic.
+        XCTAssertEqual(fx, [.startCapture, .playEarcon(.listening),
                             .armTimer(.captureGrace), .updateNowPlaying])
     }
 
@@ -46,15 +47,16 @@ final class HeadsetSessionReducerTests: XCTestCase {
         XCTAssertTrue(fx.contains(.armTimer(.captureGrace)))
     }
 
-    /// suspendKeepAlive is emitted ONLY for the BLE source (F2/F7); the media-key
-    /// path keeps the keep-alive so a stem press can still stop recording.
-    func testKeepAliveSuspend_isGatedToBLESource() {
+    /// The keep-alive is NEVER suspended on any source: its output stream is what lets the
+    /// SCO mic come up (the F2 "suspend during capture" was a misdiagnosis that left the
+    /// BlueParrott route cold — see beginRecording). Regression guard against re-adding it.
+    func testKeepAliveSuspend_neverEmitted_anySource() {
         let (_, ble) = SessionReducer.reduce(.idle, .holdStarted, source: .blueParrottBLE)
         let (_, media) = SessionReducer.reduce(.idle, .holdStarted, source: .mediaKey)
         let (_, sdk) = SessionReducer.reduce(.idle, .tap, source: .iosSDK)
-        XCTAssertTrue(ble.contains(.suspendKeepAlive))
-        XCTAssertFalse(media.contains(.suspendKeepAlive), "media-key path keeps the keep-alive for stem-press stop")
-        XCTAssertFalse(sdk.contains(.suspendKeepAlive), "only the BLE path owns the keep-alive output")
+        XCTAssertFalse(ble.contains(.suspendKeepAlive), "the BLE path must keep the keep-alive ON for the SCO mic")
+        XCTAssertFalse(media.contains(.suspendKeepAlive))
+        XCTAssertFalse(sdk.contains(.suspendKeepAlive))
     }
 
     // MARK: - Recording → finalizing (stop, and the no-strand safety net)
@@ -62,7 +64,8 @@ final class HeadsetSessionReducerTests: XCTestCase {
     func testRecording_holdEnded_finalizes() {
         let (state, fx) = SessionReducer.reduce(.recording, .holdEnded, source: .blueParrottBLE)
         XCTAssertEqual(state, .finalizing)
-        XCTAssertEqual(fx, [.stopCapture, .resumeKeepAlive, .cancelTimer(.captureGrace)])
+        // No .resumeKeepAlive: it was never suspended (keep-alive stays on throughout).
+        XCTAssertEqual(fx, [.stopCapture, .cancelTimer(.captureGrace)])
     }
 
     func testRecording_tap_finalizes() {
@@ -77,7 +80,7 @@ final class HeadsetSessionReducerTests: XCTestCase {
         let (state, fx) = SessionReducer.reduce(.recording, .captureEnded, source: .blueParrottBLE)
         XCTAssertEqual(state, .finalizing)
         XCTAssertTrue(fx.contains(.stopCapture))
-        XCTAssertTrue(fx.contains(.resumeKeepAlive))
+        XCTAssertFalse(fx.contains(.resumeKeepAlive), "keep-alive was never suspended — nothing to resume")
     }
 
     // MARK: - Capture readiness (F3)
@@ -188,7 +191,7 @@ final class HeadsetSessionReducerTests: XCTestCase {
         XCTAssertEqual(state, .recording, "a hold during speaking must interrupt and start a new turn")
         XCTAssertTrue(fx.contains(.interruptTTS))
         XCTAssertTrue(fx.contains(.startCapture))
-        XCTAssertTrue(fx.contains(.suspendKeepAlive))
+        XCTAssertFalse(fx.contains(.suspendKeepAlive), "keep-alive stays on (SCO mic) — even barging in")
         // The interrupt must precede the fresh capture so TTS stops before the mic opens.
         XCTAssertEqual(fx.first, .interruptTTS)
     }
@@ -339,13 +342,13 @@ final class HeadsetSessionReducerTests: XCTestCase {
     // MARK: - UI source: mic button shares the reducer (cross-source fix)
 
     /// The on-screen mic button drives the reducer as `.ui` so the headset and UI share
-    /// one recording-state owner. A `.ui` tap from idle records — but must NOT suspend
-    /// the keep-alive (that's the BlueParrott BLE warm-up dance only).
+    /// one recording-state owner. A `.ui` tap from idle records with the keep-alive left on
+    /// (no source suspends it).
     func testUITap_fromIdle_records_withoutSuspendingKeepAlive() {
         let (state, fx) = SessionReducer.reduce(.idle, .tap, source: .ui)
         XCTAssertEqual(state, .recording)
         XCTAssertTrue(fx.contains(.startCapture))
-        XCTAssertFalse(fx.contains(.suspendKeepAlive), "keep-alive suspend is gated to the BLE source")
+        XCTAssertFalse(fx.contains(.suspendKeepAlive), "no source suspends the keep-alive")
     }
 
     /// A `.ui` tap while recording finalizes + sends — the same toggle the headset uses,
@@ -377,7 +380,7 @@ final class HeadsetSessionReducerTests: XCTestCase {
         XCTAssertEqual(state, .recording)
         XCTAssertTrue(fx.contains(.interruptTTS), "must interrupt the TTS it barged into")
         XCTAssertTrue(fx.contains(.startCapture), "must actually start recording, not just dismiss")
-        XCTAssertFalse(fx.contains(.suspendKeepAlive), "keep-alive suspend is BLE-only")
+        XCTAssertFalse(fx.contains(.suspendKeepAlive), "no source suspends the keep-alive")
     }
 
     /// A `.ui` tap while awaiting the backend response also barges in and records (cancel

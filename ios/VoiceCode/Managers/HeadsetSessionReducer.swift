@@ -78,8 +78,11 @@ enum SessionEffect: Equatable {
     case stopCapture
     case sendPrompt(String)
     case interruptTTS
-    case suspendKeepAlive      // BLE path only (F2)
-    case resumeKeepAlive
+    case suspendKeepAlive      // DISABLED: never emitted — the keep-alive output must stay
+                               // ON for the SCO mic to come up (see beginRecording). Kept
+                               // as plumbing so the lesson is greppable and re-enabling is
+                               // a one-line change if a future device needs it.
+    case resumeKeepAlive       // DISABLED (paired with suspendKeepAlive)
     case armTimer(SessionTimer)
     case cancelTimer(SessionTimer)
     case updateNowPlaying
@@ -142,7 +145,7 @@ enum SessionReducer {
         // (recognizer silence auto-finalize / engine failure / forced on disconnect —
         // the safety net that keeps `.recording` from stranding) → finalize.
         case (.recording, .holdEnded), (.recording, .tap), (.recording, .captureEnded):
-            return (.finalizing, [.stopCapture, .resumeKeepAlive, .cancelTimer(.captureGrace)])
+            return (.finalizing, [.stopCapture, .cancelTimer(.captureGrace)])
 
         case (.finalizing, .transcription(let text)):
             if let text, !text.trimmed.isEmpty {
@@ -180,11 +183,18 @@ enum SessionReducer {
     }
 
     /// Shared "start a recording turn" effects, optionally preceded by interrupt/cleanup
-    /// effects when barging in from a busy state. Keep-alive suspend is BLE-only (F2).
+    /// effects when barging in from a busy state.
+    ///
+    /// The keep-alive output is deliberately LEFT RUNNING for every source. On macOS its
+    /// A2DP output stream is what lets the headset's Bluetooth SCO mic come up — suspending
+    /// it (the old F2 "no output during the warm-up window") leaves the route cold and
+    /// captures NOTHING over the BlueParrott button. Hardware proof (logs-20260624-211435):
+    /// UI captures with the keep-alive ON got a live route + real audio (peak 0.54); BLE
+    /// captures with it suspended got 3 dead buffers (`firstAudio=never`). So no
+    /// `.suspendKeepAlive` here — F2 was a misdiagnosis on this device.
     private static func beginRecording(source: ButtonSource,
                                        interrupting: [SessionEffect]) -> (SessionState, [SessionEffect]) {
         var fx = interrupting
-        if source == .blueParrottBLE { fx.append(.suspendKeepAlive) }
         // `.playEarcon(.listening)` fires on EVERY recording-start (idle start AND barge-in,
         // any source) — the eyes-free "mic is live, talk now" cue (executor gates it).
         fx.append(contentsOf: [.startCapture, .playEarcon(.listening),

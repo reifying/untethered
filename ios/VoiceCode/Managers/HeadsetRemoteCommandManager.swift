@@ -141,10 +141,6 @@ class HeadsetRemoteCommandManager: ObservableObject {
     /// (acceptance #7) while a BLE recording does.
     private(set) var suspendKeepAliveCount = 0
     private(set) var resumeKeepAliveCount = 0
-    /// Test observability: true while a SCO pre-warm has suspended the keep-alive (set on
-    /// the connect-edge pre-warm, cleared when the hold elapses, a press adopts the route,
-    /// or a disconnect tears it down). Read via `testKeepAliveSuspendedForPrewarm`.
-    private(set) var keepAliveSuspendedForPrewarm = false
     #endif
     #endif
 
@@ -1082,14 +1078,11 @@ extension HeadsetRemoteCommandManager {
         captureRestartCount = 0
         captureLastBufferSample = 0
         // A real press adopts (or replaces) any in-flight SCO pre-warm: cancel the bounded
-        // release so it can't tear the now-adopted route down, and clear the suspend flag
-        // (the recording's own keep-alive lifecycle takes over). `startRecording` does the
-        // engine adoption when `voiceInput.isPrewarming`.
+        // release so it can't tear the now-adopted route down. `startRecording` does the
+        // engine adoption when `voiceInput.isPrewarming`. The keep-alive stays playing
+        // throughout (it's what keeps the SCO mic live — see beginRecording).
         prewarmHoldWorkItem?.cancel()
         prewarmHoldWorkItem = nil
-        #if DEBUG
-        keepAliveSuspendedForPrewarm = false
-        #endif
         voiceInput.startRecording()
         hLog("Session: capture started")
     }
@@ -1109,10 +1102,8 @@ extension HeadsetRemoteCommandManager {
                                        isRecording: voiceInput.isRecording,
                                        isPrewarming: voiceInput.isPrewarming) else { return }
         hLog("Headset: BLE reconnect — pre-warming SCO mic (first-word fix)")
-        stopKeepAlive()                                  // F2: no output during the warm-up window
-        #if DEBUG
-        keepAliveSuspendedForPrewarm = true
-        #endif
+        // Keep the keep-alive PLAYING through the warm-up: its output stream is what lets
+        // the SCO mic come up (stopping it leaves the route cold — see beginRecording).
         voiceInput.prewarmCapture(onWarm: {
             hLog("Headset: SCO mic warm (pre-warm) — first press will be live")
         })
@@ -1128,11 +1119,7 @@ extension HeadsetRemoteCommandManager {
     private func endPrewarmIfIdle() {
         prewarmHoldWorkItem = nil
         guard voiceInput.isPrewarming, state == .idle else { return }  // a press adopted it
-        voiceInput.stopPrewarm()
-        startKeepAlive()
-        #if DEBUG
-        keepAliveSuspendedForPrewarm = false
-        #endif
+        voiceInput.stopPrewarm()   // keep-alive is already playing — nothing to resume
         hLog("Headset: pre-warm hold elapsed — released SCO mic")
     }
 
@@ -1287,18 +1274,17 @@ extension HeadsetRemoteCommandManager {
                 if connected {
                     self.prewarmScoOnReconnect()
                 } else {
-                    if self.voiceInput.isPrewarming {
-                        self.voiceInput.stopPrewarm()
-                        self.startKeepAlive()
-                        #if DEBUG
-                        self.keepAliveSuspendedForPrewarm = false
-                        #endif
-                    }
+                    if self.voiceInput.isPrewarming { self.voiceInput.stopPrewarm() }
                     self.handleSystemEvent(.captureEnded)
                 }
             }
         ble.start()
         blueParrottBLEManager = ble
+        // The BlueParrott mic captures over Bluetooth SCO, which only comes up while an
+        // output stream (the keep-alive) is playing — so the button source OWNS the
+        // keep-alive too, independent of `headsetModeEnabled`/`activate()`. Without this a
+        // BlueParrott-only config (headset control off) would record nothing.
+        startKeepAlive()
         #if DEBUG
         // The Phase A2 explorer and the live client would otherwise both stand up a
         // CBCentralManager scanning the same service and contend; the persistence
@@ -1313,9 +1299,11 @@ extension HeadsetRemoteCommandManager {
         blueParrottBLEManager = nil
         gestureRecognizer = nil
         bleConnectionCancellable = nil
-        if voiceInput.isPrewarming { voiceInput.stopPrewarm(); startKeepAlive() }
+        if voiceInput.isPrewarming { voiceInput.stopPrewarm() }
         prewarmHoldWorkItem?.cancel()
         prewarmHoldWorkItem = nil
+        // Release the keep-alive this source owns unless headset-control still needs it.
+        if !isActive { stopKeepAlive() }
         hLog("Headset: BlueParrott BLE stopped (macOS)")
     }
 
@@ -1394,8 +1382,6 @@ extension HeadsetRemoteCommandManager {
     var testSessionState: SessionState { state }
     /// Fire the bounded SCO pre-warm hold (the `holdDuration` release) deterministically.
     func testFirePrewarmHold() { prewarmHoldWorkItem?.perform() }
-    /// True while a SCO pre-warm has suspended the keep-alive (connect-edge pre-warm).
-    var testKeepAliveSuspendedForPrewarm: Bool { keepAliveSuspendedForPrewarm }
     #endif
 }
 #endif

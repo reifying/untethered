@@ -407,26 +407,26 @@ final class HeadsetRemoteCommandManagerMacTests: XCTestCase {
         XCTAssertTrue(f.output.stopCalled)
     }
 
-    // MARK: - Acceptance #7: source-gated keep-alive
+    // MARK: - Keep-alive stays ON during recording (the SCO-mic fix)
 
-    func testMediaKeyRecording_keepsKeepAlive_butBLESuspendsIt() {
+    /// NO source suspends the keep-alive: its output stream is what lets the Bluetooth SCO
+    /// mic come up. The old F2 "BLE suspends during capture" left the headset route cold
+    /// and captured nothing (logs-20260624-211435) — this guards against re-adding it.
+    func testRecording_neverSuspendsKeepAlive_anySource() {
         let f = makeFixture()
 
-        // A media-key recording must NOT suspend the keep-alive (stem-press stop needs it).
         f.manager.simulateMediaTap()                                 // .tap, source .mediaKey
         XCTAssertEqual(f.manager.testSessionState, .recording)
-        XCTAssertEqual(f.manager.suspendKeepAliveCount, 0,
-                       "the media-key path keeps the keep-alive output (acceptance #7)")
+        XCTAssertEqual(f.manager.suspendKeepAliveCount, 0, "media-key keeps the keep-alive output")
 
-        // Stop the media turn (empty transcription → idle), then a BLE recording DOES
-        // suspend the keep-alive (F2).
         f.manager.handleSystemEvent(.captureEnded)
         drainMainQueue()
         XCTAssertEqual(f.manager.testSessionState, .idle)
 
         f.manager.handleButtonEvent(.tap, source: .blueParrottBLE)
         XCTAssertEqual(f.manager.testSessionState, .recording)
-        XCTAssertEqual(f.manager.suspendKeepAliveCount, 1, "the BLE path suspends the keep-alive (F2)")
+        XCTAssertEqual(f.manager.suspendKeepAliveCount, 0,
+                       "the BLE path must keep the keep-alive ON — suspending it kills the SCO mic")
     }
 
     // MARK: - Executor-input gating
@@ -554,20 +554,19 @@ final class HeadsetRemoteCommandManagerMacTests: XCTestCase {
 
     // MARK: - SCO mic pre-warm (first-word fix on BLE reconnect)
 
-    /// The BLE connect edge starts a discarding pre-warm capture and suspends the
-    /// keep-alive for the warm-up window (F2). `driveBLELive` runs the full advertise →
-    /// connect → subscribe sequence that flips `isConnected` true (the connect edge).
-    func testReconnect_startsPrewarm_andSuspendsKeepAlive() {
+    /// The BLE connect edge starts a discarding pre-warm capture (keep-alive stays ON
+    /// through the warm-up — it's what brings the SCO route up). `driveBLELive` runs the
+    /// full advertise → connect → subscribe sequence that flips `isConnected` true.
+    func testReconnect_startsPrewarm_keepAliveStaysOn() {
         let f = makeFixture()                                        // engaged, idle
         driveBLELive(f.central)                                      // → isConnected true (connect edge)
 
         XCTAssertTrue(f.input.prewarmCaptureCalled, "the connect edge opens a pre-warm capture")
-        XCTAssertTrue(f.manager.testKeepAliveSuspendedForPrewarm, "pre-warm suspends the keep-alive (F2)")
-        XCTAssertEqual(f.manager.suspendKeepAliveCount, 0, "pre-warm uses stopKeepAlive directly, not the reducer effect")
+        XCTAssertEqual(f.manager.suspendKeepAliveCount, 0, "the keep-alive is never suspended for the pre-warm")
     }
 
-    /// With no press inside the hold window, the bounded warm-hold releases the mic and
-    /// resumes the keep-alive (no sitting on the mic indefinitely).
+    /// With no press inside the hold window, the bounded warm-hold releases the mic (the
+    /// keep-alive was never stopped, so there's nothing to resume).
     func testPrewarmHoldElapsed_whileIdle_releasesMic() {
         let f = makeFixture()
         driveBLELive(f.central)
@@ -576,7 +575,6 @@ final class HeadsetRemoteCommandManagerMacTests: XCTestCase {
         f.manager.testFirePrewarmHold()                             // injected scheduler fires
 
         XCTAssertTrue(f.input.stopPrewarmCalled, "the hold elapsing releases the pre-warm mic")
-        XCTAssertFalse(f.manager.testKeepAliveSuspendedForPrewarm, "the keep-alive resumes on release")
     }
 
     /// A real press during pre-warm records (adopting the live route) and leaves no
@@ -589,7 +587,6 @@ final class HeadsetRemoteCommandManagerMacTests: XCTestCase {
         f.manager.handleButtonEvent(.tap, source: .blueParrottBLE)  // press adopts the route → recording
         XCTAssertEqual(f.manager.testSessionState, .recording)
         XCTAssertTrue(f.input.startRecordingCalled)
-        XCTAssertFalse(f.manager.testKeepAliveSuspendedForPrewarm, "the recording's keep-alive lifecycle takes over")
 
         // The stale hold must not tear down the now-adopted recording route.
         f.input.stopPrewarmCalled = false
@@ -612,8 +609,8 @@ final class HeadsetRemoteCommandManagerMacTests: XCTestCase {
         XCTAssertFalse(f.input.prewarmCaptureCalled, "no pre-warm while a recording is already open")
     }
 
-    /// A disconnect during pre-warm tears it down and resumes the keep-alive (alongside
-    /// the existing no-strand captureEnded).
+    /// A disconnect during pre-warm tears it down (alongside the existing no-strand
+    /// captureEnded).
     func testDisconnectDuringPrewarm_releasesMic() {
         let f = makeFixture()
         driveBLELive(f.central)                                     // pre-warming
@@ -623,7 +620,6 @@ final class HeadsetRemoteCommandManagerMacTests: XCTestCase {
         drainMainQueue()                                            // $isConnected sink (disconnect edge)
 
         XCTAssertTrue(f.input.stopPrewarmCalled, "a disconnect during pre-warm releases the mic")
-        XCTAssertFalse(f.manager.testKeepAliveSuspendedForPrewarm, "the keep-alive resumes after release")
     }
 }
 
