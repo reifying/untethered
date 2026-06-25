@@ -125,6 +125,7 @@ final class HeadsetRemoteCommandManagerMacTests: XCTestCase {
             )
         }
         manager.sessionScheduleWork = { _, _ in }                       // non-firing
+        manager.prewarmScheduleWork = { _, _ in }                       // non-firing (fired via testFirePrewarmHold)
         manager.gestureScheduleAfter = { [weak self] _, block in self?.capturedHoldBlock = block }
         let earconSpy = EarconSpy()
         manager.earconPlayer = earconSpy                                // spy in place of the live player
@@ -508,6 +509,101 @@ final class HeadsetRemoteCommandManagerMacTests: XCTestCase {
         f.manager.handleButtonEvent(.tap, source: .blueParrottBLE)   // would emit .listening
         XCTAssertEqual(f.manager.testSessionState, .recording)
         XCTAssertEqual(f.earconSpy.played, [])
+    }
+
+    // MARK: - SCO mic pre-warm (first-word fix on BLE reconnect)
+
+    /// The BLE connect edge starts a discarding pre-warm capture and suspends the
+    /// keep-alive for the warm-up window (F2). `driveBLELive` runs the full advertise →
+    /// connect → subscribe sequence that flips `isConnected` true (the connect edge).
+    func testReconnect_startsPrewarm_andSuspendsKeepAlive() {
+        let f = makeFixture()                                        // engaged, idle
+        driveBLELive(f.central)                                      // → isConnected true (connect edge)
+
+        XCTAssertTrue(f.input.prewarmCaptureCalled, "the connect edge opens a pre-warm capture")
+        XCTAssertTrue(f.manager.testKeepAliveSuspendedForPrewarm, "pre-warm suspends the keep-alive (F2)")
+        XCTAssertEqual(f.manager.suspendKeepAliveCount, 0, "pre-warm uses stopKeepAlive directly, not the reducer effect")
+    }
+
+    /// With no press inside the hold window, the bounded warm-hold releases the mic and
+    /// resumes the keep-alive (no sitting on the mic indefinitely).
+    func testPrewarmHoldElapsed_whileIdle_releasesMic() {
+        let f = makeFixture()
+        driveBLELive(f.central)
+        XCTAssertTrue(f.input.prewarmCaptureCalled)
+
+        f.manager.testFirePrewarmHold()                             // injected scheduler fires
+
+        XCTAssertTrue(f.input.stopPrewarmCalled, "the hold elapsing releases the pre-warm mic")
+        XCTAssertFalse(f.manager.testKeepAliveSuspendedForPrewarm, "the keep-alive resumes on release")
+    }
+
+    /// A real press during pre-warm records (adopting the live route) and leaves no
+    /// dangling pre-warm: firing the (now-stale) hold afterward does not stop a recording.
+    func testPressDuringPrewarm_recordsAndDoesNotStrandPrewarm() {
+        let f = makeFixture()
+        driveBLELive(f.central)                                     // pre-warming
+        XCTAssertTrue(f.input.prewarmCaptureCalled)
+
+        f.manager.handleButtonEvent(.tap, source: .blueParrottBLE)  // press adopts the route → recording
+        XCTAssertEqual(f.manager.testSessionState, .recording)
+        XCTAssertTrue(f.input.startRecordingCalled)
+        XCTAssertFalse(f.manager.testKeepAliveSuspendedForPrewarm, "the recording's keep-alive lifecycle takes over")
+
+        // The stale hold must not tear down the now-adopted recording route.
+        f.input.stopPrewarmCalled = false
+        f.manager.testFirePrewarmHold()
+        XCTAssertFalse(f.input.stopPrewarmCalled, "a press adopted the engine — the hold is a no-op")
+        XCTAssertEqual(f.manager.testSessionState, .recording)
+    }
+
+    /// No pre-warm starts while a recording is already open (the mic is already warm). A
+    /// BLE connect flap mid-record must not open a second pre-warm capture. Modelled by
+    /// setting `isRecording` directly (the precondition `ScoPrewarm.shouldPrewarm` reads)
+    /// rather than driving the state machine — keeps the assertion on the guard, not on
+    /// mock capture-event timing.
+    func testNoPrewarmWhileRecording() {
+        let f = makeFixture()
+        f.input.isRecording = true                                 // a recording is already open
+        drainMainQueue()                                           // settle the $isRecording sink (no-op, state idle)
+
+        driveBLELive(f.central)                                    // a connect flap mid-record
+        XCTAssertFalse(f.input.prewarmCaptureCalled, "no pre-warm while a recording is already open")
+    }
+
+    /// A disconnect during pre-warm tears it down and resumes the keep-alive (alongside
+    /// the existing no-strand captureEnded).
+    func testDisconnectDuringPrewarm_releasesMic() {
+        let f = makeFixture()
+        driveBLELive(f.central)                                     // pre-warming
+        XCTAssertTrue(f.input.prewarmCaptureCalled)
+
+        f.central.centralDelegate?.bleDidDisconnect()
+        drainMainQueue()                                            // $isConnected sink (disconnect edge)
+
+        XCTAssertTrue(f.input.stopPrewarmCalled, "a disconnect during pre-warm releases the mic")
+        XCTAssertFalse(f.manager.testKeepAliveSuspendedForPrewarm, "the keep-alive resumes after release")
+    }
+}
+
+// MARK: - ScoPrewarm pure policy
+
+final class ScoPrewarmTests: XCTestCase {
+    func testPrewarmsOnConnectWhenIdle() {
+        XCTAssertTrue(ScoPrewarm.shouldPrewarm(connected: true, isRecording: false, isPrewarming: false))
+    }
+
+    func testNoPrewarmWhileRecordingOrAlreadyWarming() {
+        XCTAssertFalse(ScoPrewarm.shouldPrewarm(connected: true, isRecording: true, isPrewarming: false))
+        XCTAssertFalse(ScoPrewarm.shouldPrewarm(connected: true, isRecording: false, isPrewarming: true))
+    }
+
+    func testNoPrewarmOnDisconnect() {
+        XCTAssertFalse(ScoPrewarm.shouldPrewarm(connected: false, isRecording: false, isPrewarming: false))
+    }
+
+    func testHoldDurationIsPositive() {
+        XCTAssertGreaterThan(ScoPrewarm.holdDuration, 0)
     }
 }
 #endif

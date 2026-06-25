@@ -20,12 +20,33 @@ class MockVoiceInputForHeadset: VoiceInputManager {
     /// real audio route.
     var restartCaptureCallCount = 0
     var stubBufferCount = 0
+    #if os(macOS)
+    /// SCO pre-warm seams (macOS first-word fix): record the calls and drive `isPrewarming`
+    /// so the executor's connect-edge wiring is exercised without a live audio route.
+    var prewarmCaptureCalled = false
+    var stopPrewarmCalled = false
+    #endif
 
     override func startRecording(onSessionReady: (() -> Void)? = nil) {
         startRecordingCalled = true
+        #if os(macOS)
+        isPrewarming = false   // a real start adopts/replaces any in-flight pre-warm
+        #endif
         onSessionReady?()
         DispatchQueue.main.async { self.isRecording = true }
     }
+
+    #if os(macOS)
+    override func prewarmCapture(onWarm: (() -> Void)? = nil) {
+        prewarmCaptureCalled = true
+        isPrewarming = true
+    }
+
+    override func stopPrewarm() {
+        stopPrewarmCalled = true
+        isPrewarming = false
+    }
+    #endif
 
     override func stopRecording() {
         stopRecordingCalled = true

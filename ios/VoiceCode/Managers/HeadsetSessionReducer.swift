@@ -219,3 +219,25 @@ enum CaptureReadiness {
         return restartCount < maxRestarts ? .restart : .finalize
     }
 }
+
+#if os(macOS)
+/// Pure policy for the SCO mic pre-warm (the first-word fix) — the testable when/how-long
+/// decisions, no I/O. The headset mic only works over HFP/SCO, and bringing that link up
+/// from cold (A2DP→HFP switch + SCO establishment) can take seconds — so the FIRST press
+/// after a BLE (re)connect talks into a route that isn't live yet (buffers=…, silent=100%,
+/// firstAudio=never). On the connect edge we open a brief, discarding pre-warm capture to
+/// bring SCO up before the press; a real press adopts the already-live engine.
+/// macOS-only: iOS drives the route via AVAudioSession (.allowBluetoothHFP). See
+/// @docs/design/macos-headset-sco-prewarm.md.
+enum ScoPrewarm {
+    /// How long the pre-warm capture is held open with no press before releasing the mic.
+    /// Covers "reconnect → user presses" (observed ~1.5s) with margin; short enough not to
+    /// sit on the mic (privacy indicator / battery).
+    static let holdDuration: TimeInterval = 8.0
+
+    /// Pre-warm only on a fresh connect, while idle, and not already warming/recording.
+    static func shouldPrewarm(connected: Bool, isRecording: Bool, isPrewarming: Bool) -> Bool {
+        connected && !isRecording && !isPrewarming
+    }
+}
+#endif

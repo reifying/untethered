@@ -63,10 +63,10 @@ class HeadsetRemoteCommandManager: ObservableObject {
     private(set) var blueParrottBLEManager: BlueParrottBLEManager?
     /// De-bracketer between the BLE raw-signal stream and the session reducer.
     private var gestureRecognizer: BlueParrottGestureRecognizer?
-    /// Disconnect observation for the live BLE manager — a disconnect WHILE recording
-    /// feeds `captureEnded` so `.recording` can't strand (Goal #2). Replaced on each
-    /// `startBlueParrott()`.
-    private var bleDisconnectCancellable: AnyCancellable?
+    /// Connection observation for the live BLE manager — the connect edge pre-warms the
+    /// SCO mic (first-word fix); a disconnect WHILE recording feeds `captureEnded` so
+    /// `.recording` can't strand (Goal #2). Replaced on each `startBlueParrott()`.
+    private var bleConnectionCancellable: AnyCancellable?
     /// The source of the most recent button-driven event, used to label the
     /// system-derived events (TTS / capture / timers) the reducer requires a source
     /// for. None of those events trigger a source-gated effect, so this only matters
@@ -111,6 +111,16 @@ class HeadsetRemoteCommandManager: ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: block)
     }
 
+    /// Scheduler for the SCO pre-warm bounded warm-hold. Test seam: defaults to
+    /// `main.asyncAfter`; tests inject a non-firing recorder and fire via
+    /// `testFirePrewarmHold()`.
+    var prewarmScheduleWork: (TimeInterval, DispatchWorkItem) -> Void = { delay, work in
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+    /// Retained pre-warm hold work item so a real press can cancel it (and the test hook
+    /// fire it). Replaced on each connect-edge pre-warm.
+    private var prewarmHoldWorkItem: DispatchWorkItem?
+
     /// Session-timer durations (tunable; grounded in the findings). `captureGrace`: a
     /// live route delivers buffers within ~300 ms even when silent, so zero buffers by
     /// ~1 s ⇒ dead route (F3). `awaitResponse`: generous backstop for the F4 strand.
@@ -127,6 +137,10 @@ class HeadsetRemoteCommandManager: ObservableObject {
     /// (acceptance #7) while a BLE recording does.
     private(set) var suspendKeepAliveCount = 0
     private(set) var resumeKeepAliveCount = 0
+    /// Test observability: true while a SCO pre-warm has suspended the keep-alive (set on
+    /// the connect-edge pre-warm, cleared when the hold elapses, a press adopts the route,
+    /// or a disconnect tears it down). Read via `testKeepAliveSuspendedForPrewarm`.
+    private(set) var keepAliveSuspendedForPrewarm = false
     #endif
     #endif
 
@@ -1062,8 +1076,59 @@ extension HeadsetRemoteCommandManager {
 
     private func startSessionCapture() {
         captureRestartCount = 0
+        // A real press adopts (or replaces) any in-flight SCO pre-warm: cancel the bounded
+        // release so it can't tear the now-adopted route down, and clear the suspend flag
+        // (the recording's own keep-alive lifecycle takes over). `startRecording` does the
+        // engine adoption when `voiceInput.isPrewarming`.
+        prewarmHoldWorkItem?.cancel()
+        prewarmHoldWorkItem = nil
+        #if DEBUG
+        keepAliveSuspendedForPrewarm = false
+        #endif
         voiceInput.startRecording()
         hLog("Session: capture started")
+    }
+
+    // MARK: - SCO mic pre-warm (first-word fix on BLE reconnect)
+
+    /// Connect-edge handler: open a brief, discarding pre-warm capture to bring the
+    /// Bluetooth HFP/SCO mic route up BEFORE the user's first press, so the first word
+    /// isn't lost to a cold route (`firstAudio=never`). Suspends the keep-alive for the
+    /// warm-up window (F2 — no output contention) and bounds the hold so the mic is
+    /// released if no press lands. A real press adopts the live engine (see
+    /// `VoiceInputManager.adoptPrewarmEngineForRecognition`). macOS-only. See
+    /// @docs/design/macos-headset-sco-prewarm.md.
+    private func prewarmScoOnReconnect() {
+        guard stateMachineEngaged,
+              ScoPrewarm.shouldPrewarm(connected: true,
+                                       isRecording: voiceInput.isRecording,
+                                       isPrewarming: voiceInput.isPrewarming) else { return }
+        hLog("Headset: BLE reconnect — pre-warming SCO mic (first-word fix)")
+        stopKeepAlive()                                  // F2: no output during the warm-up window
+        #if DEBUG
+        keepAliveSuspendedForPrewarm = true
+        #endif
+        voiceInput.prewarmCapture(onWarm: {
+            hLog("Headset: SCO mic warm (pre-warm) — first press will be live")
+        })
+        // Bounded warm-hold: release the mic if no press lands within holdDuration.
+        let work = DispatchWorkItem { [weak self] in self?.endPrewarmIfIdle() }
+        prewarmHoldWorkItem = work
+        prewarmScheduleWork(ScoPrewarm.holdDuration, work)
+    }
+
+    /// Bounded warm-hold expiry: if no press adopted the pre-warm within `holdDuration`,
+    /// release the mic and resume the keep-alive. A press (which clears `isPrewarming` and
+    /// cancels this work) makes it a no-op.
+    private func endPrewarmIfIdle() {
+        prewarmHoldWorkItem = nil
+        guard voiceInput.isPrewarming, state == .idle else { return }  // a press adopted it
+        voiceInput.stopPrewarm()
+        startKeepAlive()
+        #if DEBUG
+        keepAliveSuspendedForPrewarm = false
+        #endif
+        hLog("Headset: pre-warm hold elapsed — released SCO mic")
     }
 
     private func stopSessionCaptureAndReadTranscription() {
@@ -1196,15 +1261,29 @@ extension HeadsetRemoteCommandManager {
             hLog("Headset: raw signal \(signal)")
             recognizer?.feed(signal)
         }
-        // A disconnect WHILE recording feeds `captureEnded` so `.recording` can't
-        // strand on an out-of-range mid-recording (Goal #2). `dropFirst` skips the
-        // initial `isConnected == false`.
-        bleDisconnectCancellable = ble.$isConnected
+        // The $isConnected sink handles BOTH edges:
+        //  • connect    → pre-warm the SCO mic so the user's first press lands on a live
+        //    route (first-word fix; @docs/design/macos-headset-sco-prewarm.md).
+        //  • disconnect → feed `captureEnded` so a mid-recording out-of-range can't strand
+        //    `.recording` (Goal #2), and release any in-flight pre-warm.
+        // `dropFirst` skips the initial `isConnected == false`.
+        bleConnectionCancellable = ble.$isConnected
             .receive(on: DispatchQueue.main)
             .dropFirst()
             .sink { [weak self] connected in
-                guard let self = self, !connected else { return }
-                self.handleSystemEvent(.captureEnded)
+                guard let self = self else { return }
+                if connected {
+                    self.prewarmScoOnReconnect()
+                } else {
+                    if self.voiceInput.isPrewarming {
+                        self.voiceInput.stopPrewarm()
+                        self.startKeepAlive()
+                        #if DEBUG
+                        self.keepAliveSuspendedForPrewarm = false
+                        #endif
+                    }
+                    self.handleSystemEvent(.captureEnded)
+                }
             }
         ble.start()
         blueParrottBLEManager = ble
@@ -1221,7 +1300,10 @@ extension HeadsetRemoteCommandManager {
         blueParrottBLEManager?.stop()
         blueParrottBLEManager = nil
         gestureRecognizer = nil
-        bleDisconnectCancellable = nil
+        bleConnectionCancellable = nil
+        if voiceInput.isPrewarming { voiceInput.stopPrewarm(); startKeepAlive() }
+        prewarmHoldWorkItem?.cancel()
+        prewarmHoldWorkItem = nil
         hLog("Headset: BlueParrott BLE stopped (macOS)")
     }
 
@@ -1298,6 +1380,10 @@ extension HeadsetRemoteCommandManager {
     func testFireSessionTimer(_ timer: SessionTimer) { sessionTimerWorkItems[timer]?.perform() }
     func testHasArmedSessionTimer(_ timer: SessionTimer) -> Bool { sessionTimerWorkItems[timer] != nil }
     var testSessionState: SessionState { state }
+    /// Fire the bounded SCO pre-warm hold (the `holdDuration` release) deterministically.
+    func testFirePrewarmHold() { prewarmHoldWorkItem?.perform() }
+    /// True while a SCO pre-warm has suspended the keep-alive (connect-edge pre-warm).
+    var testKeepAliveSuspendedForPrewarm: Bool { keepAliveSuspendedForPrewarm }
     #endif
 }
 #endif

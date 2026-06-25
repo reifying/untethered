@@ -45,6 +45,23 @@ class VoiceInputManager: NSObject, ObservableObject {
     /// F3 zero-buffer dead route.
     var capturedBufferCount: Int { captureMonitor?.bufferCount ?? 0 }
 
+    #if os(macOS)
+    /// SCO mic pre-warm state (the first-word fix). A pre-warm is a capture opened with
+    /// NO recognizer, purely to bring the Bluetooth HFP/SCO route up before the user's
+    /// first press after a (re)connect; a real recording ADOPTS the live engine (zero
+    /// re-warm). Plain var (like `isRecording`) so the headset executor can read it and
+    /// the executor tests can drive it. macOS-only: iOS keeps HFP warm via the
+    /// `.playAndRecord`/`.allowBluetoothHFP` session category instead. See
+    /// @docs/design/macos-headset-sco-prewarm.md.
+    var isPrewarming = false
+    /// Fired once (main queue) when the pre-warm route delivers its FIRST buffer of ANY
+    /// kind (silent or not) — the instant SCO is up. Distinct from the monitor's
+    /// non-silent `onFirstAudio`: nobody talks during a pre-warm, so a non-silent buffer
+    /// may never arrive.
+    private var onPrewarmWarm: (() -> Void)?
+    private var sawPrewarmBuffer = false
+    #endif
+
     /// Reference to voice output manager for muting TTS during recording
     private weak var voiceOutputManager: VoiceOutputManager?
 
@@ -225,8 +242,16 @@ class VoiceInputManager: NSObject, ObservableObject {
 
         // Build the engine + diagnostic tap + capture monitor and start the input
         // route. Shared with restartCapture() so the F3 recovery path stands up an
-        // identical capture.
-        guard startCaptureEngine() else { return }
+        // identical capture. On macOS, if a SCO pre-warm engine is already live (opened
+        // on the BLE connect edge), ADOPT it instead of building a fresh cold one — the
+        // route is already up, so the first word is captured. See
+        // @docs/design/macos-headset-sco-prewarm.md.
+        #if os(macOS)
+        let captureStarted = isPrewarming ? adoptPrewarmEngineForRecognition() : startCaptureEngine()
+        #else
+        let captureStarted = startCaptureEngine()
+        #endif
+        guard captureStarted else { return }
 
         // Start recognition task
         recognitionTask = speechRecognizer?.recognitionTask(with: recognitionRequest) { [weak self] result, error in
@@ -347,6 +372,138 @@ class VoiceInputManager: NSObject, ObservableObject {
     func handleCaptureProducedAudio() {
         DispatchQueue.main.async { [weak self] in self?.onCaptureProducedAudio?() }
     }
+
+    #if os(macOS)
+    // MARK: - SCO mic pre-warm (first-word fix)
+
+    /// Open the mic input WITHOUT recognition to establish the HFP/SCO route, discarding
+    /// captured audio, so the user's first press after a (re)connect lands on a live route
+    /// instead of a cold one (which drops the first word — `firstAudio=never`). Mirrors
+    /// `startCaptureEngine`'s engine + monitor setup but installs a DISCARDING tap and
+    /// starts NO `recognitionTask`. Idempotent; never runs during a real recording.
+    /// `onWarm` (diagnostic) fires once when the route delivers its first buffer of ANY
+    /// kind. The live audio I/O is skipped under unit tests (no audio HW in the headless
+    /// host, like `restartCapture`) — the state contract is what tests assert; the
+    /// hardware path is the manual checklist. See @docs/design/macos-headset-sco-prewarm.md.
+    func prewarmCapture(onWarm: (() -> Void)? = nil) {
+        guard !isPrewarming, !isRecording else { return }
+        isPrewarming = true
+        onPrewarmWarm = onWarm
+        sawPrewarmBuffer = false
+
+        // The pre-warm shares the readiness monitor so `isPrewarming`-keyed teardown and a
+        // later adoption both see an active capture.
+        let monitor = AudioCaptureMonitor(startTime: CFAbsoluteTimeGetCurrent())
+        captureMonitor = monitor
+
+        guard !TestingEnvironment.isUnitTesting else {
+            log("VoiceInput: SCO pre-warm (test stub — no live engine)")
+            return
+        }
+
+        let engine = AVAudioEngine()
+        audioEngine = engine
+        let input = engine.inputNode
+        let format = input.outputFormat(forBus: 0)
+        log("VoiceInput: SCO pre-warm — input device=\(currentInputDescription()) format=\(Int(format.sampleRate))Hz")
+        input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
+            // DISCARD the audio (no `recognitionRequest.append`): this is route warm-up,
+            // not recognition. The monitor still records so the warm-up is observable.
+            monitor.record(peak: VoiceInputManager.peakAmplitude(of: buffer),
+                           frames: Int(buffer.frameLength),
+                           at: CFAbsoluteTimeGetCurrent())
+            self?.notePrewarmBuffer()
+        }
+        engine.prepare()
+        do {
+            try engine.start()
+            log("VoiceInput: SCO pre-warm capture started (discarding)")
+        } catch {
+            log("VoiceInput: SCO pre-warm failed to start: \(error.localizedDescription)")
+            stopPrewarm()
+        }
+    }
+
+    /// First pre-warm buffer of ANY kind ⇒ SCO is up; fire `onWarm` exactly once on the
+    /// main queue. Internal so the one-shot contract is testable without a live route.
+    func notePrewarmBuffer() {
+        guard isPrewarming, !sawPrewarmBuffer else { return }
+        sawPrewarmBuffer = true
+        let warm = onPrewarmWarm
+        DispatchQueue.main.async { warm?() }
+    }
+
+    /// Tear down a pre-warm capture if one is open (no-op otherwise). Does NOT touch a
+    /// real recording — `isPrewarming` is cleared the instant a recording adopts the
+    /// engine, so this can't stop a live recording.
+    func stopPrewarm() {
+        guard isPrewarming else { return }
+        isPrewarming = false
+        onPrewarmWarm = nil
+        sawPrewarmBuffer = false
+        if !TestingEnvironment.isUnitTesting {
+            audioEngine?.stop()
+            audioEngine?.inputNode.removeTap(onBus: 0)
+            audioEngine = nil
+        }
+        captureMonitor = nil
+        log("VoiceInput: SCO pre-warm capture stopped")
+    }
+
+    /// A real recording adopts a live pre-warm engine instead of building a fresh cold
+    /// one: swap the discarding tap for the recognizer-feeding tap on the already-running
+    /// engine (zero re-warm — SCO is already up), so the first word is captured. Falls
+    /// back to a cold `startCaptureEngine` if the pre-warm engine is gone. Returns false
+    /// only on a hard failure. Mirrors `startCaptureEngine`'s tap/monitor so the readiness
+    /// signals (`capturedBufferCount`, `onCaptureProducedAudio`) match a normal start.
+    @discardableResult
+    func adoptPrewarmEngineForRecognition() -> Bool {
+        guard let recognitionRequest = recognitionRequest else {
+            log("VoiceInput: cannot adopt pre-warm — no recognition request")
+            return false
+        }
+        isPrewarming = false
+        onPrewarmWarm = nil
+        sawPrewarmBuffer = false
+
+        guard !TestingEnvironment.isUnitTesting else {
+            // Headless host: no live engine to adopt — stand up a fresh monitor so capture
+            // counts as active (the no-session-change contract the tests assert).
+            captureMonitor = AudioCaptureMonitor(startTime: CFAbsoluteTimeGetCurrent()) { [weak self] in
+                self?.handleCaptureProducedAudio()
+            }
+            return true
+        }
+
+        guard let engine = audioEngine else {
+            log("VoiceInput: pre-warm engine gone — cold start instead")
+            return startCaptureEngine()
+        }
+        let inputNode = engine.inputNode
+        inputNode.removeTap(onBus: 0)                       // drop the discarding pre-warm tap
+        let recordingFormat = inputNode.outputFormat(forBus: 0)
+        log("VoiceInput: adopting live SCO pre-warm engine (no re-warm) device=\(currentInputDescription()) format=\(Int(recordingFormat.sampleRate))Hz")
+        let monitor = AudioCaptureMonitor(startTime: CFAbsoluteTimeGetCurrent()) { [weak self] in
+            self?.handleCaptureProducedAudio()
+        }
+        captureMonitor = monitor
+        inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { buffer, _ in
+            monitor.record(peak: VoiceInputManager.peakAmplitude(of: buffer),
+                           frames: Int(buffer.frameLength),
+                           at: CFAbsoluteTimeGetCurrent())
+            recognitionRequest.append(buffer)
+        }
+        if !engine.isRunning {
+            engine.prepare()
+            do { try engine.start() }
+            catch {
+                log("VoiceInput: adopt failed to (re)start engine: \(error.localizedDescription)")
+                return false
+            }
+        }
+        return true
+    }
+    #endif
 
     func stopRecording() {
         audioEngine?.stop()

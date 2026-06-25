@@ -430,4 +430,64 @@ final class VoiceInputManagerTests: XCTestCase {
         XCTAssertFalse(manager.prefersBluetoothHFPInput(), "must default to false (built-in mic / A2DP)")
     }
     #endif
+
+    // MARK: - SCO mic pre-warm seam (macOS first-word fix)
+
+    #if os(macOS)
+    /// `prewarmCapture` sets `isPrewarming` and stands up the readiness monitor, and is
+    /// idempotent — a second call while warming is a no-op. (The live engine I/O is
+    /// skipped under unit tests; the state contract is what we assert here.)
+    func testPrewarmCapture_setsIsPrewarming_idempotent() {
+        XCTAssertFalse(manager.isPrewarming)
+        XCTAssertNil(manager.captureMonitor)
+
+        manager.prewarmCapture()
+        XCTAssertTrue(manager.isPrewarming, "pre-warm marks the manager warming")
+        XCTAssertNotNil(manager.captureMonitor, "pre-warm stands up the readiness monitor")
+
+        manager.prewarmCapture()   // idempotent: must not crash or re-enter
+        XCTAssertTrue(manager.isPrewarming)
+    }
+
+    /// `stopPrewarm` clears the warming state and the monitor; a second call is a safe
+    /// no-op.
+    func testStopPrewarm_clearsState_idempotent() {
+        manager.prewarmCapture()
+        XCTAssertTrue(manager.isPrewarming)
+
+        manager.stopPrewarm()
+        XCTAssertFalse(manager.isPrewarming, "stopPrewarm clears the warming flag")
+        XCTAssertNil(manager.captureMonitor, "stopPrewarm releases the monitor")
+
+        manager.stopPrewarm()      // no-op, no crash
+        XCTAssertFalse(manager.isPrewarming)
+    }
+
+    /// A pre-warm must never start during a real recording (the mic is already open/warm).
+    func testPrewarmCapture_noOpWhileRecording() {
+        manager.isRecording = true
+        manager.prewarmCapture()
+        XCTAssertFalse(manager.isPrewarming, "no pre-warm while recording — the mic is already open")
+        XCTAssertNil(manager.captureMonitor)
+        manager.isRecording = false
+    }
+
+    /// `notePrewarmBuffer` fires `onWarm` exactly once — on the first buffer of ANY kind
+    /// (silent or not) — so a long silent warm-up still signals "SCO up" once.
+    func testNotePrewarmBuffer_firesOnWarmExactlyOnce() {
+        var warmCount = 0
+        let warmed = expectation(description: "onWarm fired")
+        manager.prewarmCapture(onWarm: { warmCount += 1; warmed.fulfill() })
+
+        manager.notePrewarmBuffer()   // first buffer → fire
+        manager.notePrewarmBuffer()   // subsequent buffers → no re-fire
+        wait(for: [warmed], timeout: 1.0)
+
+        // Let any erroneous second main-queue dispatch run before asserting the count.
+        let settle = expectation(description: "settle")
+        DispatchQueue.main.async { settle.fulfill() }
+        wait(for: [settle], timeout: 1.0)
+        XCTAssertEqual(warmCount, 1, "onWarm fires exactly once for the warm-up")
+    }
+    #endif
 }
