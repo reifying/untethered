@@ -81,6 +81,11 @@ class HeadsetRemoteCommandManager: ObservableObject {
     private var captureRestartCount = 0
 
     #if os(macOS)
+    /// True while output is parked on the headset for TTS playback (set when we restore for a
+    /// spoken response). On TTS end we use it to move output BACK to built-in immediately —
+    /// so the headset's A2DP release happens during the gap before the next press, not at
+    /// mic-open (a capture opened while A2DP is still settling reads digital silence).
+    private var outputOnHeadsetForTTS = false
     /// The system default OUTPUT device we moved away from for the current capture (the
     /// headset), so we can restore it when capture ends. nil when we didn't reroute (output
     /// wasn't the headset). See `rerouteOutputForCaptureIfNeeded` / `MacAudioOutput`.
@@ -147,6 +152,7 @@ class HeadsetRemoteCommandManager: ObservableObject {
     /// audio device. The actual device switch is hardware-validated.
     private(set) var rerouteOutputInvokedCount = 0
     private(set) var restoreOutputInvokedCount = 0
+    private(set) var parkOutputInvokedCount = 0
     #endif
     #endif
 
@@ -267,7 +273,11 @@ class HeadsetRemoteCommandManager: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] isSpeaking in
                 guard let self = self else { return }
-                if isSpeaking { self.restoreOutputAfterCapture() }
+                if isSpeaking {
+                    self.restoreOutputAfterCapture()   // TTS → headset (in-ear)
+                } else {
+                    self.parkOutputToBuiltInAfterTTS() // TTS ended/dismissed → built-in early, so A2DP settles before the next press
+                }
                 self.handleSystemEvent(isSpeaking ? .ttsStarted : .ttsEnded)
             }
             .store(in: &cancellables)
@@ -1151,7 +1161,21 @@ extension HeadsetRemoteCommandManager {
         guard let saved = savedOutputDeviceID else { return }
         savedOutputDeviceID = nil
         let ok = MacAudioOutput.setDefaultOutputDevice(saved)
-        hLog("Headset: restored output to the headset after capture (ok=\(ok))")
+        outputOnHeadsetForTTS = true   // now on the headset for TTS; park back to built-in when it ends
+        hLog("Headset: restored output to the headset for playback (ok=\(ok))")
+    }
+
+    /// On TTS end / dismiss, move output back to the built-in device so the headset's A2DP
+    /// release settles during the gap before the next press (a capture opened while A2DP is
+    /// still settling reads silence — confirmed: the first record right after a spoken
+    /// response failed). No-op unless we had parked output on the headset for TTS.
+    func parkOutputToBuiltInAfterTTS() {
+        #if DEBUG
+        parkOutputInvokedCount += 1
+        #endif
+        guard outputOnHeadsetForTTS else { return }
+        outputOnHeadsetForTTS = false
+        rerouteOutputForCaptureIfNeeded()   // headset → built-in (mic-ready resting state)
     }
     #endif
 

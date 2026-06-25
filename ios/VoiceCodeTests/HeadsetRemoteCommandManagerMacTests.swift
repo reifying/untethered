@@ -468,6 +468,22 @@ final class HeadsetRemoteCommandManagerMacTests: XCTestCase {
                                     "TTS start restores output to the headset for in-ear playback")
     }
 
+    /// TTS end / dismiss parks output back to the built-in device, so the headset's A2DP
+    /// release settles BEFORE the next press (the first record right after a response failed
+    /// because A2DP was still settling at mic-open). Wiring assertion; the device switch is
+    /// hardware-validated.
+    func testTTSEnd_parksOutputBackToBuiltIn() {
+        let f = makeFixture()
+        drainMainQueue()                                            // let the initial isSpeaking=false subscribe settle
+        let baseline = f.manager.parkOutputInvokedCount
+        f.output.isSpeaking = true                                  // TTS begins
+        drainMainQueue()
+        f.output.isSpeaking = false                                 // TTS ends / dismissed
+        drainMainQueue()
+        XCTAssertGreaterThan(f.manager.parkOutputInvokedCount, baseline,
+                             "TTS end parks output back to built-in so the next capture is mic-ready")
+    }
+
     // MARK: - Executor-input gating
 
     func testGating_dropsButtonEventsWhenDisengaged() {
