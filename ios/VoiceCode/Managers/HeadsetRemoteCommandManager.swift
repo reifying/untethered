@@ -76,6 +76,10 @@ class HeadsetRemoteCommandManager: ObservableObject {
     /// EVERY stall, so the executor stops re-feeding `captureStalled` after one retry
     /// and finalizes instead of looping. Reset on each fresh `startCapture`.
     private var captureRestartCount = 0
+    /// Previous buffer-count sample for the delta stall-watchdog: the route is healthy
+    /// only while this keeps advancing. 0 on a fresh capture and after each restart (a
+    /// rebuilt engine's count resets). See `CaptureReadiness.stallOutcome`.
+    private var captureLastBufferSample = 0
 
     /// Session-timer (captureGrace / awaitResponse) generation guards + retained work
     /// items, mirroring the BLE manager's pattern: arming or cancelling bumps the
@@ -1076,6 +1080,7 @@ extension HeadsetRemoteCommandManager {
 
     private func startSessionCapture() {
         captureRestartCount = 0
+        captureLastBufferSample = 0
         // A real press adopts (or replaces) any in-flight SCO pre-warm: cancel the bounded
         // release so it can't tear the now-adopted route down, and clear the suspend flag
         // (the recording's own keep-alive lifecycle takes over). `startRecording` does the
@@ -1176,22 +1181,29 @@ extension HeadsetRemoteCommandManager {
     private func sessionTimerFired(_ timer: SessionTimer) {
         switch timer {
         case .captureGrace:
-            // The grace window elapsed. A cold Bluetooth SCO route delivers ≤1 silent
-            // priming buffer then nothing (≥2 ⇒ a live ~10/grace stream): restart it,
-            // up to `maxRestarts`, then finalize rather than looping (Risk 7). A live
-            // but silent route (F2 warm-up) clears the bar and just lets the window
-            // lapse. Decision is the pure `CaptureReadiness.graceOutcome`.
+            // Recurring stall watchdog (until real audio cancels the grace). A cold OR
+            // mid-recording-dead SCO route is caught by sampling the buffer DELTA: a live
+            // 16 kHz route streams ~10 buffers/grace even when silent, so a count that's
+            // frozen since the last sample (or still below the live bar) is a dead route —
+            // restart it up to `maxRestarts`, then finalize rather than looping (Risk 7).
+            // Advancing-but-silent re-arms to keep watching. Decision is the pure
+            // `CaptureReadiness.stallOutcome`.
             let buffers = voiceInput.capturedBufferCount
-            switch CaptureReadiness.graceOutcome(bufferCount: buffers, restartCount: captureRestartCount) {
+            switch CaptureReadiness.stallOutcome(bufferCount: buffers,
+                                                 lastBufferCount: captureLastBufferSample,
+                                                 restartCount: captureRestartCount) {
             case .restart:
                 captureRestartCount += 1
-                hLog("Session: captureGrace — route cold (\(buffers) buffers) → restart \(captureRestartCount)/\(CaptureReadiness.maxRestarts)")
+                captureLastBufferSample = 0   // the rebuilt engine's count restarts at 0
+                hLog("Session: captureGrace — route dead (\(buffers) buffers, frozen) → restart \(captureRestartCount)/\(CaptureReadiness.maxRestarts)")
                 handleSystemEvent(.captureStalled)
             case .finalize:
-                hLog("Session: capture still cold after \(captureRestartCount) restart(s) (\(buffers) buffers) — finalizing (no loop)")
+                hLog("Session: capture still dead after \(captureRestartCount) restart(s) (\(buffers) buffers) — finalizing (no loop)")
                 handleSystemEvent(.captureEnded)
             case .live:
-                hLog("Session: captureGrace elapsed — route live (\(buffers) buffers)")
+                hLog("Session: captureGrace — route advancing (\(buffers) buffers, was \(captureLastBufferSample)), no audio yet — watching for stall")
+                captureLastBufferSample = buffers
+                handleSystemEvent(.captureProgressing)   // re-arm the watchdog
             }
         case .awaitResponse:
             handleSystemEvent(.awaitTimedOut)

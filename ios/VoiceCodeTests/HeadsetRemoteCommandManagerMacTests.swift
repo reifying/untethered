@@ -265,39 +265,80 @@ final class HeadsetRemoteCommandManagerMacTests: XCTestCase {
         XCTAssertEqual(f.manager.testSessionState, .idle, "UI recording finalizes; system events flow when not engaged")
     }
 
-    // MARK: - F3: capture readiness (restart once, then finalize — never loop)
+    // MARK: - F3: capture readiness (restart up to max, then finalize — never loop)
 
-    func testCaptureStalled_restartsExactlyOnce_thenFinalizes_F3() {
+    func testCaptureStalled_restartsUpToMax_thenFinalizes_F3() {
         let f = makeFixture()
-        f.input.stubBufferCount = 0                                  // dead route: no buffers
+        f.input.stubBufferCount = 0                                  // dead route: no buffers ever
 
         f.manager.handleButtonEvent(.tap, source: .blueParrottBLE)   // idle → recording, arms captureGrace
         XCTAssertEqual(f.manager.testSessionState, .recording)
         XCTAssertTrue(f.manager.testHasArmedSessionTimer(.captureGrace))
 
-        // First grace lapse with zero buffers → restart capture once + re-arm grace.
-        f.manager.testFireSessionTimer(.captureGrace)
-        XCTAssertEqual(f.input.restartCaptureCallCount, 1)
-        XCTAssertEqual(f.manager.testSessionState, .recording)
-        XCTAssertTrue(f.manager.testHasArmedSessionTimer(.captureGrace), "the retry re-arms the grace window")
+        // Each grace lapse with zero buffers restarts + re-arms, up to maxRestarts.
+        for n in 1...CaptureReadiness.maxRestarts {
+            f.manager.testFireSessionTimer(.captureGrace)
+            XCTAssertEqual(f.input.restartCaptureCallCount, n, "stall \(n) restarts the capture")
+            XCTAssertEqual(f.manager.testSessionState, .recording)
+            XCTAssertTrue(f.manager.testHasArmedSessionTimer(.captureGrace), "the retry re-arms the grace window")
+        }
 
-        // Second grace lapse: the executor must NOT restart again — it finalizes.
+        // Budget exhausted: the next stall finalizes rather than looping (Risk 7).
         f.manager.testFireSessionTimer(.captureGrace)
-        XCTAssertEqual(f.input.restartCaptureCallCount, 1,
-                       "one-shot: capture restarts at most once per recording (Risk 7)")
-        XCTAssertEqual(f.manager.testSessionState, .finalizing, "a second stall finalizes rather than looping")
+        XCTAssertEqual(f.input.restartCaptureCallCount, CaptureReadiness.maxRestarts,
+                       "restarts are bounded by maxRestarts — no infinite loop")
+        XCTAssertEqual(f.manager.testSessionState, .finalizing, "a stall past the budget finalizes")
     }
 
-    /// A live buffer count cancels the stall path: the grace timer lapsing with buffers
-    /// present (e.g. the F2 silent warm-up) does not restart capture.
-    func testCaptureGrace_withBuffers_doesNotRestart() {
+    /// First grace lapse with buffers present (the primed-but-silent F2 warm-up) does not
+    /// restart — it re-arms the watchdog to keep sampling.
+    func testCaptureGrace_withBuffers_doesNotRestart_keepsWatching() {
         let f = makeFixture()
-        f.input.stubBufferCount = 3                                  // live route
+        f.input.stubBufferCount = 3                                  // primed route
 
         f.manager.handleButtonEvent(.tap, source: .blueParrottBLE)
         f.manager.testFireSessionTimer(.captureGrace)
 
-        XCTAssertEqual(f.input.restartCaptureCallCount, 0, "a live route must not trigger the F3 restart")
+        XCTAssertEqual(f.input.restartCaptureCallCount, 0, "a primed route must not restart on the first sample")
+        XCTAssertEqual(f.manager.testSessionState, .recording)
+        XCTAssertTrue(f.manager.testHasArmedSessionTimer(.captureGrace), "progressing re-arms the stall watchdog")
+    }
+
+    // MARK: - Delta stall-watchdog: a route that goes dead MID-recording is restarted
+
+    /// The bug behind "ignored almost all my words": the SCO route delivers a few priming
+    /// buffers then freezes for the whole recording. The first sample sees buffers and
+    /// re-arms; the next sample sees the SAME count (frozen) → dead route → restart. The
+    /// old one-shot check declared `3 ≥ 2` live and never looked again.
+    func testStall_frozenBuffersMidRecording_restarts() {
+        let f = makeFixture()
+        f.input.stubBufferCount = 3                                  // primes 3 buffers...
+
+        f.manager.handleButtonEvent(.tap, source: .blueParrottBLE)
+        f.manager.testFireSessionTimer(.captureGrace)                // sample 1: 3 (advancing from 0) → live, re-arm
+        XCTAssertEqual(f.input.restartCaptureCallCount, 0)
+        XCTAssertEqual(f.manager.testSessionState, .recording)
+
+        // ...then the route goes dead: buffers frozen at 3.
+        f.manager.testFireSessionTimer(.captureGrace)                // sample 2: still 3 → frozen → restart
+        XCTAssertEqual(f.input.restartCaptureCallCount, 1, "a frozen buffer count mid-recording restarts the route")
+        XCTAssertEqual(f.manager.testSessionState, .recording)
+    }
+
+    /// A genuinely live route (buffers keep climbing) is never restarted by the watchdog,
+    /// no matter how many windows elapse — only a FROZEN count triggers a restart.
+    func testStall_advancingBuffers_neverRestarts() {
+        let f = makeFixture()
+        f.input.stubBufferCount = 3
+
+        f.manager.handleButtonEvent(.tap, source: .blueParrottBLE)
+        f.manager.testFireSessionTimer(.captureGrace)                // 3 (from 0) → live
+        f.input.stubBufferCount = 14                                 // climbed
+        f.manager.testFireSessionTimer(.captureGrace)                // 14 (from 3) → live
+        f.input.stubBufferCount = 27                                 // climbed again
+        f.manager.testFireSessionTimer(.captureGrace)                // 27 (from 14) → live
+
+        XCTAssertEqual(f.input.restartCaptureCallCount, 0, "an advancing route is live — never restarted")
         XCTAssertEqual(f.manager.testSessionState, .recording)
     }
 

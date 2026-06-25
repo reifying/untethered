@@ -297,6 +297,45 @@ final class HeadsetSessionReducerTests: XCTestCase {
         XCTAssertGreaterThan(CaptureReadiness.maxRestarts, 1, "one restart was not enough for a slow SCO link")
     }
 
+    // MARK: - Delta stall-watchdog (mid-recording SCO death)
+
+    /// The dead-route signature `graceOutcome` alone misses: the SCO link delivers a few
+    /// priming buffers and then goes dead for the whole recording (observed
+    /// `buffers=3, firstAudio=never`). Sampling the DELTA — buffers frozen since the last
+    /// window — classifies it as dead and restarts, where the one-shot `3 ≥ 2` called it live.
+    func testStall_frozenBuffers_isDeadNotLive_restarts() {
+        // 3 buffers last window, still 3 now → frozen → dead route → restart.
+        XCTAssertEqual(CaptureReadiness.stallOutcome(bufferCount: 3, lastBufferCount: 3, restartCount: 0), .restart,
+                       "buffers frozen since the last sample is a dead SCO route, not a live one")
+        // Zero/below-bar is also restartable while budget remains (subsumes graceOutcome).
+        XCTAssertEqual(CaptureReadiness.stallOutcome(bufferCount: 0, lastBufferCount: 0, restartCount: 0), .restart)
+        XCTAssertEqual(CaptureReadiness.stallOutcome(bufferCount: 1, lastBufferCount: 0, restartCount: 0), .restart)
+    }
+
+    /// A live route's buffer count keeps ADVANCING (even silent), so a count above the bar
+    /// AND greater than the last sample is live — keep watching, don't restart.
+    func testStall_advancingBuffers_isLive() {
+        XCTAssertEqual(CaptureReadiness.stallOutcome(bufferCount: 13, lastBufferCount: 3, restartCount: 0), .live)
+        // First tick (no prior sample): a primed route is live.
+        XCTAssertEqual(CaptureReadiness.stallOutcome(bufferCount: 3, lastBufferCount: 0, restartCount: 0), .live)
+    }
+
+    /// The watchdog restart budget is bounded (Risk 7): a route dead past `maxRestarts`
+    /// finalizes rather than looping.
+    func testStall_deadPastMaxRestarts_finalizes_noLoop() {
+        XCTAssertEqual(CaptureReadiness.stallOutcome(bufferCount: 3, lastBufferCount: 3,
+                                                     restartCount: CaptureReadiness.maxRestarts), .finalize)
+    }
+
+    /// `captureProgressing` re-arms the grace watchdog WITHOUT restarting, so a live-but-
+    /// silent route keeps being sampled for a later stall.
+    func testRecording_captureProgressing_reArmsGrace_noRestart() {
+        let (state, effects) = SessionReducer.reduce(.recording, .captureProgressing, source: .blueParrottBLE)
+        XCTAssertEqual(state, .recording)
+        XCTAssertEqual(effects, [.armTimer(.captureGrace)],
+                       "progressing re-arms the watchdog only — no restart, no state change")
+    }
+
     // MARK: - UI source: mic button shares the reducer (cross-source fix)
 
     /// The on-screen mic button drives the reducer as `.ui` so the headset and UI share

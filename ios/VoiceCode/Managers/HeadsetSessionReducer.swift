@@ -45,7 +45,9 @@ enum SessionEvent: Equatable {
     case tap                   // quick press-release
     case doubleTap             // (no `longPress` — a hold is PTT; the raw `04` code is dropped)
     case captureProducedAudio  // first non-silent buffer arrived (F3 readiness)
-    case captureStalled        // grace elapsed with zero buffers (F3)
+    case captureStalled        // grace elapsed with zero/frozen buffers (F3) → restart
+    case captureProgressing    // grace elapsed with buffers still ADVANCING but no audio
+                               // yet → keep the stall watchdog armed (re-sample next window)
     case captureEnded          // capture stopped with NO `up` gesture: recognizer silence
                                // auto-finalize, engine failure, or forced on BLE disconnect.
                                // Safety net so `.recording` can't strand (preserves the
@@ -128,7 +130,11 @@ enum SessionReducer {
         // `captureStalled` after one retry). Keep that guard downstream when wiring task .7.
         case (.recording, .captureStalled):
             return (.recording, [.restartCapture, .armTimer(.captureGrace),
-                                 .log("capture stalled (0 buffers) — restarting")])
+                                 .log("capture stalled (cold/frozen route) — restarting")])
+        // Buffers still advancing but no real audio yet → re-arm the watchdog to keep
+        // sampling the delta (catches a route that goes dead mid-recording, not just cold).
+        case (.recording, .captureProgressing):
+            return (.recording, [.armTimer(.captureGrace)])
         case (.recording, .captureProducedAudio):
             return (.recording, [.cancelTimer(.captureGrace)])
 
@@ -216,6 +222,25 @@ enum CaptureReadiness {
 
     static func graceOutcome(bufferCount: Int, restartCount: Int) -> Outcome {
         if bufferCount >= minLiveBufferCount { return .live }
+        return restartCount < maxRestarts ? .restart : .finalize
+    }
+
+    /// Recurring stall-watchdog decision, sampled REPEATEDLY while recording until real
+    /// audio is produced (`captureProducedAudio` cancels the grace upstream). Unlike the
+    /// one-shot `graceOutcome`, the route is healthy only while the buffer count keeps
+    /// ADVANCING: a live 16 kHz route streams ~10 buffers/grace even when the user is
+    /// silent, so a count that is FROZEN since the last sample (or still below the live
+    /// bar) is a dead/stalled SCO link — restart while the budget remains, else finalize.
+    ///
+    /// Why this is needed (the bug `graceOutcome` alone misses): on the B450-XT the SCO
+    /// route can deliver a few priming buffers and then go dead for the whole recording
+    /// (`buffers=3, silent=100%, firstAudio=never`). The one-shot check sees `3 ≥ 2` and
+    /// declares the route live, then stops watching — the user's words are lost to "No
+    /// speech detected". Sampling the DELTA catches the freeze and restarts (the same
+    /// rebuild that recovers a cold route). `lastBufferCount` is the previous sample (0 on
+    /// the first tick and after each restart, since a rebuilt engine's count resets).
+    static func stallOutcome(bufferCount: Int, lastBufferCount: Int, restartCount: Int) -> Outcome {
+        if bufferCount >= minLiveBufferCount && bufferCount > lastBufferCount { return .live }
         return restartCount < maxRestarts ? .restart : .finalize
     }
 }
