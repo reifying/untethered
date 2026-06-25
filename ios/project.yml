@@ -191,6 +191,7 @@ targets:
           - "BlueParrottBLEManagerTests.swift"
           - "HeadsetRemoteCommandManagerMacTests.swift"
           - "HeadsetEarconPlayerTests.swift"
+          - "MacAudioOutputRouterTests.swift"
     resources:
       - VoiceCodeTests/Fixtures
     dependencies:

@@ -2,6 +2,9 @@ import Foundation
 import MediaPlayer
 import Combine
 import AVFoundation
+#if os(macOS)
+import CoreAudio
+#endif
 
 /// Log to the in-app LogManager so messages appear in the in-app debug log viewer.
 private func hLog(_ msg: String) {
@@ -76,6 +79,13 @@ class HeadsetRemoteCommandManager: ObservableObject {
     /// EVERY stall, so the executor stops re-feeding `captureStalled` after one retry
     /// and finalizes instead of looping. Reset on each fresh `startCapture`.
     private var captureRestartCount = 0
+
+    #if os(macOS)
+    /// The system default OUTPUT device we moved away from for the current capture (the
+    /// headset), so we can restore it when capture ends. nil when we didn't reroute (output
+    /// wasn't the headset). See `rerouteOutputForCaptureIfNeeded` / `MacAudioOutput`.
+    private var savedOutputDeviceID: AudioDeviceID?
+    #endif
 
     /// Session-timer (captureGrace / awaitResponse) generation guards + retained work
     /// items, mirroring the BLE manager's pattern: arming or cancelling bumps the
@@ -378,6 +388,7 @@ class HeadsetRemoteCommandManager: ObservableObject {
             voiceInput.stopRecording()
         }
         #if os(macOS)
+        restoreOutputAfterCapture()   // safety: deactivate stops recording without the reducer stopCapture path
         stopKeepAlive()
         #if DEBUG
         stopGattExplorer()
@@ -1085,12 +1096,51 @@ extension HeadsetRemoteCommandManager {
 
     private func startSessionCapture() {
         captureRestartCount = 0
+        #if os(macOS)
+        // Free the HFP mic BEFORE opening the engine: if the system default output is the
+        // same headset we're capturing from, A2DP output is pinning the radio and the mic
+        // would deliver silent buffers. Move output to the built-in device for the capture.
+        rerouteOutputForCaptureIfNeeded()
+        #endif
         voiceInput.startRecording()
         hLog("Session: capture started")
     }
 
+    #if os(macOS)
+    /// If the system default OUTPUT is the same headset we're about to capture from, move
+    /// output to the built-in device so the headset can give us its HFP mic (A2DP-out and
+    /// HFP-in are mutually exclusive). Saves the prior device for restore. No-op when output
+    /// is already a different device, when there's no built-in output, or when the BlueParrott
+    /// isn't the active source. Idempotent (won't double-save).
+    func rerouteOutputForCaptureIfNeeded() {
+        guard settings.blueParrottEnabled, savedOutputDeviceID == nil else { return }
+        let outputID = MacAudioOutput.defaultOutputDeviceID()
+        let outputUID = MacAudioOutput.deviceUID(outputID)
+        let inputUID = MacAudioOutput.deviceUID(MacAudioOutput.defaultInputDeviceID())
+        guard MacAudioOutput.shouldRerouteForCapture(outputUID: outputUID, inputUID: inputUID),
+              let builtIn = MacAudioOutput.builtInOutputDeviceID() else { return }
+        savedOutputDeviceID = outputID
+        let ok = MacAudioOutput.setDefaultOutputDevice(builtIn)
+        hLog("Headset: routed output off the headset for capture (\(outputUID ?? "?") → built-in, ok=\(ok)) so the HFP mic frees up")
+    }
+
+    /// Restore the headset as the default output after capture, so the "sent" cue and the
+    /// spoken response play in-ear. No-op when we didn't reroute.
+    func restoreOutputAfterCapture() {
+        guard let saved = savedOutputDeviceID else { return }
+        savedOutputDeviceID = nil
+        let ok = MacAudioOutput.setDefaultOutputDevice(saved)
+        hLog("Headset: restored output to the headset after capture (ok=\(ok))")
+    }
+    #endif
+
     private func stopSessionCaptureAndReadTranscription() {
         voiceInput.stopRecording()
+        #if os(macOS)
+        // Capture is done — restore output to the headset so the "sent" cue and the spoken
+        // response play back in-ear.
+        restoreOutputAfterCapture()
+        #endif
         // ALWAYS emit transcription after stopCapture so `.finalizing` can't strand
         // (nil when nothing was recognized / on error). Deferred one run-loop hop so
         // the final recognition callback lands first.
