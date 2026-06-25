@@ -127,6 +127,10 @@ class HeadsetRemoteCommandManager: ObservableObject {
     /// (acceptance #7) while a BLE recording does.
     private(set) var suspendKeepAliveCount = 0
     private(set) var resumeKeepAliveCount = 0
+    /// Counts how many times the keep-alive player ACTUALLY started (not suppressed). Lets
+    /// tests assert the BlueParrott path never streams the A2DP keep-alive that would starve
+    /// the HFP mic, even though the `.resumeKeepAlive` effect still fires.
+    private(set) var keepAliveStartedCount = 0
     #endif
     #endif
 
@@ -782,9 +786,28 @@ extension HeadsetRemoteCommandManager {
 extension HeadsetRemoteCommandManager {
 
     func startKeepAlive() {
+        #if os(macOS)
+        // The BlueParrott mic captures over Bluetooth HFP/SCO, which is mutually exclusive
+        // with A2DP output on the same headset (HFP is a single bidirectional 16kHz link).
+        // The keep-alive is a CONTINUOUS A2DP output stream — it exists only to hold the
+        // Now Playing slot for MEDIA-KEY routing (AirPods stem / system keys). The
+        // BlueParrott's buttons arrive over BLE/GATT and don't need it. When BlueParrott is
+        // the active source, streaming the keep-alive to the headset pins it in A2DP and
+        // starves the HFP mic (confirmed on the B450-XT: capture dies at ~3 silent buffers
+        // while the keep-alive streams to the headset, and works the instant output leaves
+        // it). So suppress the keep-alive entirely while BlueParrott is enabled.
+        if settings.blueParrottEnabled {
+            keepAlivePlayer?.stop()
+            hLog("Headset: keep-alive suppressed — BlueParrott BLE active (A2DP output would starve the HFP mic)")
+            return
+        }
+        #endif
         keepAlivePlayer?.stop()
         setupKeepAlive()
         let played = keepAlivePlayer?.play() ?? false
+        #if os(macOS) && DEBUG
+        keepAliveStartedCount += 1
+        #endif
         hLog("Headset: keep-alive started — looping=\(played)")
     }
 

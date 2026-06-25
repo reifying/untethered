@@ -389,6 +389,35 @@ final class HeadsetRemoteCommandManagerMacTests: XCTestCase {
         XCTAssertEqual(f.manager.suspendKeepAliveCount, 1, "the BLE path suspends the keep-alive (F2)")
     }
 
+    /// The A2DP-vs-HFP fix: while BlueParrott is enabled, the keep-alive must never actually
+    /// stream — its continuous A2DP output pins the headset radio and starves the HFP mic
+    /// (confirmed on hardware: capture works the instant the keep-alive stops reaching the
+    /// headset). The `.resumeKeepAlive` effect still FIRES after a recording finalizes, but
+    /// `startKeepAlive` suppresses the actual playback when BlueParrott is the active source.
+    func testBlueParrottActive_keepAliveNeverStreams_evenOnResume() {
+        let f = makeFixture()                                        // engaged: blueParrottEnabled = true
+        f.input.transcribedText = ""                                 // empty → finalize back to idle
+
+        f.manager.handleButtonEvent(.tap, source: .blueParrottBLE)   // idle → recording (suspends keep-alive)
+        XCTAssertEqual(f.manager.testSessionState, .recording)
+        f.manager.handleButtonEvent(.tap, source: .blueParrottBLE)   // → finalizing → resumeKeepAlive effect
+        drainMainQueue()                                             // transcription read + settle
+
+        XCTAssertGreaterThanOrEqual(f.manager.resumeKeepAliveCount, 1,
+                                    "the .resumeKeepAlive effect still fires on finalize")
+        XCTAssertEqual(f.manager.keepAliveStartedCount, 0,
+                       "but the keep-alive never actually streams while BlueParrott is active (A2DP would starve the HFP mic)")
+    }
+
+    /// Without BlueParrott, the keep-alive behaves normally (media-key / AirPods path needs
+    /// the Now Playing slot) — the suppression is scoped to the BlueParrott source only.
+    func testKeepAlive_streamsWhenBlueParrottDisabled() {
+        let f = makeFixture(engaged: false)                          // blueParrott OFF
+        f.manager.startKeepAlive()
+        XCTAssertEqual(f.manager.keepAliveStartedCount, 1,
+                       "the keep-alive streams normally when BlueParrott is not the active source")
+    }
+
     // MARK: - Executor-input gating
 
     func testGating_dropsButtonEventsWhenDisengaged() {
