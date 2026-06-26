@@ -86,6 +86,11 @@ struct HeadsetMockDependencies {
             setupObservers: false
         )
         client.isConnected = true
+        // Default to a recording that captured audio, so send-path tests exercise the send.
+        // The send is now guarded on real capture (buffers>0) to prevent resending stale
+        // `transcribedText` after a no-audio recording (e.g. phone locked); tests that model
+        // "no audio captured" set stubBufferCount = 0 explicitly.
+        voiceInput.stubBufferCount = 10
     }
 }
 
@@ -303,6 +308,27 @@ final class HeadsetRemoteCommandManagerTests: XCTestCase {
             XCTAssertEqual(mocks.client.lastSentMessage?["text"] as? String, "test prompt")
             XCTAssertEqual(mocks.client.lastSentMessage?["working_directory"] as? String, "/test/working-dir")
             XCTAssertEqual(mocks.client.lastSentMessage?["resume_session_id"] as? String, expectedSessionId)
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 1.0)
+    }
+
+    /// Locked-phone / no-audio regression: a press that records but captures NO audio
+    /// (buffers=0) must NOT send — `transcribedText` still holds the previous message, and
+    /// sending it would resend the last message. The press returns to ready instead.
+    func testStopRecording_noAudioCaptured_doesNotResendStaleText() {
+        let (manager, mocks) = makeManager()
+        manager.activate()
+        manager.simulateTogglePlayPause()                  // → .recording
+        mocks.voiceInput.transcribedText = "Testing"       // STALE text from a prior recording
+        mocks.voiceInput.stubBufferCount = 0               // this recording captured nothing (locked)
+
+        manager.simulateTogglePlayPause()                  // → .sending → async read
+
+        let expectation = expectation(description: "async no-send")
+        DispatchQueue.main.async {
+            XCTAssertNil(mocks.client.lastSentMessage, "no audio captured → must not resend stale transcription")
+            XCTAssertEqual(manager.state, .ready, "returns to ready after a no-audio recording")
             expectation.fulfill()
         }
         wait(for: [expectation], timeout: 1.0)

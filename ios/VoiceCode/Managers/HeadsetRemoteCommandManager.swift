@@ -768,6 +768,12 @@ extension HeadsetRemoteCommandManager {
 
     private func stopRecordingAndSend() {
         hLog("Headset: stopRecordingAndSend — pre-stop audioCategory=\(AVAudioSession.sharedInstance().category.rawValue)")
+        // Capture how much audio THIS recording received BEFORE stopRecording() clears the
+        // monitor. Zero buffers means the mic never delivered audio (e.g. the phone was
+        // locked, or the press was too short) — in which case `transcribedText` still holds
+        // the PREVIOUS message (a late recognition callback / un-cleared field), and sending
+        // it would RESEND the last message. Guarding the send on real capture prevents that.
+        let capturedBuffers = voiceInput.capturedBufferCount
         voiceInput.stopRecording()
         // Re-assert .playback session so MPRemoteCommandCenter keeps routing
         // AirPod/headset button events to our app during the sending/ready gap.
@@ -784,11 +790,13 @@ extension HeadsetRemoteCommandManager {
             let text = self.voiceInput.transcribedText
                 .trimmingCharacters(in: .whitespacesAndNewlines)
 
-            guard !text.isEmpty else {
-                hLog("Headset: empty transcription — returning to ready")
+            // No audio captured ⇒ any text is stale (last message) — never resend it.
+            // Empty text ⇒ nothing recognized. Either way, return to ready without sending.
+            guard capturedBuffers > 0, !text.isEmpty else {
+                hLog("Headset: no fresh capture (buffers=\(capturedBuffers), textLen=\(text.count)) — returning to ready, not sending")
                 self.state = .ready
                 self.updateNowPlayingState()
-                self.playCue(.error)   // nothing recognized → "that didn't work"
+                self.playCue(.error)   // nothing recognized / nothing captured → "that didn't work"
                 return
             }
 
