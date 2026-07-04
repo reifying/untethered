@@ -204,6 +204,259 @@
             "expected evicted window to be absent from tmux")))))
 
 ;; ============================================================================
+;; evict-if-needed! — a window with UNKNOWN activity (copilot's virtual uuid)
+;; is never the victim, even at cap. Regression for the tmux-purge incident: a
+;; busy, seconds-old copilot window was evicted mid-turn because its tmux-env
+;; uuid has no transcript (session-metadata nil -> last-activity 0), so the old
+;; min-key selected it every time. Eviction must instead fall on a genuinely
+;; idle window whose activity is positively known.
+;; ============================================================================
+
+(deftest evict-if-needed!-spares-unknown-activity-window-test
+  (reset! tmux/live-windows {})
+  (let [now           (System/currentTimeMillis)
+        copilot-uuid  (str/lower-case (str (random-uuid)))   ; metadata nil -> unknown
+        idle-uuid     (str/lower-case (str (random-uuid)))   ; known, 30 min old -> idle
+        recent-1      (str/lower-case (str (random-uuid)))   ; known, 5 min old -> processing
+        recent-2      (str/lower-case (str (random-uuid)))   ; known, 2 min old -> processing
+        fifth-uuid    (str/lower-case (str (random-uuid)))
+        activity-ms   {idle-uuid (- now (* 30 60 1000))
+                       recent-1  (- now (*  5 60 1000))
+                       recent-2  (- now (*  2 60 1000))
+                       fifth-uuid (- now (* 1 60 1000))}
+        workdir       (System/getProperty "java.io.tmpdir")]
+    (with-redefs [tmux/build-provider-command mock-build-provider-command
+                  providers/session-metadata
+                  (fn [uuid]
+                    ;; copilot-uuid intentionally absent -> nil, mirroring a
+                    ;; copilot window keyed by its virtual (never-indexed) uuid.
+                    (when-let [ms (get activity-ms uuid)]
+                      {:last-modified-ms ms}))]
+      ;; copilot window first (it is the prime victim under the old logic)
+      (tmux/start-window! {:session-uuid copilot-uuid
+                           :session-name "Copilot Session"
+                           :provider :copilot
+                           :workdir workdir
+                           :initial-prompt nil})
+      (doseq [[uuid nm] [[idle-uuid "Idle"] [recent-1 "Recent One"] [recent-2 "Recent Two"]]]
+        (tmux/start-window! {:session-uuid uuid
+                             :session-name nm
+                             :provider :claude
+                             :workdir workdir
+                             :initial-prompt nil}))
+
+      (testing "precondition: copilot window is live before the 5th window"
+        (is (contains? @tmux/live-windows copilot-uuid)))
+
+      ;; 5th window triggers eviction. The only positively-known idle window is
+      ;; idle-uuid; the copilot window's activity is unknown and must be spared.
+      (tmux/start-window! {:session-uuid fifth-uuid
+                           :session-name "Fifth Session"
+                           :provider :claude
+                           :workdir workdir
+                           :initial-prompt nil}))
+
+    (testing "copilot window (unknown activity) survives eviction"
+      (is (contains? @tmux/live-windows copilot-uuid)
+          "a window with unknown activity must never be evicted"))
+
+    (testing "the genuinely-idle known window is evicted instead"
+      (is (not (contains? @tmux/live-windows idle-uuid))
+          "expected the 30-min-idle known window to be the victim"))
+
+    (testing "processing windows survive"
+      (is (contains? @tmux/live-windows recent-1))
+      (is (contains? @tmux/live-windows recent-2)))))
+
+;; ============================================================================
+;; reassign-session-uuid! — FULL FIX: after copilot's real uuid is discovered,
+;; re-key the window so eviction/sweep read its REAL activity. A busy copilot
+;; window is protected by real activity; a genuinely-idle one is correctly
+;; evicted/reaped (no leak). Exercised against a real tmux server.
+;; ============================================================================
+
+(deftest reassign-makes-real-activity-visible-test
+  ;; Mirrors reconcile-copilot-session-uuid!: a copilot window is created under
+  ;; the backend's virtual uuid, then re-keyed onto copilot's real uuid.
+  (reset! tmux/live-windows {})
+  (let [now          (System/currentTimeMillis)
+        virtual-uuid (str/lower-case (str (random-uuid)))
+        real-uuid    (str/lower-case (str (random-uuid)))
+        recent-ms    (- now (* 2 60 1000))
+        workdir      (System/getProperty "java.io.tmpdir")
+        tmux-session (tmux/sanitize-session-name workdir)]
+    (with-redefs [tmux/build-provider-command mock-build-provider-command
+                  providers/session-metadata (constantly nil)]
+      (tmux/start-window! {:session-uuid virtual-uuid
+                           :session-name "Copilot Session"
+                           :provider :copilot
+                           :workdir workdir
+                           :initial-prompt nil}))
+
+    (testing "before reassign: window keyed by the virtual uuid"
+      (is (contains? @tmux/live-windows virtual-uuid)))
+
+    (tmux/reassign-session-uuid! virtual-uuid real-uuid)
+
+    (testing "live-windows re-keyed onto the real uuid"
+      (is (not (contains? @tmux/live-windows virtual-uuid)))
+      (is (contains? @tmux/live-windows real-uuid)))
+
+    (testing "tmux env VC_SESSION_UUID now holds the real uuid"
+      (let [win    (get-in @tmux/live-windows [real-uuid :tmux-window])
+            env    (tmux/parse-show-environment
+                    (:out (tmux-cmd "show-environment" "-t" (str "=" tmux-session))))
+            suffix (tmux/env-suffix win)]
+        (is (= real-uuid (get env (str "VC_SESSION_UUID_" suffix))))))
+
+    (testing "list-agent-windows now reports the REAL uuid and its REAL activity"
+      (with-redefs [providers/session-metadata
+                    (fn [uuid]
+                      (when (= uuid real-uuid) {:last-modified-ms recent-ms}))]
+        (let [windows (tmux/list-agent-windows tmux-session)
+              entry   (first (filter #(= real-uuid (:session-uuid %)) windows))]
+          (is (some? entry) "the window is enumerated under its real uuid")
+          (is (= recent-ms (:last-activity-ms entry))
+              "activity now reflects copilot's real session, not nil->0"))))))
+
+(deftest busy-copilot-protected-by-real-activity-at-cap-test
+  ;; A copilot window with RECENT real activity must survive eviction at cap.
+  (reset! tmux/live-windows {})
+  (let [now           (System/currentTimeMillis)
+        cop-virtual   (str/lower-case (str (random-uuid)))
+        cop-real      (str/lower-case (str (random-uuid)))
+        idle-uuid     (str/lower-case (str (random-uuid)))   ; 30 min old -> idle
+        recent-1      (str/lower-case (str (random-uuid)))
+        fifth-uuid    (str/lower-case (str (random-uuid)))
+        activity-ms   {cop-real  (- now (* 1 60 1000))       ; busy copilot
+                       idle-uuid (- now (* 30 60 1000))
+                       recent-1  (- now (* 3 60 1000))
+                       fifth-uuid (- now (* 1 60 1000))}
+        workdir       (System/getProperty "java.io.tmpdir")]
+    (with-redefs [tmux/build-provider-command mock-build-provider-command
+                  providers/session-metadata
+                  (fn [uuid] (when-let [ms (get activity-ms uuid)] {:last-modified-ms ms}))]
+      ;; copilot launched under virtual uuid, then reconciled to real
+      (tmux/start-window! {:session-uuid cop-virtual :session-name "Copilot"
+                           :provider :copilot :workdir workdir :initial-prompt nil})
+      (tmux/reassign-session-uuid! cop-virtual cop-real)
+      (doseq [[uuid nm] [[idle-uuid "Idle"] [recent-1 "Recent One"]]]
+        (tmux/start-window! {:session-uuid uuid :session-name nm
+                             :provider :claude :workdir workdir :initial-prompt nil}))
+
+      ;; 4th window puts us at cap; 5th triggers eviction.
+      (tmux/start-window! {:session-uuid (str/lower-case (str (random-uuid)))
+                           :session-name "Filler" :provider :claude
+                           :workdir workdir :initial-prompt nil})
+      (tmux/start-window! {:session-uuid fifth-uuid :session-name "Fifth"
+                           :provider :claude :workdir workdir :initial-prompt nil}))
+
+    (testing "busy copilot (recent REAL activity) survives, idle known window evicted"
+      (is (contains? @tmux/live-windows cop-real)
+          "copilot with recent real activity must be protected")
+      (is (not (contains? @tmux/live-windows idle-uuid))
+          "the 30-min-idle window is the victim"))))
+
+(deftest idle-copilot-evicted-at-cap-via-real-activity-test
+  ;; The behavior the fail-safe alone could NOT achieve: a genuinely-idle copilot
+  ;; window (old REAL activity) IS evicted at cap — no more leak.
+  (reset! tmux/live-windows {})
+  (let [now          (System/currentTimeMillis)
+        cop-virtual  (str/lower-case (str (random-uuid)))
+        cop-real     (str/lower-case (str (random-uuid)))
+        recent-1     (str/lower-case (str (random-uuid)))
+        recent-2     (str/lower-case (str (random-uuid)))
+        recent-3     (str/lower-case (str (random-uuid)))
+        fifth-uuid   (str/lower-case (str (random-uuid)))
+        activity-ms  {cop-real (- now (* 45 60 1000))        ; idle copilot (45 min)
+                      recent-1 (- now (* 2 60 1000))
+                      recent-2 (- now (* 3 60 1000))
+                      recent-3 (- now (* 4 60 1000))
+                      fifth-uuid (- now (* 1 60 1000))}
+        workdir      (System/getProperty "java.io.tmpdir")]
+    (with-redefs [tmux/build-provider-command mock-build-provider-command
+                  providers/session-metadata
+                  (fn [uuid] (when-let [ms (get activity-ms uuid)] {:last-modified-ms ms}))]
+      (tmux/start-window! {:session-uuid cop-virtual :session-name "Copilot"
+                           :provider :copilot :workdir workdir :initial-prompt nil})
+      (tmux/reassign-session-uuid! cop-virtual cop-real)
+      (doseq [[uuid nm] [[recent-1 "R1"] [recent-2 "R2"] [recent-3 "R3"]]]
+        (tmux/start-window! {:session-uuid uuid :session-name nm
+                             :provider :claude :workdir workdir :initial-prompt nil}))
+      ;; now at cap (copilot + 3 recent); 5th launch triggers eviction
+      (tmux/start-window! {:session-uuid fifth-uuid :session-name "Fifth"
+                           :provider :claude :workdir workdir :initial-prompt nil}))
+
+    (testing "idle copilot (old REAL activity) is the victim; processing windows survive"
+      (is (not (contains? @tmux/live-windows cop-real))
+          "an idle copilot window must now be evictable via its real activity")
+      (is (contains? @tmux/live-windows recent-1))
+      (is (contains? @tmux/live-windows recent-2))
+      (is (contains? @tmux/live-windows recent-3)))))
+
+(deftest sweep!-reaps-idle-copilot-keyed-by-real-uuid-test
+  (reset! tmux/live-windows {})
+  (let [now          (System/currentTimeMillis)
+        cop-virtual  (str/lower-case (str (random-uuid)))
+        cop-real     (str/lower-case (str (random-uuid)))
+        workdir      (System/getProperty "java.io.tmpdir")
+        tmux-session (tmux/sanitize-session-name workdir)]
+    (with-redefs [tmux/build-provider-command mock-build-provider-command
+                  providers/session-metadata (constantly nil)]
+      (tmux/start-window! {:session-uuid cop-virtual :session-name "Copilot"
+                           :provider :copilot :workdir workdir :initial-prompt nil})
+      (tmux/reassign-session-uuid! cop-virtual cop-real))
+
+    (let [win (get-in @tmux/live-windows [cop-real :tmux-window])]
+      (with-redefs [providers/session-metadata
+                    (fn [uuid]
+                      (when (= uuid cop-real)
+                        {:last-modified-ms (- now (* 3 24 60 60 1000))}))]  ; 3 days old
+        (tmux/sweep!))
+
+      (testing "idle copilot is reaped from live-windows under its real uuid"
+        (is (not (contains? @tmux/live-windows cop-real))))
+
+      (testing "the copilot tmux window is actually killed"
+        (let [wins (str/split-lines (str/trim (:out (tmux-cmd "list-windows"
+                                                              "-t" (str "=" tmux-session)
+                                                              "-F" "#{window_name}"))))]
+          (is (not (some #{win} wins))
+              "expected the swept copilot window to be gone from tmux"))))))
+
+;; ============================================================================
+;; close-window-by-uuid! — proactive recipe-window teardown against real tmux
+;; ============================================================================
+
+(deftest close-window-by-uuid!-kills-real-window-test
+  (reset! tmux/live-windows {})
+  (let [uuid         (str/lower-case (str (random-uuid)))
+        keep-uuid    (str/lower-case (str (random-uuid)))
+        workdir      (System/getProperty "java.io.tmpdir")
+        tmux-session (tmux/sanitize-session-name workdir)]
+    (with-redefs [tmux/build-provider-command mock-build-provider-command
+                  providers/session-metadata (constantly nil)]
+      (tmux/start-window! {:session-uuid uuid :session-name "Doomed"
+                           :provider :claude :workdir workdir :initial-prompt nil})
+      (tmux/start-window! {:session-uuid keep-uuid :session-name "Keeper"
+                           :provider :claude :workdir workdir :initial-prompt nil}))
+    (let [doomed-win (get-in @tmux/live-windows [uuid :tmux-window])
+          keep-win   (get-in @tmux/live-windows [keep-uuid :tmux-window])]
+
+      (is (true? (tmux/close-window-by-uuid! uuid)))
+
+      (testing "closed window removed from live-windows; other remains"
+        (is (not (contains? @tmux/live-windows uuid)))
+        (is (contains? @tmux/live-windows keep-uuid)))
+
+      (testing "closed tmux window gone; the other still alive"
+        (let [wins (str/split-lines (str/trim (:out (tmux-cmd "list-windows"
+                                                              "-t" (str "=" tmux-session)
+                                                              "-F" "#{window_name}"))))]
+          (is (not (some #{doomed-win} wins)) "doomed window killed")
+          (is (some #{keep-win} wins) "keeper window survives"))))))
+
+;; ============================================================================
 ;; sweep! — stale windows killed; fresh windows preserved
 ;; ============================================================================
 

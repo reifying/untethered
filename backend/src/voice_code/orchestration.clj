@@ -92,8 +92,13 @@
 
 (defn extract-orchestration-outcome
   "Extract and validate orchestration outcome from Claude response.
-   Returns {:success true :outcome keyword :description \"...\"}
-         or {:success false :error \"...\" :malformed-json \"...\"}"
+   Returns {:success true :outcome keyword :description \"...\" :test-file \"...\"}
+         or {:success false :error \"...\" :malformed-json \"...\"}
+
+   :test-file surfaces an optional testFile field from the outcome JSON so a
+   recipe step transitioning with {:action :external-review} can name the file the
+   review agent should read (e.g. a verify -> external-review -> apply-review flow).
+   Absent for outcomes that don't include it."
   [response-text expected-outcomes]
   (let [json-block (find-json-block response-text)]
     (if (nil? json-block)
@@ -106,7 +111,8 @@
               {:success false :error (:error validation) :malformed-json json-block}
               {:success true
                :outcome (:outcome validation)
-               :description (get (:data parse-result) :otherDescription)})))))))
+               :description (get (:data parse-result) :otherDescription)
+               :test-file (get (:data parse-result) :testFile)})))))))
 
 (defn get-outcome-format-block
   "Generate the JSON format requirement text to append to prompts.

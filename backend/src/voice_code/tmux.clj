@@ -204,12 +204,24 @@
 (defn choose-victim
   "Pure helper: given a window snapshot and the cap, return the window to
    evict, or nil if eviction should be skipped. Separated from evict-if-needed!
-   so it can be unit-tested without tmux."
+   so it can be unit-tested without tmux.
+
+   A window is eligible only when it is BOTH :idle? AND has a positively-known
+   last activity (:last-activity-ms > 0). A non-positive :last-activity-ms means
+   activity is UNKNOWN, not ancient — most commonly a copilot window, whose real
+   self-minted session uuid the tmux env does not record, so session-metadata
+   returns nil and last-activity-ms defaults to 0. The old code treated 0 as
+   'infinitely idle', so `min-key :last-activity-ms` ALWAYS selected such a
+   window: a busy, seconds-old copilot session was evicted mid-turn the instant
+   its tmux session hit the window cap. Requiring positively-known activity here
+   means an un-assessable window is never the victim (fail safe: never reap what
+   we cannot positively measure)."
   [windows cap]
   (when (>= (count windows) cap)
-    (let [idle (filter :idle? windows)]
-      (when (seq idle)
-        (apply min-key :last-activity-ms idle)))))
+    (let [evictable (filter #(and (:idle? %) (pos? (long (or (:last-activity-ms %) 0))))
+                            windows)]
+      (when (seq evictable)
+        (apply min-key :last-activity-ms evictable)))))
 
 (defn parse-show-environment
   "Parse KEY=VALUE lines from `tmux show-environment` output into a map.
@@ -336,6 +348,28 @@
   [tmux-session window]
   (sh "tmux" "kill-window" "-t" (format "=%s:=%s" tmux-session window)))
 
+(defn close-window-by-uuid!
+  "Proactively close the live window tracked under `uuid`: kill its tmux window
+   and drop it from live-windows. No-op (returns false) when `uuid` is not
+   tracked. Returns true when a window was closed.
+
+   Used by recipe orchestration to reap a recipe's own windows at the
+   iteration-end / recipe-exit transition (primary + review agents) instead of
+   waiting for cap-eviction or the idle sweeper. Callers pass the window's
+   CURRENT live-windows key — for copilot that is the real uuid after
+   reassign-session-uuid!, so the caller resolves any public->real alias first.
+   Serialized via eviction-lock so the close is atomic w.r.t. eviction/start."
+  [uuid]
+  (locking eviction-lock
+    (if-let [{:keys [tmux-session tmux-window]} (get @live-windows uuid)]
+      (do
+        (log/info "Closing recipe window"
+                  {:session-uuid uuid :tmux-session tmux-session :window tmux-window})
+        (kill-window! tmux-session tmux-window)
+        (swap! live-windows dissoc uuid)
+        true)
+      false)))
+
 (defn capture-pane
   "Capture the last `lines` of output from a tmux pane. Returns the string
    content, or nil if the pane/window doesn't exist."
@@ -417,12 +451,32 @@
   [session-uuid]
   (or (:last-modified-ms (providers/session-metadata session-uuid)) 0))
 
+(defn- activity-known?
+  "True when last-activity-ms is a real, positive timestamp. A non-positive
+   value (what window-last-activity-ms returns on a metadata miss) means the
+   window's activity is UNKNOWN — it is NOT evidence the window is ancient.
+
+   Load-bearing for copilot: copilot has no fresh-start --session-id flag, so it
+   mints its own session uuid at turn start and writes its transcript under that
+   uuid. The tmux-env VC_SESSION_UUID the eviction/sweep code reads is the
+   backend's launch-time *virtual* uuid, which has no transcript and no
+   session-index entry, so session-metadata returns nil and last-activity-ms is
+   0. Such a window's activity is simply unknown here and must never be reaped on
+   the false premise that it is idle."
+  [last-activity-ms]
+  (pos? (long (or last-activity-ms 0))))
+
 (defn- processing?
-  "A window is 'processing' if the provider session saw a message within
-   processing-window-minutes. Active windows are never evicted."
+  "A window is 'processing' (and must never be evicted) when its provider session
+   saw a message within processing-window-minutes, OR when its activity is
+   UNKNOWN. Unknown activity counts as processing on purpose — we never reap a
+   window we cannot positively assess (see activity-known?). Active windows are
+   never evicted."
   [session-uuid]
-  (let [cutoff (- (System/currentTimeMillis) (* processing-window-minutes 60000))]
-    (> (window-last-activity-ms session-uuid) cutoff)))
+  (let [cutoff (- (System/currentTimeMillis) (* processing-window-minutes 60000))
+        last-activity (window-last-activity-ms session-uuid)]
+    (or (not (activity-known? last-activity))
+        (> last-activity cutoff))))
 
 (defn- evict-if-needed!
   "Enforce the per-session window cap. Kill the least-recently-active idle
@@ -439,6 +493,45 @@
                    :idle-for-ms (- (System/currentTimeMillis) (:last-activity-ms victim))})
         (kill-window! tmux-session (:window victim))
         (swap! live-windows dissoc (:session-uuid victim))))))
+
+(defn reassign-session-uuid!
+  "Re-key a live window from `old-uuid` to `new-uuid`.
+
+   Copilot has no fresh-start --session-id flag: the backend creates the window
+   under a launch-time *virtual* uuid (the recipe's public session-id), but
+   copilot writes its transcript — and the watcher indexes it — under copilot's
+   OWN self-minted uuid. The activity reads that drive eviction and the sweeper
+   (list-agent-windows -> session-metadata, processing?, choose-victim, sweep!)
+   all key off the window's VC_SESSION_UUID env value and the live-windows key.
+   While those hold the virtual uuid, session-metadata returns nil, activity is
+   0, and the window is invisible to its own activity — protected by the
+   fail-safe but never correctly reaped (and, before the fail-safe, evicted
+   mid-turn).
+
+   Once the caller discovers copilot's real uuid (see server's
+   reconcile-copilot-session-uuid!), this rewrites the window's
+   VC_SESSION_UUID_<suffix> env to the real uuid (the suffix is derived from the
+   window NAME, which does not change, so the existing key is overwritten in
+   place) and moves the live-windows entry from old-uuid to new-uuid. After this,
+   every activity read sees copilot's REAL session: a busy window is protected by
+   real activity and a genuinely-idle one is correctly evicted/reaped.
+
+   Serialized via eviction-lock so the re-key is atomic w.r.t. evict-if-needed!
+   and start-window!. No-op returning nil when old-uuid is not in live-windows
+   (e.g. discovery raced ahead of registration, or the window was already
+   evicted); same uuid is a harmless no-op rewrite. Returns the (possibly
+   re-keyed) descriptor."
+  [old-uuid new-uuid]
+  (locking eviction-lock
+    (when-let [desc (get @live-windows old-uuid)]
+      (let [{:keys [tmux-session tmux-window]} desc]
+        (set-window-env! tmux-session tmux-window {"VC_SESSION_UUID" new-uuid})
+        (when (not= old-uuid new-uuid)
+          (swap! live-windows (fn [m] (-> m (dissoc old-uuid) (assoc new-uuid desc)))))
+        (log/info "Reassigned window session uuid"
+                  {:tmux-session tmux-session :tmux-window tmux-window
+                   :old-uuid old-uuid :new-uuid new-uuid})
+        desc))))
 
 (defn start-window!
   "Create a tmux window running the provider CLI, wait for TUI readiness,
@@ -575,11 +668,16 @@
   (let [cutoff (- (System/currentTimeMillis)
                   (* sweeper-max-age-days 24 60 60 1000))]
     (doseq [[uuid {:keys [tmux-session tmux-window]}] @live-windows]
-      (when (< (window-last-activity-ms uuid) cutoff)
-        (log/info "Sweeper killing stale window"
-                  {:session-uuid uuid :tmux-session tmux-session :window tmux-window})
-        (kill-window! tmux-session tmux-window)
-        (swap! live-windows dissoc uuid)))))
+      (let [last-activity (window-last-activity-ms uuid)]
+        ;; Only reap windows whose activity is positively KNOWN and stale. A
+        ;; non-positive last-activity means activity is unknown (e.g. a copilot
+        ;; window keyed by its virtual uuid; see activity-known?) — reaping on a
+        ;; 0 timestamp would kill every such window regardless of true age.
+        (when (and (activity-known? last-activity) (< last-activity cutoff))
+          (log/info "Sweeper killing stale window"
+                    {:session-uuid uuid :tmux-session tmux-session :window tmux-window})
+          (kill-window! tmux-session tmux-window)
+          (swap! live-windows dissoc uuid))))))
 
 (defn scan-existing-windows!
   "On backend startup, walk every tmux session and populate live-windows
