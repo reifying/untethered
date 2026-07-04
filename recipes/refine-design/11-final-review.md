@@ -1,24 +1,18 @@
 # Final Review
 
-Perform a **final sanity check** on the refined design.
+Final sanity check: read the whole refined document once, fresh.
 
-## Final Review
-Read through the entire design one more time looking for anything that slipped through:
+- Does it still solve the stated problem, coherently, after all the edits?
+- Did the refinement passes leave seams — orphaned references, sections that no longer agree?
+- Would you implement from this without hesitation?
 
-- [ ] Does the design actually solve the stated problem?
-- [ ] Is there anything obviously wrong or missing?
-- [ ] Would you be comfortable implementing from this design?
-- [ ] Are there any remaining concerns?
+Then summarize the refinement for the user in a few bullets: what was added for
+completeness, expanded for breadth, simplified, aligned, and polished.
 
-## Summary
-Provide a brief summary of the refinements made:
-- What was added for completeness
-- What was expanded for breadth
-- What was simplified
-- What was fixed for consistency
-- What was polished
-
-If any issues remain, report them. Otherwise, confirm the design is ready to commit.
+## Choosing Your Outcome
+- `no-issues` — ready to commit
+- `issues-found` — remaining problems, listed
+- `other` — explain in otherDescription
 
 **Outcomes:** issues-found, no-issues, other
 

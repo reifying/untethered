@@ -1,39 +1,27 @@
 # Reflect
 
-Perform a retrospective on the session that just took place.
+Perform a retrospective on the session that just took place: identify what caused friction, so the workflow can be improved.
 
-## Important Constraints
-- Do NOT make any changes to files
-- Do NOT run any commands or tests
-- This is purely investigative and reflective
-- Be concise - bullet points preferred over prose
+## Constraints
+- Investigative only — change no files, run no commands or tests
+- Report friction only; skip praise and what went well
+- Be specific: name the tool, the file, the failing command, the missing
+  document. A friction point that cannot be located cannot be fixed.
 
-## Focus Areas (Friction Only)
+## Where to Look
+- **Tools** — calls that failed, behaved unexpectedly, or were missing entirely
+- **Development** — unclear requirements, missing context, work that had to be redone or backtracked
+- **Testing** — failures with unhelpful output, flaky or slow infrastructure
+- **Process** — workflow inefficiencies, documentation gaps
 
-### Tool Issues
-- Which tools didn't work as expected?
-- What tool calls failed or produced unexpected results?
-- What tools were missing that would have helped?
+## Output
+Bullet points, one per friction point: what happened, plus the concrete
+improvement that would prevent it (a CLAUDE.md note, a tooling fix, a doc, a
+test helper). A handful of sharp items beats an exhaustive log.
 
-### Development Friction
-- What slowed down the development process?
-- Where were requirements unclear or context missing?
-- What work had to be repeated or backtracked?
-
-### Testing Friction
-- What problems occurred running or writing tests?
-- Where did test failures lack clear feedback?
-- What was unreliable in the test infrastructure?
-
-### Process Friction
-- What workflow inefficiencies occurred?
-- What documentation or context was missing?
-
-## Output Format
-- List only friction points and potential improvements
-- Do NOT include what worked well or positive observations
-- Be specific with examples from this session
-- Keep it brief and actionable
+## Choosing Your Outcome
+- `complete` — retrospective delivered
+- `other` — explain in otherDescription
 
 **Outcomes:** complete, other
 

@@ -1,34 +1,25 @@
 # Review Breadth
 
-Review the design document for **breadth and coverage**.
+Review the design document for **breadth**. The question this pass asks: what happens off the happy path?
 
-## Review Focus
-This pass examines whether the design considers the full picture - not just the happy path.
+Look for silence on:
+- Failure modes, and what detection and recovery look like
+- Backward compatibility and migration, if existing data or callers are affected
+- Performance and security implications, where the change plausibly has them
+- Observability — will we be able to tell this is working, or failing, once deployed?
 
-## Breadth Checklist
-- [ ] Failure modes identified (what can go wrong?)
-- [ ] Recovery strategies documented
-- [ ] Backward compatibility addressed (if modifying existing system)
-- [ ] Migration path clear (if data/schema changes)
-- [ ] Performance implications considered
-- [ ] Security implications addressed
-- [ ] Observability needs identified (logging, metrics, alerts)
-- [ ] Dependencies and their failure modes noted
+Calibration: not every design needs all of these — flag only what this change
+genuinely requires and the document ignores. An explicit statement that
+something is out of scope, with a reason, is a valid answer rather than a gap.
+On a re-review, check the previous findings were addressed rather than expanding
+the list.
 
-## Integration Checklist
-- [ ] Upstream dependencies documented
-- [ ] Downstream consumers identified
-- [ ] Cross-cutting concerns addressed (auth, logging, etc.)
-- [ ] Deployment considerations noted
+Review only — change nothing yet.
 
-## Important Constraints
-- **Do not make changes yet** - this is review only
-- Only flag items that are genuinely missing and needed
-- Not every design needs every item above - use judgment
-- Avoid adding complexity for hypothetical scenarios
-- If the design is intentionally narrow in scope, that's acceptable
-
-Report specific gaps in coverage. If breadth is adequate, report no issues.
+## Choosing Your Outcome
+- `no-issues` — coverage is adequate for this change
+- `issues-found` — genuine blind spots, listed
+- `other` — explain in otherDescription
 
 **Outcomes:** issues-found, no-issues, other
 

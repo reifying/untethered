@@ -1,4 +1,4 @@
-# Analyze
+# Tasks Analyze
 
 Analyze the design document and map out the implementation work.
 
@@ -27,7 +27,7 @@ the code, choose `needs-input` and state the question — do not guess.
 **Outcomes:** complete, design-missing, needs-input, other
 
 **Transitions:**
-- `complete` → **Create Epic**
+- `complete` → **Tasks Create Epic**
 - `design-missing` → **exit** (no-design-document-found)
 - `needs-input` → **exit** (clarification-needed)
 - `other` → **exit** (user-provided-other)

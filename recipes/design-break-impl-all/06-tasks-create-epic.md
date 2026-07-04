@@ -1,4 +1,4 @@
-# Create Epic
+# Tasks Create Epic
 
 Create the parent epic for this implementation work.
 
@@ -23,5 +23,5 @@ description containing:
 **Outcomes:** complete, other
 
 **Transitions:**
-- `complete` → **Create Tasks**
+- `complete` → **Tasks Create Tasks**
 - `other` → **exit** (user-provided-other)

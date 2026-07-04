@@ -1,39 +1,23 @@
 # Review Simplicity
 
-Review the design document for **over-engineering and unnecessary complexity**.
+Review the design document for **unnecessary complexity**. This pass hunts for things to remove.
 
-## Review Focus
-This pass looks for ways to SIMPLIFY the design. Simpler is better.
+Challenge every structure to justify itself:
+- Abstractions with a single concrete use; layers of indirection; framework-shaped patterns in application code
+- Configuration and extension points serving hypothetical future needs (YAGNI)
+- Generic solutions where the specific problem is simpler
+- Components that could be merged, inlined, or deleted outright
 
-## Over-Engineering Red Flags
-- [ ] Abstractions without multiple concrete uses
-- [ ] Configuration options that could be hardcoded
-- [ ] Extensibility points for hypothetical future needs
-- [ ] Generic solutions where specific ones would suffice
-- [ ] Multiple indirection layers
-- [ ] Complex state machines where simple conditionals work
-- [ ] Framework-like patterns in application code
+The boring design that solves exactly today's problem is the goal. But do not
+flag simplicity that is already there, and on a re-review, verify the prior
+findings were simplified rather than opening new fronts.
 
-## Simplification Opportunities
-- [ ] Can any component be eliminated entirely?
-- [ ] Can two similar things be merged into one?
-- [ ] Can a complex flow be linearized?
-- [ ] Can configuration be replaced with convention?
-- [ ] Can an abstraction be inlined?
-- [ ] Can error handling be simplified?
+Review only — change nothing yet.
 
-## YAGNI Check (You Aren't Gonna Need It)
-- [ ] Is anything being built "for future use"?
-- [ ] Are there features no one asked for?
-- [ ] Is there flexibility that isn't required?
-
-## Important Constraints
-- **Do not make changes yet** - this is review only
-- Challenge every abstraction: does it earn its complexity?
-- The best design is often the most boring one
-- Clever is the enemy of maintainable
-
-Report specific over-engineering found. If the design is appropriately simple, report no issues.
+## Choosing Your Outcome
+- `no-issues` — the design is appropriately simple
+- `issues-found` — over-engineering, listed
+- `other` — explain in otherDescription
 
 **Outcomes:** issues-found, no-issues, other
 

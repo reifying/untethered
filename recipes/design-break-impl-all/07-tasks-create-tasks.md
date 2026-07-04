@@ -1,4 +1,4 @@
-# Create Tasks
+# Tasks Create Tasks
 
 Break the epic into implementation tasks.
 
@@ -59,5 +59,5 @@ If nothing is blocked but you created ordered work, the links are missing.
 **Outcomes:** complete, other
 
 **Transitions:**
-- `complete` → **Review Tasks**
+- `complete` → **Tasks Review**
 - `other` → **exit** (user-provided-other)

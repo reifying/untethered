@@ -1,21 +1,14 @@
 # Fix Completeness
 
-Address the completeness and depth issues identified in the review.
+Fill the completeness gaps the review identified — those and nothing else.
 
-## Guidelines
-- Add missing sections or details identified in the review
-- Ensure code examples are correct and follow project conventions
-- Keep additions focused - add what's needed, nothing more
-- Avoid scope creep: if something wasn't in the original design intent, don't add it
+Prefer concrete examples over abstract description, and verify anything you add
+against the actual codebase. Depth must not become scope creep: if it was not in
+the design's intent, it does not get added here.
 
-## Simplicity Reminder
-When adding depth, prefer:
-- Concrete examples over abstract descriptions
-- Simple solutions over clever ones
-- Fewer moving parts over comprehensive frameworks
-- Direct approaches over indirection
-
-After making changes, the design will be re-reviewed for completeness.
+## Choosing Your Outcome
+- `complete` — every gap addressed
+- `other` — explain in otherDescription
 
 **Outcomes:** complete, other
 

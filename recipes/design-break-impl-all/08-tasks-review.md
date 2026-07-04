@@ -1,4 +1,4 @@
-# Review Tasks
+# Tasks Review
 
 Review the task breakdown as if you were a fresh agent about to execute it.
 
@@ -30,6 +30,6 @@ than raising new ones.
 **Outcomes:** issues-found, no-issues, other
 
 **Transitions:**
-- `issues-found` → **Fix Tasks**
-- `no-issues` → **Commit**
+- `issues-found` → **Tasks Fix**
+- `no-issues` → **Tasks Commit**
 - `other` → **exit** (user-provided-other)

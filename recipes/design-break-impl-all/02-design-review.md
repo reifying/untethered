@@ -1,4 +1,4 @@
-# Review
+# Design Review
 
 Review the design document you just wrote, as if you were the engineer who has to implement from it.
 
@@ -23,6 +23,6 @@ Do not make changes in this step.
 **Outcomes:** issues-found, no-issues, other
 
 **Transitions:**
-- `issues-found` → **Fix**
-- `no-issues` → **Commit**
+- `issues-found` → **Design Fix**
+- `no-issues` → **Design Commit**
 - `other` → **exit** (user-provided-other)

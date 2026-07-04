@@ -1,4 +1,4 @@
-# Document
+# Design Document
 
 Write a design document for the requested feature or change — one that lets another engineer (or a fresh agent session) implement it without re-deriving your decisions.
 
@@ -38,6 +38,6 @@ file exists, and no placeholder text remains.
 **Outcomes:** complete, needs-input, other
 
 **Transitions:**
-- `complete` → **Review**
+- `complete` → **Design Review**
 - `needs-input` → **exit** (clarification-needed)
 - `other` → **exit** (user-provided-other)

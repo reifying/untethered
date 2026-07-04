@@ -1,11 +1,17 @@
 # Fix
 
-Address the issues found in the rebase review.
+Fix the defects the rebase review found.
 
-After fixing:
-- Amend the relevant commits if needed (`git commit --amend` or `git rebase -i`)
-- Run tests to ensure they pass
-- Verify the fix doesn't introduce new issues
+- Defect in the tip commit: amend it (`git commit --amend`).
+- Defect in an earlier commit: `git commit --fixup=<sha>`, then
+  `GIT_SEQUENCE_EDITOR=true git rebase -i --autosquash main` — the env var makes
+  it non-interactive. Never run a bare `git rebase -i`; there is no interactive
+  editor in this environment.
+- Re-run the tests after fixing.
+
+## Choosing Your Outcome
+- `complete` — defects fixed, tests pass
+- `other` — a defect cannot be fixed; explain in otherDescription
 
 **Outcomes:** complete, other
 

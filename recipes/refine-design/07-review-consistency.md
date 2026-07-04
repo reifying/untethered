@@ -1,35 +1,22 @@
 # Review Consistency
 
-Review the design document for **internal consistency and alignment**.
+Review the design document for **internal consistency and codebase alignment**.
 
-## Review Focus
-This pass checks that the design is coherent and aligned with the codebase.
+Check, verifying against the actual repository rather than from memory:
+- Terminology and data models agree across sections; no section contradicts another
+- Code examples use the project's real names, style, and patterns
+- Every referenced file, module, and document exists; links resolve
+- Integration points match how the codebase is actually structured
 
-## Internal Consistency
-- [ ] Terminology used consistently throughout
-- [ ] Code examples match the described approach
-- [ ] Data models in different sections agree
-- [ ] No contradictions between sections
-- [ ] Level of detail consistent across sections
+Flag inconsistencies and falsehoods, not stylistic preferences. On a re-review,
+confirm the previous findings were fixed.
 
-## Codebase Alignment
-- [ ] Naming follows project conventions
-- [ ] Patterns match existing codebase patterns
-- [ ] Code examples follow project style
-- [ ] Referenced files/modules exist
-- [ ] Integration points match actual codebase structure
+Review only — change nothing yet.
 
-## Cross-Reference Check
-- [ ] All referenced designs/docs exist
-- [ ] Links are valid
-- [ ] Dependencies are actually available
-
-## Important Constraints
-- **Do not make changes yet** - this is review only
-- Focus on inconsistencies, not preferences
-- Align with existing patterns, don't introduce new ones unnecessarily
-
-Report specific inconsistencies found. If the design is consistent, report no issues.
+## Choosing Your Outcome
+- `no-issues` — consistent and aligned
+- `issues-found` — specific inconsistencies, listed
+- `other` — explain in otherDescription
 
 **Outcomes:** issues-found, no-issues, other
 

@@ -1,4 +1,4 @@
-# Fix Tasks
+# Tasks Fix
 
 Fix the problems the task review identified — those and nothing else.
 
@@ -14,5 +14,5 @@ Useful commands:
 **Outcomes:** complete, other
 
 **Transitions:**
-- `complete` → **Review Tasks**
+- `complete` → **Tasks Review**
 - `other` → **exit** (user-provided-other)

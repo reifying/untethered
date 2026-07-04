@@ -1,4 +1,4 @@
-# Commit
+# Tasks Commit
 
 Commit and push the beads changes.
 
@@ -15,6 +15,6 @@ Commit and push the beads changes.
 **Outcomes:** committed, nothing-to-commit, other
 
 **Transitions:**
-- `committed` → **exit** (tasks-committed)
-- `nothing-to-commit` → **exit** (no-changes-to-commit)
+- `committed` → **restart-new-session** ()
+- `nothing-to-commit` → **restart-new-session** ()
 - `other` → **exit** (user-provided-other)

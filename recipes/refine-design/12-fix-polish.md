@@ -1,16 +1,10 @@
 # Fix Polish
 
-Apply the polish fixes identified in the review.
+Apply the readability fixes the review identified. Minimal edits — this is polish, not rewriting.
 
-## Guidelines
-- Fix typos and grammar
-- Improve clarity of confusing passages
-- Clean up formatting issues
-- Remove placeholder text
-
-Keep changes minimal - this is polish, not rewriting.
-
-After making changes, the design will be re-reviewed for polish.
+## Choosing Your Outcome
+- `complete` — fixes applied
+- `other` — explain in otherDescription
 
 **Outcomes:** complete, other
 

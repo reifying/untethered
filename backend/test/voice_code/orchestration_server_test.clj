@@ -107,9 +107,12 @@
   (testing "returns prompt with outcome requirements appended"
     (let [recipe (recipes/get-recipe :implement-and-review)
           orch-state {:recipe-id :implement-and-review :current-step :implement}
-          prompt (server/get-next-step-prompt "test-session" orch-state recipe)]
+          prompt (server/get-next-step-prompt "test-session" orch-state recipe)
+          step-prompt (get-in recipe [:steps :implement :prompt])]
       (is (string? prompt))
-      (is (str/includes? prompt "Run `br ready --limit 1 --type task --type bug --type feature --type chore --type docs --type question` and `br show <task-id>` to see the task details"))
+      ;; Full step prompt body, with the outcome format block appended after it.
+      (is (str/starts-with? prompt step-prompt))
+      (is (< (count step-prompt) (count prompt)))
       (is (str/includes? prompt "outcome"))
       (is (str/includes? prompt "complete"))))
 

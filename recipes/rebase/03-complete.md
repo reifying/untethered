@@ -1,19 +1,19 @@
 # Complete
 
-The rebase has been reviewed and is ready.
+The rebase has been reviewed and is ready. Summarize for the user:
 
-## Summary
-Provide a brief summary of:
-- Number of commits rebased
-- Any conflicts that were resolved
-- Key changes from main that were incorporated
+- How many commits were replayed (`git rev-list --count main..HEAD`)
+- Which files had merge conflicts and how each was resolved, in a sentence apiece
+- Anything notable incorporated from main
 
-The branch is now rebased on main and ready for further work or pushing.
+The branch is left rebased on main; nothing is pushed.
+
+## Choosing Your Outcome
+- `done` — summary delivered
+- `other` — explain in otherDescription
 
 **Outcomes:** done, other
 
 **Transitions:**
 - `done` → **exit** (rebase-complete)
 - `other` → **exit** (user-provided-other)
-
-**Model:** `haiku`

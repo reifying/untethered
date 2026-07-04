@@ -1,4 +1,4 @@
-# Commit
+# Design Commit
 
 Commit and push the design document. Write a commit message that summarizes what is being designed and the key decisions made.
 
@@ -10,6 +10,6 @@ Commit and push the design document. Write a commit message that summarizes what
 **Outcomes:** committed, nothing-to-commit, other
 
 **Transitions:**
-- `committed` → **exit** (design-committed)
-- `nothing-to-commit` → **exit** (no-changes-to-commit)
+- `committed` → **Tasks Analyze**
+- `nothing-to-commit` → **Tasks Analyze**
 - `other` → **exit** (user-provided-other)

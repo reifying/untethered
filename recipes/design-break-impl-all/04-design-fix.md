@@ -1,4 +1,4 @@
-# Fix
+# Design Fix
 
 Fix the issues the design review identified — those and nothing else.
 
@@ -12,5 +12,5 @@ against the actual codebase before adding them.
 **Outcomes:** complete, other
 
 **Transitions:**
-- `complete` → **Review**
+- `complete` → **Design Review**
 - `other` → **exit** (user-provided-other)
