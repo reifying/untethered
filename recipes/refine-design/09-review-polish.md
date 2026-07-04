@@ -1,37 +1,21 @@
 # Review Polish
 
-Review the design document for **clarity, formatting, and polish**.
+Final readability pass on the design document.
 
-## Review Focus
-This is the final pass - focus on readability and presentation.
+Look for what would trip up a reader: ambiguous statements, unexplained
+acronyms, leftover placeholder text or TODOs, broken formatting (unlabeled code
+fences, mangled tables, chaotic heading levels), typos that change meaning.
 
-## Clarity Checklist
-- [ ] Writing is concise and direct
-- [ ] Technical concepts explained at appropriate level
-- [ ] No ambiguous statements
-- [ ] Acronyms defined on first use
-- [ ] Complex ideas have examples
+Good enough is good enough — flag what affects understanding, not what you would
+merely phrase differently. On a re-review, confirm the previous findings were
+fixed.
 
-## Formatting Checklist
-- [ ] Headers create logical hierarchy
-- [ ] Code blocks properly formatted with language tags
-- [ ] Lists used appropriately
-- [ ] Tables readable and aligned
-- [ ] Consistent formatting throughout
+Review only — change nothing yet.
 
-## Polish Checklist
-- [ ] No typos or grammatical errors
-- [ ] No placeholder text remaining
-- [ ] No TODO comments left unaddressed
-- [ ] No commented-out content
-- [ ] Professional tone throughout
-
-## Important Constraints
-- **Do not make changes yet** - this is review only
-- Focus on issues that affect understanding
-- Don't over-polish - good enough is good enough
-
-Report specific polish issues found. If the document is polished, report no issues.
+## Choosing Your Outcome
+- `no-issues` — reads cleanly
+- `issues-found` — specific readability problems, listed
+- `other` — explain in otherDescription
 
 **Outcomes:** issues-found, no-issues, other
 

@@ -401,12 +401,16 @@ struct HeadsetSettingsTab: View {
                     .font(.caption)
                     .foregroundColor(.secondary)
 
-                if settings.headsetModeEnabled {
+                Toggle("BlueParrott button", isOn: $settings.blueParrottEnabled)
+                Text("Use the programmable BlueParrott button via CoreBluetooth. Hold to talk, release to send. Works independently of headset control above.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+
+                if settings.headsetModeEnabled || settings.blueParrottEnabled {
                     Toggle("Auto-send on recording stop", isOn: $settings.headsetAutoSend)
 
-                    Toggle("PTT button support (CoreAudio mute detection)",
-                           isOn: $settings.headsetPTTEnabled)
-                    Text("Monitors the Bluetooth input device mute state. Requires the headset's PTT button to be configured as Mute (the default).")
+                    Toggle("Audible cues", isOn: $settings.headsetAudibleCuesEnabled)
+                    Text("Play short in-ear tones for recording started, prompt sent, and failures so you get eyes-free confirmation while driving.")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }

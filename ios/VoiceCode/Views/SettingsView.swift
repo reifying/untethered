@@ -126,6 +126,11 @@ struct SettingsView: View {
                     Text("Transcription is sent to the active session automatically when you press stop.")
                         .font(.caption)
                         .foregroundColor(.secondary)
+
+                    Toggle("Audible cues", isOn: $settings.headsetAudibleCuesEnabled)
+                    Text("Play a short tone in the headset when recording starts (rising chirp) and stops — a bright blip when your prompt is captured/sent, a low tone if nothing was heard. Lets you use the headset without looking at the phone.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
                 }
             }
             #endif

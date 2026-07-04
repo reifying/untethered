@@ -2,12 +2,15 @@
 
 Commit and push the beads changes.
 
-## Commit Requirements
-- Run `br sync --flush-only` then stage issue state with `git add .beads/issues.jsonl`
-- Use the epic ID in the commit message
-- Write a clear commit message
+- Run `br sync --flush-only`, then stage the export: `git add .beads/issues.jsonl`
+- Commit with a message naming the feature and the epic ID
+  (e.g. 'Add implementation tasks for user authentication (epic-abc123)')
+- Push to the remote
 
-Example: 'Add implementation tasks for user authentication (epic-abc123)'
+## Choosing Your Outcome
+- `committed` — committed and pushed
+- `nothing-to-commit` — no changes to commit
+- `other` — explain in otherDescription
 
 **Outcomes:** committed, nothing-to-commit, other
 
@@ -15,5 +18,3 @@ Example: 'Add implementation tasks for user authentication (epic-abc123)'
 - `committed` → **exit** (tasks-committed)
 - `nothing-to-commit` → **exit** (no-changes-to-commit)
 - `other` → **exit** (user-provided-other)
-
-**Model:** `haiku`

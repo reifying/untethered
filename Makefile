@@ -13,7 +13,7 @@ WRAP := ./scripts/wrap-command
 .PHONY: help test test-verbose test-quiet test-class test-method test-ui test-ui-crash test-ui-autoscroll build clean setup-simulator deploy-device generate-project show-destinations check-sdk xcode-add-files list-simulators
 .PHONY: backend-test backend-test-manual-startup backend-test-manual-protocol backend-test-manual-watcher-new backend-test-manual-prompt-new backend-test-manual-prompt-resume backend-test-manual-broadcast backend-test-manual-errors backend-test-manual-real-data backend-test-manual-resources backend-test-manual-free backend-test-manual-all backend-clean backend-run backend-stop backend-stop-all backend-restart backend-nrepl backend-nrepl-stop recipe-sync tmux-clean
 .PHONY: bump-build bump-build-simple archive export-ipa upload-testflight deploy-testflight
-.PHONY: build-mac test-mac test-mac-class test-mac-ui test-mac-ui-settings run-mac clean-mac list-schemes
+.PHONY: build-mac test-mac test-mac-class test-mac-method test-mac-ui test-mac-ui-settings run-mac clean-mac list-schemes
 .PHONY: release-mac release-mac-build release-mac-notarize release-mac-package
 .PHONY: rn-deps rn-watch rn-test rn-test-watch rn-release rn-repl rn-clean
 
@@ -418,6 +418,16 @@ ifndef CLASS
 	$(error CLASS is required. Usage: make test-mac-class CLASS=MacSettingsViewTests)
 endif
 	$(WRAP) bash -c "cd $(IOS_DIR) && xcodebuild test -scheme VoiceCodeMac -destination 'platform=macOS' -only-testing:VoiceCodeMacTests/$(CLASS)"
+
+# Run a specific macOS unit test method (usage: make test-mac-method CLASS=Foo METHOD=testBar)
+test-mac-method: generate-project
+ifndef CLASS
+	$(error CLASS is required. Usage: make test-mac-method CLASS=HeadsetRemoteCommandManagerMacTests METHOD=testX)
+endif
+ifndef METHOD
+	$(error METHOD is required. Usage: make test-mac-method CLASS=HeadsetRemoteCommandManagerMacTests METHOD=testX)
+endif
+	$(WRAP) bash -c "cd $(IOS_DIR) && xcodebuild test -scheme VoiceCodeMac -destination 'platform=macOS' -only-testing:VoiceCodeMacTests/$(CLASS)/$(METHOD)"
 
 # Run macOS UI tests
 test-mac-ui: generate-project

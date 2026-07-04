@@ -1,89 +1,60 @@
 # Create Tasks
 
-Create individual implementation tasks as children of the epic.
+Break the epic into implementation tasks.
 
-## Task Creation Guidelines
+**Write every task as a prompt for a fresh agent.** Each task will be executed by
+a new session with no memory of this conversation, no access to the design
+discussion, and nothing but the task description and the repository. If the
+description does not carry enough context to implement from cold, the task will
+fail — put the context in.
 
-For each task, run `br create` with:
-- **Parent**: The epic you just created
-- **Title**: Action-oriented (e.g., 'Add validation to user input handler')
-- **Type**: task
-
-### Task Granularity
-Each task should be:
-- **Atomic**: Completes one logical unit of work
-- **Testable**: Has clear verification criteria
-- **Independent**: Can be worked on without blocking others (where possible)
-- **Small**: Completable in a single focused session
-
-### Required Task Sections
-
-Each task description must include:
+## Creating Tasks
+For each task run `br create --type task --parent <epic-id>` with an
+action-oriented title (e.g. 'Add validation to user input handler') and a
+description containing:
 
 ```
 ## Design Reference
 @path/to/design-document.md#relevant-section
 
 ## Context
-[Why this task exists and how it fits into the larger feature]
+[Why this task exists and how it fits the larger feature]
 
 ## Requirements
-- [ ] Specific requirement 1
-- [ ] Specific requirement 2
+- [ ] Specific, verifiable requirement
 
 ## Technical Approach
-[Key implementation details from the design document]
-- Files to modify: [list specific files]
-- New files to create: [if any]
-- Dependencies: [other tasks that must complete first]
+[The relevant implementation details from the design — files to modify,
+new files to create, key functions and data structures involved]
 
 ## Verification
-- [ ] Unit tests for [specific functionality]
-- [ ] Integration test for [specific interaction]
-- [ ] Manual verification: [specific steps]
-
-## Acceptance Criteria
-[Subset of epic criteria this task addresses]
+[What tests prove this works — unit, integration, and/or manual steps]
 ```
 
-### Task Ordering
-Create tasks in dependency order:
-1. Foundation tasks (data models, schemas, migrations)
-2. Core logic tasks (business logic, algorithms)
-3. Integration tasks (API endpoints, event handlers)
-4. UI tasks (if applicable)
-5. Documentation tasks (if needed beyond design doc)
+## Sizing
+Each task should be one coherent unit of work — independently implementable and
+testable, small enough for a single focused agent session. If a task needs
+another task's output, that is a dependency between two tasks, not one giant task.
 
-### Parallelization
-Mark tasks that can be worked in parallel with a note:
-```
-## Parallelization
-Can be worked alongside: [list task titles]
-```
+Create tasks roughly foundation-first: data models and schemas, then core logic,
+then integration points (APIs, handlers), then UI, then docs.
 
-### Setting Up Dependency Links
+## Dependency Links
+`br ready` only works if the links exist. After creating all tasks:
 
-After creating all tasks, establish dependency links using `br dep add`.
-This ensures `br ready` only shows tasks that are actually ready to work on.
+1. The epic depends on every child, so it cannot close or look ready while
+   children are open:
+   `br dep add <epic-id> <child-task-id>` — repeat for each child
+2. Each task depends on its prerequisites:
+   `br dep add <blocked-task> <blocking-task>` — the first argument depends on
+   the second (e.g. the write-tests task depends on the implement-handler task)
 
-**Syntax:** `br dep add <blocked-task> <blocking-task>`
-(The blocked-task depends on blocking-task completing first)
+Sanity-check with `br blocked`: tasks with prerequisites should be listed there.
+If nothing is blocked but you created ordered work, the links are missing.
 
-**Required dependencies:**
-1. Epic depends on ALL child tasks (epic can't close until children complete):
-   ```bash
-   br dep add <epic-id> <child-task-1>
-   br dep add <epic-id> <child-task-2>
-   # ... repeat for each child
-   ```
-
-2. Tasks depend on their prerequisites (tests depend on implementation, etc.):
-   ```bash
-   # Example: "Write tests" depends on "Implement handler"
-   br dep add <test-task-id> <impl-task-id>
-   ```
-
-**Verify with:** `br blocked` to see dependency relationships
+## Choosing Your Outcome
+- `complete` — all tasks created with dependencies linked
+- `other` — explain in otherDescription
 
 **Outcomes:** complete, other
 

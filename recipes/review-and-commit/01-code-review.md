@@ -1,46 +1,38 @@
 # Code Review
 
-Perform a thorough code review on the changes.
+Review the uncommitted changes in this repository and decide whether they are ready to commit.
 
-## Review Process
+## Establish Context
+- Run `git status` and `git diff` (plus `git diff --staged`) to see exactly what changed
+- Skim recent `git log`, and any beads task (`br show <task-id>`) or design document the work references, to understand what the changes are supposed to accomplish
+- Read the modified files wherever the diff alone is ambiguous — judge changes in context, not in isolation
 
-1. Run `git diff` to see exactly what changed
-2. Read each modified file to understand the changes in context
-3. Evaluate against the checklist below
-4. Report your findings
+## What to Look For, in Priority Order
+1. **Correctness** — logic errors, unhandled edge cases, broken invariants, regressions in surrounding code
+2. **Tests** — new behavior is covered, and the tests pass. Actually run the relevant test suite; do not take passing tests on faith.
+3. **Security** — hardcoded secrets or credentials, injection risks, unvalidated external input
+4. **Scope** — the diff matches the task's intent; no unrelated edits, debug output, or stray files
 
-**Important:** List the files you read and summarize what you checked in each.
+## Severity Bar
+Report only issues that should block this commit. Style preferences, hypothetical
+future concerns, and minor naming quibbles are not blockers. Finding nothing is a
+common and correct result — do not invent findings to have something to report.
 
-## Review Checklist
+If this is a re-review after fixes: first verify each previously reported issue is
+actually resolved, then check the fixes themselves for new problems. Do not raise
+new nitpicks you did not consider blocking the first time.
 
-### Correctness
-- [ ] Logic correctly implements the requirements
-- [ ] Edge cases are handled
-- [ ] Error handling is appropriate
-- [ ] No regressions introduced
+## Report
+State which files you read and what you checked in each — the review is only as
+good as its evidence. For each blocking issue give the file and line, what is
+wrong, why it blocks the commit, and a suggested fix.
 
-### Code Quality
-- [ ] Follows project naming conventions
-- [ ] Functions are appropriately sized
-- [ ] No code duplication
-- [ ] Comments explain 'why' not 'what' (where needed)
+Do not make any changes in this step.
 
-### Testing
-- [ ] Tests cover happy path
-- [ ] Tests cover error cases
-- [ ] Tests are readable and maintainable
-- [ ] All tests pass
-
-### Security & Performance
-- [ ] No hardcoded secrets or credentials
-- [ ] No obvious performance issues
-- [ ] Input validation where needed
-
-### Design Alignment
-- [ ] Implementation matches requirements
-- [ ] No scope creep beyond task requirements
-
-Report any issues found. Do not make changes yet.
+## Choosing Your Outcome
+- `no-issues` — nothing blocks the commit (tests pass, no blocking findings)
+- `issues-found` — one or more blocking issues, listed in your report
+- `other` — you cannot perform the review (e.g. there are no changes to review); explain in otherDescription
 
 **Outcomes:** issues-found, no-issues, other
 

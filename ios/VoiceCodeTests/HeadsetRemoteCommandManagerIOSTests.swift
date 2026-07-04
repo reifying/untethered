@@ -44,7 +44,7 @@ final class HeadsetIOSAudioSessionTests: XCTestCase {
             voiceOutput: output,
             client: client,
             settings: settings,
-            resolveActiveSession: { (sessionId, "/test/working-dir") }
+            resolveActiveSession: { (sessionId, "/test/working-dir", false, "claude") }
         )
         return (manager, Mocks(voiceInput: input, voiceOutput: output, client: client, settings: settings))
     }
@@ -68,6 +68,54 @@ final class HeadsetIOSAudioSessionTests: XCTestCase {
         XCTAssertEqual(session.category, .playAndRecord)
         XCTAssertFalse(session.categoryOptions.contains(.mixWithOthers))
         XCTAssertTrue(session.categoryOptions.contains(.allowBluetoothA2DP))
+    }
+
+    // MARK: - BlueParrott HFP mic routing
+
+    /// Baseline: with no BlueParrott connected, the ready/keep-alive session stays
+    /// A2DP-only — HFP off — so AirPods/other AVRCP headsets keep stem-press delivery.
+    func testActivate_noBlueParrott_doesNotEngageHFP() {
+        let (manager, _) = makeManager()
+        manager.activate()
+
+        let session = AVAudioSession.sharedInstance()
+        XCTAssertTrue(session.categoryOptions.contains(.allowBluetoothA2DP))
+        XCTAssertFalse(session.categoryOptions.contains(.allowBluetoothHFP),
+                       "no BlueParrott → HFP mic must stay off (built-in mic, AirPods-safe)")
+    }
+
+    /// When a BlueParrott is connected, the ready/keep-alive session engages HFP
+    /// (`.allowBluetooth`) so the headset mic — not the phone's built-in mic — is the
+    /// capture input, and the SCO link stays warm between presses (no first-word clip).
+    func testActivate_blueParrottConnected_engagesHFPMic() {
+        let (manager, _) = makeManager()
+        manager.isBlueParrottConnected = { true }
+
+        manager.activate()
+
+        let session = AVAudioSession.sharedInstance()
+        XCTAssertTrue(session.categoryOptions.contains(.allowBluetoothHFP),
+                      "BlueParrott connected → HFP mic must be engaged")
+        XCTAssertTrue(session.categoryOptions.contains(.allowBluetoothA2DP),
+                      "A2DP output must remain so TTS + keep-alive still reach the headset")
+
+        // Reset the shared session so this global side effect doesn't leak to other tests.
+        manager.isBlueParrottConnected = { false }
+        manager.activate()
+    }
+
+    /// The capture session (VoiceInputManager) must follow the same BlueParrott signal:
+    /// the manager wires `voiceInput.prefersBluetoothHFPInput` to its connection seam, so
+    /// startRecording() engages the headset mic exactly when a BlueParrott is connected.
+    func testVoiceInputPrefersHFP_followsBlueParrottConnection() {
+        let (manager, mocks) = makeManager()
+
+        XCTAssertFalse(mocks.voiceInput.prefersBluetoothHFPInput(),
+                       "no BlueParrott → capture stays on the built-in mic / A2DP")
+
+        manager.isBlueParrottConnected = { true }
+        XCTAssertTrue(mocks.voiceInput.prefersBluetoothHFPInput(),
+                      "BlueParrott connected → capture engages the HFP mic")
     }
 
     func testDeactivate_setsManagerInactive() {

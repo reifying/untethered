@@ -51,6 +51,12 @@ struct ConversationView: View {
     @Environment(\.managedObjectContext) private var viewContext
     @Environment(\.scenePhase) private var scenePhase
     @EnvironmentObject var draftManager: DraftManager
+    #if os(macOS)
+    // macOS: the on-screen mic button shares the headset's session reducer; this view
+    // injects its rich send (`sendPromptText`) so the reducer's finalize sends through
+    // one path. See `wireVoiceSend()`.
+    @EnvironmentObject private var headsetManager: HeadsetRemoteCommandManager
+    #endif
 
     @State private var isLoading = false
     @State private var hasSubscribedThisAppear = false  // Tracks if we've already subscribed this onAppear cycle
@@ -749,6 +755,9 @@ struct ConversationView: View {
 
             loadSessionIfNeeded()
             setupVoiceInput()
+            #if os(macOS)
+            wireVoiceSend()
+            #endif
 
             // Restore draft text for this session
             let sessionID = session.id.uuidString.lowercased()
@@ -787,6 +796,11 @@ struct ConversationView: View {
             // Reset flag so next onAppear triggers a fresh subscribe
             // This ensures messages are refreshed when navigating back to session
             hasSubscribedThisAppear = false
+
+            #if os(macOS)
+            // Stop routing the headset/mic-button send through this (now-gone) view.
+            headsetManager.sendVoicePrompt = nil
+            #endif
         }
         // Listen for the file-uploaded response to our log share. Filtered by
         // pendingLogFilename + the "logs-" prefix inside handleLogUploadResponse
@@ -829,6 +843,11 @@ struct ConversationView: View {
             // previous session can't send its review prompt to the new one.
             // (macOS reuses this view instance across sidebar switches.)
             isSharingLogs = false
+            #if os(macOS)
+            // The reused view instance now represents a new session — re-capture so the
+            // headset/mic-button send targets the NEW session, not the stale one.
+            wireVoiceSend()
+            #endif
             pendingLogFilename = nil
             loadSessionIfNeeded()
         }
@@ -936,6 +955,22 @@ struct ConversationView: View {
             LogManager.shared.log("❌ [ConversationView] Failed to rename session: \(error)", category: "ConversationView")
         }
     }
+
+    #if os(macOS)
+    /// Inject this view's rich `sendPromptText` as the session reducer's send, so a
+    /// reducer-driven finalize (headset tap/release, mic-button stop, or silence
+    /// timeout) sends through the same path as a typed/queued message — new-session vs
+    /// resume, ghost, provider, draft-clear, queue. Captures `self`; re-invoked on
+    /// appear and on session switch (the macOS view instance is reused) so the captured
+    /// `@ObservedObject session` always targets the current session. `@State` reads
+    /// (ghost, provider) stay live through their wrappers. Cleared on disappear.
+    private func wireVoiceSend() {
+        headsetManager.sendVoicePrompt = { text in
+            sendPromptText(text)
+            return true
+        }
+    }
+    #endif
 
     private func sendPromptText(_ text: String) {
         let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1746,25 +1781,43 @@ struct RenameSessionView: View {
 struct ConversationVoiceInputView: View {
     @ObservedObject var voiceInput: VoiceInputManager
     let onTranscriptionComplete: (String) -> Void
+    #if os(macOS)
+    // macOS routes the mic button through the SAME session reducer as the headset so
+    // one owner tracks "are we recording" — a headset tap can stop a UI-started
+    // recording and the message is sent, not lost. The reducer sends via the
+    // ConversationView-injected `sendVoicePrompt` (== `sendPromptText`), so this view
+    // no longer sends directly. iOS keeps its legacy direct-to-VoiceInput path.
+    @EnvironmentObject private var headsetManager: HeadsetRemoteCommandManager
+    #endif
+
+    /// Start recording. macOS → session reducer; iOS → direct.
+    private func startRecording() {
+        #if os(macOS)
+        headsetManager.toggleRecordingFromUI()
+        #else
+        voiceInput.startRecording()
+        #endif
+    }
+
+    /// Stop + send. macOS → session reducer finalizes and sends (single send path);
+    /// iOS → capture text, stop, send via `onTranscriptionComplete`.
+    private func stopRecording() {
+        #if os(macOS)
+        headsetManager.toggleRecordingFromUI()
+        #else
+        let text = voiceInput.transcribedText
+        voiceInput.stopRecording()
+        voiceInput.transcribedText = ""
+        if !text.isEmpty {
+            DispatchQueue.main.async { onTranscriptionComplete(text) }
+        }
+        #endif
+    }
 
     var body: some View {
         VStack {
             if voiceInput.isRecording {
-                Button(action: {
-                    // Capture text BEFORE stopping, then clear it. Clearing prevents
-                    // HeadsetRemoteCommandManager's $isRecording subscriber from also
-                    // sending the same text (double-send) when it sees isRecording→false
-                    // while state is .recording.
-                    let text = voiceInput.transcribedText
-                    voiceInput.stopRecording()
-                    voiceInput.transcribedText = ""
-
-                    if !text.isEmpty {
-                        DispatchQueue.main.async {
-                            onTranscriptionComplete(text)
-                        }
-                    }
-                }) {
+                Button(action: { stopRecording() }) {
                     VStack {
                         Image(systemName: "mic.fill")
                             .font(.system(size: 40))
@@ -1777,9 +1830,7 @@ struct ConversationVoiceInputView: View {
                     .cornerRadius(50)
                 }
             } else {
-                Button(action: {
-                    voiceInput.startRecording()
-                }) {
+                Button(action: { startRecording() }) {
                     VStack {
                         Image(systemName: "mic")
                             .font(.system(size: 40))

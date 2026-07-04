@@ -15,13 +15,9 @@ private func bpLogError(_ msg: String) {
     LogManager.shared.log("❌ \(msg)", category: "BlueParrott")
 }
 
-protocol BlueParrottButtonDelegate: AnyObject {
-    func blueParrottButtonDown()
-    func blueParrottButtonUp()
-    func blueParrottTap()
-    func blueParrottDoubleTap()
-    func blueParrottLongPress()
-}
+// `BlueParrottButtonDelegate` is defined in the platform-agnostic
+// BlueParrottButtonDelegate.swift so both the iOS (BPHeadset) and macOS
+// (CoreBluetooth) button sources share one delegate surface.
 
 /// The subset of `BPHeadset` behavior the manager drives. Abstracted (and kept
 /// free of SDK types) so the connect / retry / re-arm state machine can be unit

@@ -13,51 +13,84 @@
                    existing session), otherwise generate a new one."
   #{:fresh :accumulating})
 
+;; ---------------------------------------------------------------------------
+;; Shared prompt strings
+;;
+;; Prompt-writing conventions (apply to every step prompt in this file):
+;; - Open with the step's goal, then how to establish context, then the work.
+;; - Review steps state an explicit severity bar and say that finding nothing
+;;   is a valid result — otherwise agents invent findings and the
+;;   review → fix → review loop churns until max-step-visits.
+;; - Every prompt ends with a "Choosing Your Outcome" section explaining WHEN
+;;   to pick each outcome. The orchestrator appends only the JSON format
+;;   (see orchestration/get-outcome-format-block), not the semantics.
+;; - Agents run unattended (voice sessions — nobody is watching the terminal),
+;;   so prompts must route "I need input" through an outcome, never a question.
+;; ---------------------------------------------------------------------------
+
+(def code-commit-prompt
+  "Shared commit-and-push prompt for the code recipes."
+  "Commit and push the changes.
+
+## Update Beads First
+If this work was driven by a beads task:
+- Fully done: `br close <task-id>`
+- Partially done: `br update <task-id> --status in_progress --notes <what remains>`
+- Then `br sync --flush-only` and stage the export: `git add .beads/issues.jsonl`
+
+## Commit
+- Stage the intended changes. Check `git status` for strays first — do not
+  blanket-add files unrelated to this work.
+- Write a commit message that says what changed and why, and include the beads
+  task ID when there is one.
+- Never force-push, and never amend or rewrite commits that are already pushed.
+
+## Push
+Push to the remote after committing. If the push is rejected because the remote
+is ahead, run `git pull --rebase` and push again.
+
+## Choosing Your Outcome
+- `committed` — commit created and pushed
+- `nothing-to-commit` — `git status` shows nothing to commit
+- `other` — commit or push failed in a way you cannot resolve; explain in otherDescription")
+
 (def review-commit-steps
   "Shared steps for the review → fix → commit loop.
    Used by both review-and-commit and implement-and-review recipes."
   {:code-review
-   {:prompt "Perform a thorough code review on the changes.
+   {:prompt "Review the uncommitted changes in this repository and decide whether they are ready to commit.
 
-## Review Process
+## Establish Context
+- Run `git status` and `git diff` (plus `git diff --staged`) to see exactly what changed
+- Skim recent `git log`, and any beads task (`br show <task-id>`) or design document the work references, to understand what the changes are supposed to accomplish
+- Read the modified files wherever the diff alone is ambiguous — judge changes in context, not in isolation
 
-1. Run `git diff` to see exactly what changed
-2. Read each modified file to understand the changes in context
-3. Evaluate against the checklist below
-4. Report your findings
+## What to Look For, in Priority Order
+1. **Correctness** — logic errors, unhandled edge cases, broken invariants, regressions in surrounding code
+2. **Tests** — new behavior is covered, and the tests pass. Actually run the relevant test suite; do not take passing tests on faith.
+3. **Security** — hardcoded secrets or credentials, injection risks, unvalidated external input
+4. **Scope** — the diff matches the task's intent; no unrelated edits, debug output, or stray files
 
-**Important:** List the files you read and summarize what you checked in each.
+## Severity Bar
+Report only issues that should block this commit. Style preferences, hypothetical
+future concerns, and minor naming quibbles are not blockers. Finding nothing is a
+common and correct result — do not invent findings to have something to report.
 
-## Review Checklist
+If this is a re-review after fixes: first verify each previously reported issue is
+actually resolved, then check the fixes themselves for new problems. Do not raise
+new nitpicks you did not consider blocking the first time.
 
-### Correctness
-- [ ] Logic correctly implements the requirements
-- [ ] Edge cases are handled
-- [ ] Error handling is appropriate
-- [ ] No regressions introduced
+## Report
+State which files you read and what you checked in each — the review is only as
+good as its evidence. For each blocking issue give the file and line, what is
+wrong, why it blocks the commit, and a suggested fix.
 
-### Code Quality
-- [ ] Follows project naming conventions
-- [ ] Functions are appropriately sized
-- [ ] No code duplication
-- [ ] Comments explain 'why' not 'what' (where needed)
+Do not make any changes in this step.
 
-### Testing
-- [ ] Tests cover happy path
-- [ ] Tests cover error cases
-- [ ] Tests are readable and maintainable
-- [ ] All tests pass
-
-### Security & Performance
-- [ ] No hardcoded secrets or credentials
-- [ ] No obvious performance issues
-- [ ] Input validation where needed
-
-### Design Alignment
-- [ ] Implementation matches requirements
-- [ ] No scope creep beyond task requirements
-
-Report any issues found. Do not make changes yet."
+## Choosing Your Outcome
+- `no-issues` — nothing blocks the commit (tests pass, no blocking findings)
+- `issues-found` — one or more blocking issues, listed in your report
+- `other` — you cannot perform the review (e.g. there are no changes to review); explain in otherDescription"
     :outcomes #{:no-issues :issues-found :other}
     :on-outcome
     {:no-issues {:next-step :commit}
@@ -65,32 +98,25 @@ Report any issues found. Do not make changes yet."
      :other {:action :exit :reason "user-provided-other"}}}
 
    :fix
-   {:prompt "Address the issues found in the code review.
+   {:prompt "Fix the blocking issues from the code review.
 
-After fixing:
-- Run tests to ensure they still pass
-- Verify the fix doesn't introduce new issues
-             
-**Do not commit yet.**"
+- Address every issue the review listed — and nothing more. No opportunistic
+  refactoring or unrelated cleanup; that widens the diff the re-review has to verify.
+- Update or add tests where a fix changes behavior.
+- Run the relevant tests and confirm they pass before finishing.
+
+**Do not commit.** The changes will be re-reviewed first.
+
+## Choosing Your Outcome
+- `complete` — every listed issue is addressed and tests pass
+- `other` — an issue cannot be fixed as described; explain what is blocking in otherDescription"
     :outcomes #{:complete :other}
     :on-outcome
     {:complete {:next-step :code-review}
      :other {:action :exit :reason "user-provided-other"}}}
 
    :commit
-   {:prompt "Commit and push the changes.
-
-## Pre-Commit Steps
-If working on a beads task, update its status first:
-- Run `br close <task-id>` to mark the task as complete
-- If partially complete, use `br update <task-id> --status in_progress` with notes
-
-## Commit and Push
-- Write a clear commit message describing what was implemented
-- If working on a beads task, include the task ID in the commit message
-- Run `br sync --flush-only` to ensure issue state is exported
-- Stage issue state: `git add .beads/issues.jsonl`
-- Push to the remote repository after committing"
+   {:prompt code-commit-prompt
     :outcomes #{:committed :nothing-to-commit :other}
     :on-outcome
     {:committed {:action :exit :reason "changes-committed"}
@@ -124,6 +150,85 @@ If working on a beads task, update its status first:
    :steps review-commit-steps
    :guardrails default-guardrails})
 
+;; ---------------------------------------------------------------------------
+;; Design-document prompts — shared by document-design and design-break-impl-all
+;; ---------------------------------------------------------------------------
+
+(def design-document-prompt
+  "Write a design document for the requested feature or change — one that lets another engineer (or a fresh agent session) implement it without re-deriving your decisions.
+
+## Ground It in the Code First
+Before writing anything, investigate: read the files the change will touch, trace
+how the affected system works today, and note the real names of the modules,
+functions, and data structures involved. A design written from assumptions
+instead of the actual code is worse than no design.
+
+If you cannot determine what you are being asked to design — no feature was named
+in this conversation or the provided context — choose the `needs-input` outcome
+rather than guessing.
+
+## What the Document Must Answer
+- **Problem and goals** — what problem this solves, what done looks like, and what is explicitly out of scope
+- **Current state** — how the system works today, with pointers to the actual files
+- **The design** — data structures, APIs/interfaces, and key flows, with concrete code examples in the project's language and style that reference real files and functions. Show the happy path and the important error and edge cases.
+- **Verification** — how we will know it works: what gets unit/integration tested, plus numbered, testable acceptance criteria
+- **Alternatives and risks** — approaches you rejected and why; what could go wrong and how we would detect it or roll back
+
+Cover the sections that apply to this change and omit the ones that do not — a
+migration section for a change with no data migration is padding, not thoroughness.
+
+## Write It Down
+Store the document as markdown following the repository's conventions — look at
+where existing design docs live (e.g. a docs/ or docs/design/ directory) and match
+their location and naming. Reference related files with @path/to/file syntax.
+
+Quality bar before you finish: every code example would parse, every referenced
+file exists, and no placeholder text remains.
+
+## Choosing Your Outcome
+- `complete` — document written and saved
+- `needs-input` — you cannot determine what to design, or a decision genuinely requires the user; say what you need
+- `other` — anything else; explain in otherDescription")
+
+(def design-review-prompt
+  "Review the design document you just wrote, as if you were the engineer who has to implement from it.
+
+Check, against the actual codebase:
+- Would the implementer be blocked or misled anywhere? Are decisions justified, or merely asserted?
+- Do the code examples match the project's real APIs, names, and conventions? Do the referenced files exist?
+- Are the acceptance criteria concrete enough to test?
+- Is anything substantive missing — or, equally, over-specified beyond what this change needs?
+
+Report only gaps that would actually hurt implementation. A short document that
+fully covers a small change is correct, not incomplete. If this is a re-review
+after fixes, verify the previous findings were addressed rather than raising a
+fresh wishlist.
+
+Do not make changes in this step.
+
+## Choosing Your Outcome
+- `no-issues` — an implementer could work from this document as-is
+- `issues-found` — substantive gaps or errors, listed in your report
+- `other` — the review cannot be performed; explain in otherDescription")
+
+(def design-fix-prompt
+  "Fix the issues the design review identified — those and nothing else.
+
+Keep the document grounded: verify any new code examples and file references
+against the actual codebase before adding them.
+
+## Choosing Your Outcome
+- `complete` — every reviewed issue is addressed
+- `other` — an issue cannot be resolved; explain in otherDescription")
+
+(def design-commit-prompt
+  "Commit and push the design document. Write a commit message that summarizes what is being designed and the key decisions made.
+
+## Choosing Your Outcome
+- `committed` — committed and pushed
+- `nothing-to-commit` — no changes to commit
+- `other` — explain in otherDescription")
+
 (defn document-design-recipe
   "Returns the document-design recipe definition.
    This recipe creates a detailed design document with code examples and verification steps."
@@ -136,93 +241,7 @@ If working on a beads task, update its status first:
    :initial-step :document
    :steps
    {:document
-    {:prompt "Create a detailed design document for the requested feature or change. Store as a markdown file following the repository's conventions for location and naming.
-
-## Document Structure
-
-Include the following sections:
-
-### 1. Overview
-- Problem statement: What problem does this solve?
-- Goals: What are we trying to achieve?
-- Non-goals: What is explicitly out of scope?
-
-### 2. Background & Context
-- Current state: How does the system work today?
-- Why now: What triggered this work?
-- Related work: Links to relevant documents, issues, or prior art
-
-### 3. Detailed Design
-
-#### Data Model
-- New or modified data structures
-- Schema changes with before/after examples
-- Migration strategy if applicable
-
-#### API Design
-- Endpoint signatures with request/response examples
-- Error cases and status codes
-- Breaking changes and deprecation plan
-
-#### Code Examples
-Provide concrete implementation examples:
-
-```clojure
-;; Example: Show the key function signatures
-(defn process-request
-  \"Process incoming request with validation.\"
-  [request]
-  ;; Implementation approach...
-  )
-```
-
-Include examples for:
-- Happy path usage
-- Error handling patterns
-- Edge cases
-
-#### Component Interactions
-- Sequence diagrams or flow descriptions
-- Integration points with existing systems
-- Dependency relationships
-
-### 4. Verification Strategy
-
-#### Testing Approach
-- Unit tests: What functions need direct testing?
-- Integration tests: What component interactions need verification?
-- End-to-end tests: What user workflows should be validated?
-
-#### Test Examples
-```clojure
-(deftest process-request-test
-  (testing \"validates required fields\"
-    (is (thrown? ExceptionInfo (process-request {}))))
-  (testing \"returns processed result\"
-    (is (= expected-result (process-request valid-input)))))
-```
-
-#### Acceptance Criteria
-- Numbered list of verifiable requirements
-- Each criterion should be testable
-
-### 5. Alternatives Considered
-- What other approaches were evaluated?
-- Why was this approach chosen?
-- Trade-offs of the chosen approach
-
-### 6. Risks & Mitigations
-- What could go wrong?
-- How will we detect problems?
-- Rollback strategy
-
-## Quality Checklist
-Before marking complete, verify:
-- [ ] All code examples are syntactically correct
-- [ ] Examples match the codebase's style and conventions
-- [ ] Verification steps are specific and actionable
-- [ ] Cross-references to related files use @filename.md format
-- [ ] No placeholder text remains"
+    {:prompt design-document-prompt
      :outcomes #{:complete :needs-input :other}
      :on-outcome
      {:complete {:next-step :review}
@@ -230,14 +249,7 @@ Before marking complete, verify:
       :other {:action :exit :reason "user-provided-other"}}}
 
     :review
-    {:prompt "Review the design document you created. Check for:
-- Completeness: Are all sections filled in with substantive content?
-- Correctness: Do code examples compile/parse correctly?
-- Clarity: Would another developer understand the design?
-- Consistency: Does it align with existing patterns in the codebase?
-- Actionability: Are verification steps specific enough to execute?
-
-Report any gaps or issues found. Do not make changes yet."
+    {:prompt design-review-prompt
      :outcomes #{:no-issues :issues-found :other}
      :on-outcome
      {:no-issues {:next-step :commit}
@@ -245,14 +257,14 @@ Report any gaps or issues found. Do not make changes yet."
       :other {:action :exit :reason "user-provided-other"}}}
 
     :fix
-    {:prompt "Address the issues found in the design document review."
+    {:prompt design-fix-prompt
      :outcomes #{:complete :other}
      :on-outcome
      {:complete {:next-step :review}
       :other {:action :exit :reason "user-provided-other"}}}
 
     :commit
-    {:prompt "Commit and push the design document. Use a descriptive commit message that summarizes what is being designed."
+    {:prompt design-commit-prompt
      :outcomes #{:committed :nothing-to-commit :other}
      :on-outcome
      {:committed {:action :exit :reason "design-committed"}
@@ -263,6 +275,166 @@ Report any gaps or issues found. Do not make changes yet."
    {:max-step-visits 10
     :max-total-steps 100
     :exit-on-other true}})
+
+;; ---------------------------------------------------------------------------
+;; Task-breakdown prompts — shared by break-down-tasks and design-break-impl-all
+;; ---------------------------------------------------------------------------
+
+(def tasks-analyze-prompt
+  "Analyze the design document and map out the implementation work.
+
+## Prerequisites
+1. If you are unfamiliar with the beads workflow, run `br robot-docs guide`
+2. Locate the design document — the one created earlier in this session if there is one, otherwise the one the context names
+3. Read it fully
+
+## Analyze
+Cross-check the design against the current code: confirm the files and
+integration points it names still exist as described. Then work out:
+- The components to build or modify, and roughly how the work divides into tasks
+- The dependency order — what must land before what
+- Which pieces are independent enough to work in parallel
+- Any ambiguity or gap in the design that would stall an implementer
+
+Report that analysis. If the design leaves a question you cannot resolve from
+the code, choose `needs-input` and state the question — do not guess.
+
+## Choosing Your Outcome
+- `complete` — analysis done; ready to create the epic and tasks
+- `design-missing` — no design document could be found
+- `needs-input` — the design has a gap only the user can resolve; state it
+- `other` — anything else; explain in otherDescription")
+
+(def tasks-create-epic-prompt
+  "Create the parent epic for this implementation work.
+
+Run `br create --type epic` with a clear, concise title for the feature and a
+description containing:
+
+```
+## Design Document
+@path/to/design-document.md
+
+## Overview
+[What this epic delivers, in a sentence or two]
+
+## Acceptance Criteria
+[The acceptance criteria from the design]
+```
+
+## Choosing Your Outcome
+- `complete` — epic created
+- `other` — explain in otherDescription")
+
+(def tasks-create-tasks-prompt
+  "Break the epic into implementation tasks.
+
+**Write every task as a prompt for a fresh agent.** Each task will be executed by
+a new session with no memory of this conversation, no access to the design
+discussion, and nothing but the task description and the repository. If the
+description does not carry enough context to implement from cold, the task will
+fail — put the context in.
+
+## Creating Tasks
+For each task run `br create --type task --parent <epic-id>` with an
+action-oriented title (e.g. 'Add validation to user input handler') and a
+description containing:
+
+```
+## Design Reference
+@path/to/design-document.md#relevant-section
+
+## Context
+[Why this task exists and how it fits the larger feature]
+
+## Requirements
+- [ ] Specific, verifiable requirement
+
+## Technical Approach
+[The relevant implementation details from the design — files to modify,
+new files to create, key functions and data structures involved]
+
+## Verification
+[What tests prove this works — unit, integration, and/or manual steps]
+```
+
+## Sizing
+Each task should be one coherent unit of work — independently implementable and
+testable, small enough for a single focused agent session. If a task needs
+another task's output, that is a dependency between two tasks, not one giant task.
+
+Create tasks roughly foundation-first: data models and schemas, then core logic,
+then integration points (APIs, handlers), then UI, then docs.
+
+## Dependency Links
+`br ready` only works if the links exist. After creating all tasks:
+
+1. The epic depends on every child, so it cannot close or look ready while
+   children are open:
+   `br dep add <epic-id> <child-task-id>` — repeat for each child
+2. Each task depends on its prerequisites:
+   `br dep add <blocked-task> <blocking-task>` — the first argument depends on
+   the second (e.g. the write-tests task depends on the implement-handler task)
+
+Sanity-check with `br blocked`: tasks with prerequisites should be listed there.
+If nothing is blocked but you created ordered work, the links are missing.
+
+## Choosing Your Outcome
+- `complete` — all tasks created with dependencies linked
+- `other` — explain in otherDescription")
+
+(def tasks-review-prompt
+  "Review the task breakdown as if you were a fresh agent about to execute it.
+
+## The Critical Checks
+1. **Cold-start executability** — pick two or three tasks and read each
+   description as a stranger would: does it name the actual files, reference the
+   design section, and define verification? Any task you could not start from
+   cold needs fixing.
+2. **Coverage** — every acceptance criterion and component in the design maps to
+   at least one task, and no task invents work the design does not call for.
+3. **Dependency links** — run the commands; do not assume:
+   - `br blocked` — tasks with prerequisites must appear here; nothing blocked means links are missing
+   - `br ready` — only genuinely startable foundation tasks should appear; if every task shows as ready, links are missing
+   - `br show <epic-id>` — the epic must depend on all children, or it will look ready before they are done
+4. **Sizing** — no task so large it spans many concerns, none so vague it names no files
+
+Run `br list` to see the full structure.
+
+Report only problems that would cause an executing agent to stall, duplicate
+work, or build the wrong thing. A lean, well-linked breakdown needs no findings.
+On a re-review after fixes, verify the previous findings were addressed rather
+than raising new ones.
+
+## Choosing Your Outcome
+- `no-issues` — the breakdown is executable as-is
+- `issues-found` — problems found, listed in your report
+- `other` — explain in otherDescription")
+
+(def tasks-fix-prompt
+  "Fix the problems the task review identified — those and nothing else.
+
+Useful commands:
+- `br update <task-id> --description/--design/--notes/--acceptance-criteria` — amend a task
+- `br create` / `br delete <task-id>` — add missing or remove duplicate tasks
+- `br dep add <blocked> <blocking>` / `br dep remove <blocked> <blocking>` — correct links
+
+## Choosing Your Outcome
+- `complete` — every reviewed issue is addressed
+- `other` — explain in otherDescription")
+
+(def beads-commit-prompt
+  "Commit and push the beads changes.
+
+- Run `br sync --flush-only`, then stage the export: `git add .beads/issues.jsonl`
+- Commit with a message naming the feature and the epic ID
+  (e.g. 'Add implementation tasks for user authentication (epic-abc123)')
+- Push to the remote
+
+## Choosing Your Outcome
+- `committed` — committed and pushed
+- `nothing-to-commit` — no changes to commit
+- `other` — explain in otherDescription")
 
 (defn break-down-tasks-recipe
   "Returns the break-down-tasks recipe definition.
@@ -276,24 +448,7 @@ Report any gaps or issues found. Do not make changes yet."
    :initial-step :analyze
    :steps
    {:analyze
-    {:prompt "Analyze the design document to understand the implementation scope.
-
-## Prerequisites
-1. Run `br robot-docs guide` to understand beads workflow if unfamiliar
-2. Locate the design document for this feature
-3. Read the design document thoroughly
-
-## Analysis Steps
-1. Identify all components that need to be created or modified
-2. Map acceptance criteria to concrete implementation work
-3. Identify dependencies between pieces of work
-4. Note any verification steps from the design
-
-Report your analysis including:
-- Key components to implement
-- Dependency graph (what must be done before what)
-- Estimated number of tasks needed
-- Any ambiguities or gaps in the design"
+    {:prompt tasks-analyze-prompt
      :outcomes #{:complete :design-missing :needs-input :other}
      :on-outcome
      {:complete {:next-step :create-epic}
@@ -302,166 +457,21 @@ Report your analysis including:
       :other {:action :exit :reason "user-provided-other"}}}
 
     :create-epic
-    {:prompt "Create the parent epic for this implementation work.
-
-## Epic Creation
-Run `br create` to create an epic with:
-- **Title**: Clear, concise name for the feature/change
-- **Description**: Reference the design document using @path/to/design.md
-- **Type**: epic
-
-The epic description should include:
-```
-## Design Document
-@path/to/design-document.md
-
-## Overview
-[Brief summary of what this epic delivers]
-
-## Acceptance Criteria
-[Copy or reference the acceptance criteria from the design]
-```"
+    {:prompt tasks-create-epic-prompt
      :outcomes #{:complete :other}
      :on-outcome
      {:complete {:next-step :create-tasks}
       :other {:action :exit :reason "user-provided-other"}}}
 
     :create-tasks
-    {:prompt "Create individual implementation tasks as children of the epic.
-
-## Task Creation Guidelines
-
-For each task, run `br create` with:
-- **Parent**: The epic you just created
-- **Title**: Action-oriented (e.g., 'Add validation to user input handler')
-- **Type**: task
-
-### Task Granularity
-Each task should be:
-- **Atomic**: Completes one logical unit of work
-- **Testable**: Has clear verification criteria
-- **Independent**: Can be worked on without blocking others (where possible)
-- **Small**: Completable in a single focused session
-
-### Required Task Sections
-
-Each task description must include:
-
-```
-## Design Reference
-@path/to/design-document.md#relevant-section
-
-## Context
-[Why this task exists and how it fits into the larger feature]
-
-## Requirements
-- [ ] Specific requirement 1
-- [ ] Specific requirement 2
-
-## Technical Approach
-[Key implementation details from the design document]
-- Files to modify: [list specific files]
-- New files to create: [if any]
-- Dependencies: [other tasks that must complete first]
-
-## Verification
-- [ ] Unit tests for [specific functionality]
-- [ ] Integration test for [specific interaction]
-- [ ] Manual verification: [specific steps]
-
-## Acceptance Criteria
-[Subset of epic criteria this task addresses]
-```
-
-### Task Ordering
-Create tasks in dependency order:
-1. Foundation tasks (data models, schemas, migrations)
-2. Core logic tasks (business logic, algorithms)
-3. Integration tasks (API endpoints, event handlers)
-4. UI tasks (if applicable)
-5. Documentation tasks (if needed beyond design doc)
-
-### Parallelization
-Mark tasks that can be worked in parallel with a note:
-```
-## Parallelization
-Can be worked alongside: [list task titles]
-```
-
-### Setting Up Dependency Links
-
-After creating all tasks, establish dependency links using `br dep add`.
-This ensures `br ready` only shows tasks that are actually ready to work on.
-
-**Syntax:** `br dep add <blocked-task> <blocking-task>`
-(The blocked-task depends on blocking-task completing first)
-
-**Required dependencies:**
-1. Epic depends on ALL child tasks (epic can't close until children complete):
-   ```bash
-   br dep add <epic-id> <child-task-1>
-   br dep add <epic-id> <child-task-2>
-   # ... repeat for each child
-   ```
-
-2. Tasks depend on their prerequisites (tests depend on implementation, etc.):
-   ```bash
-   # Example: \"Write tests\" depends on \"Implement handler\"
-   br dep add <test-task-id> <impl-task-id>
-   ```
-
-**Verify with:** `br blocked` to see dependency relationships"
+    {:prompt tasks-create-tasks-prompt
      :outcomes #{:complete :other}
      :on-outcome
      {:complete {:next-step :review-tasks}
       :other {:action :exit :reason "user-provided-other"}}}
 
     :review-tasks
-    {:prompt "Review the task breakdown for completeness and quality.
-
-## Review Checklist
-
-### Coverage
-- [ ] All acceptance criteria from design are addressed by at least one task
-- [ ] All components from design have corresponding tasks
-- [ ] Verification strategy from design is reflected in task verification sections
-
-### Task Quality
-- [ ] Each task has a design document reference
-- [ ] Each task has clear requirements
-- [ ] Each task has verification steps
-- [ ] No task is too large (should be completable in one session)
-- [ ] No task is too vague (specific files and changes identified)
-
-### Dependencies
-- [ ] Task dependencies are explicitly stated in descriptions
-- [ ] No circular dependencies exist
-- [ ] Foundation tasks come before dependent tasks
-- [ ] Parallelizable tasks are marked
-
-### Dependency Links (Critical)
-Run these commands to verify dependency links are properly set up:
-
-1. **Check blocked tasks:** `br blocked`
-   - Tasks with prerequisites should appear here
-   - If nothing is blocked but tasks have dependencies, links are missing
-
-2. **Check epic dependencies:** `br show <epic-id>`
-   - Epic should show \"Depends on\" section listing ALL child tasks
-   - If missing, epic will show as \"ready\" before children complete
-
-3. **Check ready tasks:** `br ready`
-   - Only foundation tasks (no prerequisites) should appear
-   - If all tasks appear, dependency links are missing
-
-### Traceability
-- [ ] Epic references the design document
-- [ ] Each task references the relevant design section
-- [ ] Acceptance criteria map back to design
-
-Run `br list` to see the created structure.
-
-Report any issues found."
+    {:prompt tasks-review-prompt
      :outcomes #{:no-issues :issues-found :other}
      :on-outcome
      {:no-issues {:next-step :commit}
@@ -469,27 +479,14 @@ Report any issues found."
       :other {:action :exit :reason "user-provided-other"}}}
 
     :fix-tasks
-    {:prompt "Address the issues found in the task review.
-
-Use `br update <task-id> --description/--notes/--design` to update task descriptions.
-Use `br create` to create missing tasks.
-Use `br delete <task-id>` to remove duplicate or unnecessary tasks.
-Use `br dep add <blocked> <blocking>` to add missing dependency links.
-Use `br dep remove <blocked> <blocking>` to remove incorrect dependencies."
+    {:prompt tasks-fix-prompt
      :outcomes #{:complete :other}
      :on-outcome
      {:complete {:next-step :review-tasks}
       :other {:action :exit :reason "user-provided-other"}}}
 
     :commit
-    {:prompt "Commit and push the beads changes.
-
-## Commit Requirements
-- Run `br sync --flush-only` then stage issue state with `git add .beads/issues.jsonl`
-- Use the epic ID in the commit message
-- Write a clear commit message
-
-Example: 'Add implementation tasks for user authentication (epic-abc123)'"
+    {:prompt beads-commit-prompt
      :outcomes #{:committed :nothing-to-commit :other}
      :on-outcome
      {:committed {:action :exit :reason "tasks-committed"}
@@ -503,33 +500,37 @@ Example: 'Add implementation tasks for user authentication (epic-abc123)'"
 
 (def implement-step
   "The implement step for implement-and-review recipe."
-  {:prompt "Implement the current task from beads.
+  {:prompt "Implement one ready task from beads.
 
-## Prerequisites
-1. Run `br ready --limit 1 --type task --type bug --type feature --type chore --type docs --type question` and `br show <task-id>` to see the task details
-2. Read the design document referenced in the task
-3. Review relevant code standards (@STANDARDS.md, @CLAUDE.md)
-4. Familiarize yourself with the codebase context
+## Pick Up the Task
+1. Run `br ready --limit 1 --type task --type bug --type feature --type chore --type docs --type question`
+2. Claim it so no other agent picks it up: `br update <task-id> --claim`
+3. Run `br show <task-id>` and read everything it references — the design document, the files named in the technical approach, and @STANDARDS.md / @CLAUDE.md if present
 
 ## No Tasks Available
-If `br ready --limit 1 --type task --type bug --type feature --type chore --type docs --type question` indicates there are no tasks ready for implementation, select the `no-tasks` outcome. This is a normal situation—the recipe will exit gracefully.
+If `br ready --limit 1 --type task --type bug --type feature --type chore --type docs --type question` returns nothing, choose the `no-tasks` outcome. This is a normal result — the recipe exits gracefully.
 
-## Implementation Requirements
-- Follow the technical approach specified in the task
-- Implement all requirements listed in the task
-- Write tests alongside implementation (not after)
-- Run tests to verify they pass
+## Implement
+- Follow the task's requirements and technical approach. If the codebase has
+  drifted from the approach (files moved, APIs changed), implement the task's
+  intent against the current code and note the deviation in your report.
+- Write tests alongside the implementation. The task is not done until new
+  behavior is covered and the relevant test suite passes — run the tests, do
+  not assume.
+- Keep the diff scoped to this task: no drive-by refactors, no unrelated fixes.
 
-## Verification Checklist
-Before marking complete:
-- [ ] All task requirements implemented
-- [ ] Unit tests written and passing
-- [ ] Integration tests written (if specified in task)
-- [ ] Code follows project conventions
-- [ ] No unrelated changes included
+**One task only.** Do not start a second beads task.
+**Do not commit.** Code review happens next.
 
-**Only one task.** Only implement the one task. Do not start on a second beads task.
-**Do not commit yet.** Code review happens next."
+Work autonomously — nobody is watching this session, so never stop to ask a
+question. If the task cannot proceed (missing dependency, contradictory
+requirements, broken environment), choose `blocked` and say why.
+
+## Choosing Your Outcome
+- `complete` — all requirements implemented, tests written and passing
+- `no-tasks` — nothing ready to implement
+- `blocked` — you cannot make progress; explain the blocker
+- `other` — anything else; explain in otherDescription"
    :outcomes #{:complete :no-tasks :blocked :other}
    :on-outcome
    {:complete {:next-step :code-review}
@@ -539,19 +540,7 @@ Before marking complete:
 
 (def implement-and-review-commit-step
   "Custom commit step for implement-and-review that restarts with a new session after commit."
-  {:prompt "Commit and push the changes.
-
-## Pre-Commit Steps
-If working on a beads task, update its status first:
-- Run `br close <task-id>` to mark the task as complete
-- If partially complete, use `br update <task-id> --status in_progress` with notes
-
-## Commit and Push
-- Write a clear commit message describing what was implemented
-- If working on a beads task, include the task ID in the commit message
-- Run `br sync --flush-only` to ensure issue state is exported
-- Stage issue state: `git add .beads/issues.jsonl`
-- Push to the remote repository after committing"
+  {:prompt code-commit-prompt
    :outcomes #{:committed :nothing-to-commit :other}
    :on-outcome
    {:committed {:action :restart-new-session :recipe-id :implement-and-review-all}
@@ -596,37 +585,37 @@ If working on a beads task, update its status first:
    :initial-step :rebase
    :steps
    {:rebase
-    {:prompt "Rebase on the local (not remote) main branch.
+    {:prompt "Rebase the current branch onto the **local** `main` branch. Local main is the target — do not fetch, and do not rebase onto origin/main.
 
 ## Before Starting
-1. Ensure working directory is clean (`git status`)
-2. Fetch latest changes (`git fetch origin`)
-3. Check current branch name
+- `git status` must be clean, with no rebase or merge already in progress. If
+  the tree is dirty or a rebase is mid-flight, choose `other` and describe the
+  state instead of plowing ahead.
+- Note the current branch, and record `git log --oneline main..HEAD` so you know
+  which commits are being replayed.
 
-## Rebase Best Practices
+## Execute
+Run `git rebase main` and resolve any conflicts.
 
-### Preserve Intent of Both Branches
-- The goal is to replay your commits on top of main while preserving the intent of BOTH branches
-- Your branch's changes should achieve their original purpose
-- Main's changes should remain intact and functional
-- The combined result should honor both sets of changes
+Every resolution must preserve the intent of both branches: your commits should
+still accomplish what they set out to do, and main's changes must remain intact
+and functional.
 
-### Conflict Resolution Guidelines
-- Read both versions carefully before making changes
-- Understand WHY each change was made, not just WHAT changed
-- If main refactored code your branch modifies, apply your changes to the new structure
-- If both branches modified the same logic, combine the intents thoughtfully
-- Test after resolving conflicts to ensure nothing is broken
+- Read both sides of each conflict and understand WHY each changed, not just what
+- If main refactored code your branch touches, re-express your change in the new structure
+- Never resolve by wholesale taking one side without reading the other
+- After the rebase completes, run the test suite
 
-### When in Doubt
-- If the correct resolution is unclear, select the `ask-questions` outcome
-- It's better to ask than to guess and introduce bugs
-- Provide context about what's unclear when asking
+## If You Cannot Resolve Cleanly
+Do not leave the repository mid-rebase. Run `git rebase --abort` to restore the
+branch, then exit through the matching outcome below. Asking is better than
+guessing and burying a bug in a conflict resolution.
 
-## Execution
-Run: `git rebase main`
-
-Handle any conflicts that arise following the guidelines above."
+## Choosing Your Outcome
+- `complete` — rebase finished, conflicts resolved, tests pass
+- `ask-questions` — aborted the rebase; a resolution depends on a judgment call the user should make (state the specific question)
+- `conflicts-unresolvable` — aborted the rebase; the branches' changes genuinely cannot be reconciled without human intervention
+- `other` — anything else (dirty tree, rebase already in progress, tests failing before you started); explain in otherDescription"
      :outcomes #{:complete :ask-questions :conflicts-unresolvable :other}
      :on-outcome
      {:complete {:next-step :review}
@@ -635,21 +624,30 @@ Handle any conflicts that arise following the guidelines above."
       :other {:action :exit :reason "user-provided-other"}}}
 
     :review
-    {:prompt "Ask a subagent to perform a review on the rebase with special attention to any files that had merge conflicts.
+    {:prompt "Have a subagent independently review the rebase, focusing on the files that had merge conflicts.
 
-## Review Instructions for Subagent
-Use the Task tool to launch a subagent with these instructions:
+You resolved the conflicts, so you are the wrong reviewer for them. Launch a
+subagent (Task tool), tell it which files conflicted and what each branch was
+trying to do, and instruct it to:
 
-1. Identify all files that had merge conflicts during the rebase
-2. For each conflicted file:
-   - Verify the resolution preserves intent from both branches
-   - Check for accidentally deleted code
-   - Check for duplicated code
-   - Ensure the combined logic is coherent
-3. Run tests to verify nothing is broken
-4. Report any issues found
+1. Examine each conflicted file: does the resolution preserve both branches'
+   intent? Was any code accidentally dropped or duplicated? Is the merged logic
+   coherent?
+2. Compare the replayed commits against the originals — `git range-diff ORIG_HEAD...HEAD`
+   shows exactly what changed in the replay beyond the base swap
+3. Run the test suite
+4. Report specific problems with file and line, or a clean bill of health
 
-Wait for the subagent to complete and report its findings."
+If subagents are unavailable in this environment, perform the same review
+yourself, re-reading each conflicted file from scratch.
+
+Report the findings. Only real defects count — a resolution phrased differently
+from how you would have written it is not an issue if the intent survives.
+
+## Choosing Your Outcome
+- `no-issues` — the rebase is sound and tests pass
+- `issues-found` — defects found, listed in the report
+- `other` — explain in otherDescription"
      :outcomes #{:no-issues :issues-found :other}
      :on-outcome
      {:no-issues {:next-step :complete}
@@ -657,27 +655,35 @@ Wait for the subagent to complete and report its findings."
       :other {:action :exit :reason "user-provided-other"}}}
 
     :fix
-    {:prompt "Address the issues found in the rebase review.
+    {:prompt "Fix the defects the rebase review found.
 
-After fixing:
-- Amend the relevant commits if needed (`git commit --amend` or `git rebase -i`)
-- Run tests to ensure they pass
-- Verify the fix doesn't introduce new issues"
+- Defect in the tip commit: amend it (`git commit --amend`).
+- Defect in an earlier commit: `git commit --fixup=<sha>`, then
+  `GIT_SEQUENCE_EDITOR=true git rebase -i --autosquash main` — the env var makes
+  it non-interactive. Never run a bare `git rebase -i`; there is no interactive
+  editor in this environment.
+- Re-run the tests after fixing.
+
+## Choosing Your Outcome
+- `complete` — defects fixed, tests pass
+- `other` — a defect cannot be fixed; explain in otherDescription"
      :outcomes #{:complete :other}
      :on-outcome
      {:complete {:next-step :review}
       :other {:action :exit :reason "user-provided-other"}}}
 
     :complete
-    {:prompt "The rebase has been reviewed and is ready.
+    {:prompt "The rebase has been reviewed and is ready. Summarize for the user:
 
-## Summary
-Provide a brief summary of:
-- Number of commits rebased
-- Any conflicts that were resolved
-- Key changes from main that were incorporated
+- How many commits were replayed (`git rev-list --count main..HEAD`)
+- Which files had merge conflicts and how each was resolved, in a sentence apiece
+- Anything notable incorporated from main
 
-The branch is now rebased on main and ready for further work or pushing."
+The branch is left rebased on main; nothing is pushed.
+
+## Choosing Your Outcome
+- `done` — summary delivered
+- `other` — explain in otherDescription"
      :outcomes #{:done :other}
      :on-outcome
      {:done {:action :exit :reason "rebase-complete"}
@@ -696,40 +702,28 @@ The branch is now rebased on main and ready for further work or pushing."
    :initial-step :reflect
    :steps
    {:reflect
-    {:prompt "Perform a retrospective on the session that just took place.
+    {:prompt "Perform a retrospective on the session that just took place: identify what caused friction, so the workflow can be improved.
 
-## Important Constraints
-- Do NOT make any changes to files
-- Do NOT run any commands or tests
-- This is purely investigative and reflective
-- Be concise - bullet points preferred over prose
+## Constraints
+- Investigative only — change no files, run no commands or tests
+- Report friction only; skip praise and what went well
+- Be specific: name the tool, the file, the failing command, the missing
+  document. A friction point that cannot be located cannot be fixed.
 
-## Focus Areas (Friction Only)
+## Where to Look
+- **Tools** — calls that failed, behaved unexpectedly, or were missing entirely
+- **Development** — unclear requirements, missing context, work that had to be redone or backtracked
+- **Testing** — failures with unhelpful output, flaky or slow infrastructure
+- **Process** — workflow inefficiencies, documentation gaps
 
-### Tool Issues
-- Which tools didn't work as expected?
-- What tool calls failed or produced unexpected results?
-- What tools were missing that would have helped?
+## Output
+Bullet points, one per friction point: what happened, plus the concrete
+improvement that would prevent it (a CLAUDE.md note, a tooling fix, a doc, a
+test helper). A handful of sharp items beats an exhaustive log.
 
-### Development Friction
-- What slowed down the development process?
-- Where were requirements unclear or context missing?
-- What work had to be repeated or backtracked?
-
-### Testing Friction
-- What problems occurred running or writing tests?
-- Where did test failures lack clear feedback?
-- What was unreliable in the test infrastructure?
-
-### Process Friction
-- What workflow inefficiencies occurred?
-- What documentation or context was missing?
-
-## Output Format
-- List only friction points and potential improvements
-- Do NOT include what worked well or positive observations
-- Be specific with examples from this session
-- Keep it brief and actionable"
+## Choosing Your Outcome
+- `complete` — retrospective delivered
+- `other` — explain in otherDescription"
      :outcomes #{:complete :other}
      :on-outcome
      {:complete {:action :exit :reason "retrospective-complete"}
@@ -739,7 +733,7 @@ The branch is now rebased on main and ready for further work or pushing."
 (defn refine-design-recipe
   "Returns the refine-design recipe definition.
    Iteratively improves an existing design document through multiple focused passes:
-   completeness → breadth → simplicity → polish."
+   completeness → breadth → simplicity → consistency → polish."
   []
   {:id :refine-design
    :session-mode :accumulating
@@ -750,12 +744,17 @@ The branch is now rebased on main and ready for further work or pushing."
    {:locate-design
     {:prompt "Locate and read the design document to be refined.
 
-## Instructions
-1. Identify the design document (user should have specified which one, or it may be the most recent)
-2. Read the entire document thoroughly
-3. Note the current structure and content
+The user should have named it; if not, look for the most recently modified
+design document in the repository's docs directories (check `git log` on those
+paths). Read it fully and note its structure.
 
-Report what you found and confirm you're ready to begin the refinement process."
+Report which document you found and a one-paragraph summary of what it designs,
+so a wrong pick is caught before refinement begins.
+
+## Choosing Your Outcome
+- `found` — document located and read
+- `not-found` — no design document could be identified
+- `other` — explain in otherDescription"
      :outcomes #{:found :not-found :other}
      :on-outcome
      {:found {:next-step :review-completeness}
@@ -763,36 +762,25 @@ Report what you found and confirm you're ready to begin the refinement process."
       :other {:action :exit :reason "user-provided-other"}}}
 
     :review-completeness
-    {:prompt "Review the design document for **completeness and technical depth**.
+    {:prompt "Review the design document for **completeness and technical depth**. The question this pass asks: could an engineer implement from this without guessing?
 
-## Review Focus
-This pass focuses on whether all necessary content exists and has sufficient detail.
+Look for:
+- Missing load-bearing content — unstated data models, unspecified API contracts, undescribed error handling, absent testing strategy
+- Decisions asserted without justification where the reasoning is not obvious
+- Code examples that are vague, non-idiomatic, or wrong — verify them against the actual codebase
+- Edge cases and integration points the design is silent on but the implementation will hit
 
-## Completeness Checklist
-- [ ] Problem statement clearly articulated
-- [ ] Goals and non-goals defined
-- [ ] All major components/modules described
-- [ ] Data models fully specified (fields, types, constraints)
-- [ ] API contracts complete (endpoints, request/response, errors)
-- [ ] Code examples provided for key patterns
-- [ ] Error handling approach documented
-- [ ] Testing strategy outlined
+Calibration: flag what is missing AND needed, not what could conceivably be
+added. An intentionally simple design is complete if it answers its
+implementer's questions. On a re-review, check whether the previous findings
+were addressed rather than raising a fresh wishlist.
 
-## Depth Checklist  
-- [ ] Technical decisions are justified (not just stated)
-- [ ] Code examples are syntactically correct and idiomatic
-- [ ] Edge cases identified and addressed
-- [ ] Integration points explicitly documented
-- [ ] Data flows clearly described
-- [ ] State management explained where applicable
+Review only — change nothing yet.
 
-## Important Constraints
-- **Do not make changes yet** - this is review only
-- Focus on what's MISSING or INSUFFICIENTLY DETAILED
-- Avoid suggesting additions that would be over-engineering
-- If something is intentionally simple, that's fine
-
-Report specific gaps found. If everything is complete and sufficiently detailed, report no issues."
+## Choosing Your Outcome
+- `no-issues` — sufficiently complete and deep
+- `issues-found` — specific gaps, listed
+- `other` — explain in otherDescription"
      :outcomes #{:no-issues :issues-found :other}
      :on-outcome
      {:no-issues {:next-step :review-breadth}
@@ -800,57 +788,41 @@ Report specific gaps found. If everything is complete and sufficiently detailed,
       :other {:action :exit :reason "user-provided-other"}}}
 
     :fix-completeness
-    {:prompt "Address the completeness and depth issues identified in the review.
+    {:prompt "Fill the completeness gaps the review identified — those and nothing else.
 
-## Guidelines
-- Add missing sections or details identified in the review
-- Ensure code examples are correct and follow project conventions
-- Keep additions focused - add what's needed, nothing more
-- Avoid scope creep: if something wasn't in the original design intent, don't add it
+Prefer concrete examples over abstract description, and verify anything you add
+against the actual codebase. Depth must not become scope creep: if it was not in
+the design's intent, it does not get added here.
 
-## Simplicity Reminder
-When adding depth, prefer:
-- Concrete examples over abstract descriptions
-- Simple solutions over clever ones
-- Fewer moving parts over comprehensive frameworks
-- Direct approaches over indirection
-
-After making changes, the design will be re-reviewed for completeness."
+## Choosing Your Outcome
+- `complete` — every gap addressed
+- `other` — explain in otherDescription"
      :outcomes #{:complete :other}
      :on-outcome
      {:complete {:next-step :review-completeness}
       :other {:action :exit :reason "user-provided-other"}}}
 
     :review-breadth
-    {:prompt "Review the design document for **breadth and coverage**.
+    {:prompt "Review the design document for **breadth**. The question this pass asks: what happens off the happy path?
 
-## Review Focus
-This pass examines whether the design considers the full picture - not just the happy path.
+Look for silence on:
+- Failure modes, and what detection and recovery look like
+- Backward compatibility and migration, if existing data or callers are affected
+- Performance and security implications, where the change plausibly has them
+- Observability — will we be able to tell this is working, or failing, once deployed?
 
-## Breadth Checklist
-- [ ] Failure modes identified (what can go wrong?)
-- [ ] Recovery strategies documented
-- [ ] Backward compatibility addressed (if modifying existing system)
-- [ ] Migration path clear (if data/schema changes)
-- [ ] Performance implications considered
-- [ ] Security implications addressed
-- [ ] Observability needs identified (logging, metrics, alerts)
-- [ ] Dependencies and their failure modes noted
+Calibration: not every design needs all of these — flag only what this change
+genuinely requires and the document ignores. An explicit statement that
+something is out of scope, with a reason, is a valid answer rather than a gap.
+On a re-review, check the previous findings were addressed rather than expanding
+the list.
 
-## Integration Checklist
-- [ ] Upstream dependencies documented
-- [ ] Downstream consumers identified
-- [ ] Cross-cutting concerns addressed (auth, logging, etc.)
-- [ ] Deployment considerations noted
+Review only — change nothing yet.
 
-## Important Constraints
-- **Do not make changes yet** - this is review only
-- Only flag items that are genuinely missing and needed
-- Not every design needs every item above - use judgment
-- Avoid adding complexity for hypothetical scenarios
-- If the design is intentionally narrow in scope, that's acceptable
-
-Report specific gaps in coverage. If breadth is adequate, report no issues."
+## Choosing Your Outcome
+- `no-issues` — coverage is adequate for this change
+- `issues-found` — genuine blind spots, listed
+- `other` — explain in otherDescription"
      :outcomes #{:no-issues :issues-found :other}
      :on-outcome
      {:no-issues {:next-step :review-simplicity}
@@ -858,61 +830,39 @@ Report specific gaps in coverage. If breadth is adequate, report no issues."
       :other {:action :exit :reason "user-provided-other"}}}
 
     :fix-breadth
-    {:prompt "Address the breadth and coverage issues identified in the review.
+    {:prompt "Address the coverage gaps the review identified — those and nothing else.
 
-## Guidelines
-- Add coverage for failure modes, integration points, etc. as identified
-- Keep additions proportional to the risk/importance
-- Document \"we considered X and decided not to handle it because Y\" where appropriate
+Keep additions proportional to real risk. Where the right answer is to not
+handle something, say so in the document — we considered X and are not handling
+it because Y — instead of designing machinery for it.
 
-## Simplicity Reminder
-When expanding coverage:
-- Prefer simple error handling over complex retry logic
-- Prefer clear failure modes over attempting to handle everything
-- It's OK to say \"this is out of scope\" in the design
-- Document tradeoffs rather than trying to solve everything
-
-After making changes, the design will be re-reviewed for breadth."
+## Choosing Your Outcome
+- `complete` — every gap addressed
+- `other` — explain in otherDescription"
      :outcomes #{:complete :other}
      :on-outcome
      {:complete {:next-step :review-breadth}
       :other {:action :exit :reason "user-provided-other"}}}
 
     :review-simplicity
-    {:prompt "Review the design document for **over-engineering and unnecessary complexity**.
+    {:prompt "Review the design document for **unnecessary complexity**. This pass hunts for things to remove.
 
-## Review Focus
-This pass looks for ways to SIMPLIFY the design. Simpler is better.
+Challenge every structure to justify itself:
+- Abstractions with a single concrete use; layers of indirection; framework-shaped patterns in application code
+- Configuration and extension points serving hypothetical future needs (YAGNI)
+- Generic solutions where the specific problem is simpler
+- Components that could be merged, inlined, or deleted outright
 
-## Over-Engineering Red Flags
-- [ ] Abstractions without multiple concrete uses
-- [ ] Configuration options that could be hardcoded
-- [ ] Extensibility points for hypothetical future needs
-- [ ] Generic solutions where specific ones would suffice
-- [ ] Multiple indirection layers
-- [ ] Complex state machines where simple conditionals work
-- [ ] Framework-like patterns in application code
+The boring design that solves exactly today's problem is the goal. But do not
+flag simplicity that is already there, and on a re-review, verify the prior
+findings were simplified rather than opening new fronts.
 
-## Simplification Opportunities
-- [ ] Can any component be eliminated entirely?
-- [ ] Can two similar things be merged into one?
-- [ ] Can a complex flow be linearized?
-- [ ] Can configuration be replaced with convention?
-- [ ] Can an abstraction be inlined?
-- [ ] Can error handling be simplified?
+Review only — change nothing yet.
 
-## YAGNI Check (You Aren't Gonna Need It)
-- [ ] Is anything being built \"for future use\"?
-- [ ] Are there features no one asked for?
-- [ ] Is there flexibility that isn't required?
-
-## Important Constraints
-- **Do not make changes yet** - this is review only
-- Challenge every abstraction: does it earn its complexity?
-- The best design is often the most boring one
-- Clever is the enemy of maintainable
-
-Report specific over-engineering found. If the design is appropriately simple, report no issues."
+## Choosing Your Outcome
+- `no-issues` — the design is appropriately simple
+- `issues-found` — over-engineering, listed
+- `other` — explain in otherDescription"
      :outcomes #{:no-issues :issues-found :other}
      :on-outcome
      {:no-issues {:next-step :review-consistency}
@@ -920,57 +870,38 @@ Report specific over-engineering found. If the design is appropriately simple, r
       :other {:action :exit :reason "user-provided-other"}}}
 
     :fix-simplicity
-    {:prompt "Simplify the over-engineered parts identified in the review.
+    {:prompt "Simplify what the review flagged — remove, inline, and specialize; do not add.
 
-## Guidelines
-- Remove unnecessary abstractions
-- Inline things that don't need to be separate
-- Replace generic with specific
-- Delete speculative features
+Delete speculative features and unneeded flexibility. Prefer duplication over
+the wrong abstraction. The document should come out shorter or clearer, usually
+both.
 
-## Simplification Principles
-- Delete code/design that isn't needed NOW
-- Prefer duplication over the wrong abstraction
-- Make it work, make it right, make it fast - in that order
-- The best code is no code at all
-
-After making changes, the design will be re-reviewed for simplicity."
+## Choosing Your Outcome
+- `complete` — flagged complexity removed
+- `other` — explain in otherDescription"
      :outcomes #{:complete :other}
      :on-outcome
      {:complete {:next-step :review-simplicity}
       :other {:action :exit :reason "user-provided-other"}}}
 
     :review-consistency
-    {:prompt "Review the design document for **internal consistency and alignment**.
+    {:prompt "Review the design document for **internal consistency and codebase alignment**.
 
-## Review Focus
-This pass checks that the design is coherent and aligned with the codebase.
+Check, verifying against the actual repository rather than from memory:
+- Terminology and data models agree across sections; no section contradicts another
+- Code examples use the project's real names, style, and patterns
+- Every referenced file, module, and document exists; links resolve
+- Integration points match how the codebase is actually structured
 
-## Internal Consistency
-- [ ] Terminology used consistently throughout
-- [ ] Code examples match the described approach
-- [ ] Data models in different sections agree
-- [ ] No contradictions between sections
-- [ ] Level of detail consistent across sections
+Flag inconsistencies and falsehoods, not stylistic preferences. On a re-review,
+confirm the previous findings were fixed.
 
-## Codebase Alignment
-- [ ] Naming follows project conventions
-- [ ] Patterns match existing codebase patterns
-- [ ] Code examples follow project style
-- [ ] Referenced files/modules exist
-- [ ] Integration points match actual codebase structure
+Review only — change nothing yet.
 
-## Cross-Reference Check
-- [ ] All referenced designs/docs exist
-- [ ] Links are valid
-- [ ] Dependencies are actually available
-
-## Important Constraints
-- **Do not make changes yet** - this is review only
-- Focus on inconsistencies, not preferences
-- Align with existing patterns, don't introduce new ones unnecessarily
-
-Report specific inconsistencies found. If the design is consistent, report no issues."
+## Choosing Your Outcome
+- `no-issues` — consistent and aligned
+- `issues-found` — specific inconsistencies, listed
+- `other` — explain in otherDescription"
      :outcomes #{:no-issues :issues-found :other}
      :on-outcome
      {:no-issues {:next-step :review-polish}
@@ -978,53 +909,36 @@ Report specific inconsistencies found. If the design is consistent, report no is
       :other {:action :exit :reason "user-provided-other"}}}
 
     :fix-consistency
-    {:prompt "Address the consistency issues identified in the review.
+    {:prompt "Fix the inconsistencies the review identified.
 
-## Guidelines
-- Standardize terminology throughout the document
-- Align code examples with the codebase style
-- Resolve contradictions (pick one approach, update all references)
-- Fix broken references and links
+Pick one term or approach and update every place it appears, correct code
+examples to match the codebase, and repair broken references.
 
-After making changes, the design will be re-reviewed for consistency."
+## Choosing Your Outcome
+- `complete` — every inconsistency resolved
+- `other` — explain in otherDescription"
      :outcomes #{:complete :other}
      :on-outcome
      {:complete {:next-step :review-consistency}
       :other {:action :exit :reason "user-provided-other"}}}
 
     :review-polish
-    {:prompt "Review the design document for **clarity, formatting, and polish**.
+    {:prompt "Final readability pass on the design document.
 
-## Review Focus
-This is the final pass - focus on readability and presentation.
+Look for what would trip up a reader: ambiguous statements, unexplained
+acronyms, leftover placeholder text or TODOs, broken formatting (unlabeled code
+fences, mangled tables, chaotic heading levels), typos that change meaning.
 
-## Clarity Checklist
-- [ ] Writing is concise and direct
-- [ ] Technical concepts explained at appropriate level
-- [ ] No ambiguous statements
-- [ ] Acronyms defined on first use
-- [ ] Complex ideas have examples
+Good enough is good enough — flag what affects understanding, not what you would
+merely phrase differently. On a re-review, confirm the previous findings were
+fixed.
 
-## Formatting Checklist
-- [ ] Headers create logical hierarchy
-- [ ] Code blocks properly formatted with language tags
-- [ ] Lists used appropriately
-- [ ] Tables readable and aligned
-- [ ] Consistent formatting throughout
+Review only — change nothing yet.
 
-## Polish Checklist
-- [ ] No typos or grammatical errors
-- [ ] No placeholder text remaining
-- [ ] No TODO comments left unaddressed
-- [ ] No commented-out content
-- [ ] Professional tone throughout
-
-## Important Constraints
-- **Do not make changes yet** - this is review only
-- Focus on issues that affect understanding
-- Don't over-polish - good enough is good enough
-
-Report specific polish issues found. If the document is polished, report no issues."
+## Choosing Your Outcome
+- `no-issues` — reads cleanly
+- `issues-found` — specific readability problems, listed
+- `other` — explain in otherDescription"
      :outcomes #{:no-issues :issues-found :other}
      :on-outcome
      {:no-issues {:next-step :final-review}
@@ -1032,42 +946,30 @@ Report specific polish issues found. If the document is polished, report no issu
       :other {:action :exit :reason "user-provided-other"}}}
 
     :fix-polish
-    {:prompt "Apply the polish fixes identified in the review.
+    {:prompt "Apply the readability fixes the review identified. Minimal edits — this is polish, not rewriting.
 
-## Guidelines
-- Fix typos and grammar
-- Improve clarity of confusing passages
-- Clean up formatting issues
-- Remove placeholder text
-
-Keep changes minimal - this is polish, not rewriting.
-
-After making changes, the design will be re-reviewed for polish."
+## Choosing Your Outcome
+- `complete` — fixes applied
+- `other` — explain in otherDescription"
      :outcomes #{:complete :other}
      :on-outcome
      {:complete {:next-step :review-polish}
       :other {:action :exit :reason "user-provided-other"}}}
 
     :final-review
-    {:prompt "Perform a **final sanity check** on the refined design.
+    {:prompt "Final sanity check: read the whole refined document once, fresh.
 
-## Final Review
-Read through the entire design one more time looking for anything that slipped through:
+- Does it still solve the stated problem, coherently, after all the edits?
+- Did the refinement passes leave seams — orphaned references, sections that no longer agree?
+- Would you implement from this without hesitation?
 
-- [ ] Does the design actually solve the stated problem?
-- [ ] Is there anything obviously wrong or missing?
-- [ ] Would you be comfortable implementing from this design?
-- [ ] Are there any remaining concerns?
+Then summarize the refinement for the user in a few bullets: what was added for
+completeness, expanded for breadth, simplified, aligned, and polished.
 
-## Summary
-Provide a brief summary of the refinements made:
-- What was added for completeness
-- What was expanded for breadth
-- What was simplified
-- What was fixed for consistency
-- What was polished
-
-If any issues remain, report them. Otherwise, confirm the design is ready to commit."
+## Choosing Your Outcome
+- `no-issues` — ready to commit
+- `issues-found` — remaining problems, listed
+- `other` — explain in otherDescription"
      :outcomes #{:no-issues :issues-found :other}
      :on-outcome
      {:no-issues {:next-step :commit}
@@ -1075,19 +977,24 @@ If any issues remain, report them. Otherwise, confirm the design is ready to com
       :other {:action :exit :reason "user-provided-other"}}}
 
     :fix-final
-    {:prompt "Address the final issues identified.
+    {:prompt "Fix the remaining issues from the final review. The document gets one more final check afterward.
 
-Fix the remaining issues, then the design will have one more final review."
+## Choosing Your Outcome
+- `complete` — issues fixed
+- `other` — explain in otherDescription"
      :outcomes #{:complete :other}
      :on-outcome
      {:complete {:next-step :final-review}
       :other {:action :exit :reason "user-provided-other"}}}
 
     :commit
-    {:prompt "Commit the refined design document.
+    {:prompt "Commit the refined design document with a message that summarizes the refinements made.
+Example: 'Refine user authentication design: add error handling, simplify token flow'
 
-Use a commit message that summarizes the refinements made.
-Example: 'Refine user authentication design: add error handling, simplify token flow'"
+## Choosing Your Outcome
+- `committed` — committed
+- `nothing-to-commit` — no changes were made
+- `other` — explain in otherDescription"
      :outcomes #{:committed :nothing-to-commit :other}
      :on-outcome
      {:committed {:action :exit :reason "design-refined-and-committed"}
@@ -1102,14 +1009,7 @@ Example: 'Refine user authentication design: add error handling, simplify token 
 (def design-break-impl-all-commit-step
   "Commit step for the tasks phase of design-break-impl-all.
    After committing the task breakdown, starts a fresh session running implement-and-review-all."
-  {:prompt "Commit and push the beads changes.
-
-## Commit Requirements
-- Run `br sync --flush-only` then stage issue state with `git add .beads/issues.jsonl`
-- Use the epic ID in the commit message
-- Write a clear commit message
-
-Example: 'Add implementation tasks for user authentication (epic-abc123)'"
+  {:prompt beads-commit-prompt
    :outcomes #{:committed :nothing-to-commit :other}
    :on-outcome
    {:committed {:action :restart-new-session :recipe-id :implement-and-review-all}
@@ -1124,7 +1024,9 @@ Example: 'Add implementation tasks for user authentication (epic-abc123)'"
    - Phase 3 (impl): restarts a fresh agent per iteration via implement-and-review-all
 
    Phases 1 and 2 share an agent session because design output feeds directly into
-   task breakdown. Phase 3 starts fresh sessions per task, same as implement-and-review-all."
+   task breakdown. Phase 3 starts fresh sessions per task, same as implement-and-review-all.
+   Prompts are shared with document-design and break-down-tasks (see the
+   design-*-prompt and tasks-*-prompt defs) so the recipes cannot drift apart."
   []
   {:id :design-break-impl-all
    :session-mode :accumulating
@@ -1135,93 +1037,7 @@ Example: 'Add implementation tasks for user authentication (epic-abc123)'"
    :steps
    {;; ── Phase 1: Document design ───────────────────────────────────────────
     :design-document
-    {:prompt "Create a detailed design document for the requested feature or change. Store as a markdown file following the repository's conventions for location and naming.
-
-## Document Structure
-
-Include the following sections:
-
-### 1. Overview
-- Problem statement: What problem does this solve?
-- Goals: What are we trying to achieve?
-- Non-goals: What is explicitly out of scope?
-
-### 2. Background & Context
-- Current state: How does the system work today?
-- Why now: What triggered this work?
-- Related work: Links to relevant documents, issues, or prior art
-
-### 3. Detailed Design
-
-#### Data Model
-- New or modified data structures
-- Schema changes with before/after examples
-- Migration strategy if applicable
-
-#### API Design
-- Endpoint signatures with request/response examples
-- Error cases and status codes
-- Breaking changes and deprecation plan
-
-#### Code Examples
-Provide concrete implementation examples:
-
-```clojure
-;; Example: Show the key function signatures
-(defn process-request
-  \"Process incoming request with validation.\"
-  [request]
-  ;; Implementation approach...
-  )
-```
-
-Include examples for:
-- Happy path usage
-- Error handling patterns
-- Edge cases
-
-#### Component Interactions
-- Sequence diagrams or flow descriptions
-- Integration points with existing systems
-- Dependency relationships
-
-### 4. Verification Strategy
-
-#### Testing Approach
-- Unit tests: What functions need direct testing?
-- Integration tests: What component interactions need verification?
-- End-to-end tests: What user workflows should be validated?
-
-#### Test Examples
-```clojure
-(deftest process-request-test
-  (testing \"validates required fields\"
-    (is (thrown? ExceptionInfo (process-request {}))))
-  (testing \"returns processed result\"
-    (is (= expected-result (process-request valid-input)))))
-```
-
-#### Acceptance Criteria
-- Numbered list of verifiable requirements
-- Each criterion should be testable
-
-### 5. Alternatives Considered
-- What other approaches were evaluated?
-- Why was this approach chosen?
-- Trade-offs of the chosen approach
-
-### 6. Risks & Mitigations
-- What could go wrong?
-- How will we detect problems?
-- Rollback strategy
-
-## Quality Checklist
-Before marking complete, verify:
-- [ ] All code examples are syntactically correct
-- [ ] Examples match the codebase's style and conventions
-- [ ] Verification steps are specific and actionable
-- [ ] Cross-references to related files use @filename.md format
-- [ ] No placeholder text remains"
+    {:prompt design-document-prompt
      :outcomes #{:complete :needs-input :other}
      :on-outcome
      {:complete {:next-step :design-review}
@@ -1229,14 +1045,7 @@ Before marking complete, verify:
       :other {:action :exit :reason "user-provided-other"}}}
 
     :design-review
-    {:prompt "Review the design document you created. Check for:
-- Completeness: Are all sections filled in with substantive content?
-- Correctness: Do code examples compile/parse correctly?
-- Clarity: Would another developer understand the design?
-- Consistency: Does it align with existing patterns in the codebase?
-- Actionability: Are verification steps specific enough to execute?
-
-Report any gaps or issues found. Do not make changes yet."
+    {:prompt design-review-prompt
      :outcomes #{:no-issues :issues-found :other}
      :on-outcome
      {:no-issues {:next-step :design-commit}
@@ -1244,14 +1053,14 @@ Report any gaps or issues found. Do not make changes yet."
       :other {:action :exit :reason "user-provided-other"}}}
 
     :design-fix
-    {:prompt "Address the issues found in the design document review."
+    {:prompt design-fix-prompt
      :outcomes #{:complete :other}
      :on-outcome
      {:complete {:next-step :design-review}
       :other {:action :exit :reason "user-provided-other"}}}
 
     :design-commit
-    {:prompt "Commit and push the design document. Use a descriptive commit message that summarizes what is being designed."
+    {:prompt design-commit-prompt
      :outcomes #{:committed :nothing-to-commit :other}
      :on-outcome
      ;; Do not exit — continue in the same session into task breakdown phase
@@ -1261,24 +1070,7 @@ Report any gaps or issues found. Do not make changes yet."
 
     ;; ── Phase 2: Break down tasks (same agent session as Phase 1) ──────────
     :tasks-analyze
-    {:prompt "Analyze the design document to understand the implementation scope.
-
-## Prerequisites
-1. Run `br robot-docs guide` to understand beads workflow if unfamiliar
-2. Locate the design document for this feature (you just created it in the previous phase)
-3. Read the design document thoroughly
-
-## Analysis Steps
-1. Identify all components that need to be created or modified
-2. Map acceptance criteria to concrete implementation work
-3. Identify dependencies between pieces of work
-4. Note any verification steps from the design
-
-Report your analysis including:
-- Key components to implement
-- Dependency graph (what must be done before what)
-- Estimated number of tasks needed
-- Any ambiguities or gaps in the design"
+    {:prompt tasks-analyze-prompt
      :outcomes #{:complete :design-missing :needs-input :other}
      :on-outcome
      {:complete {:next-step :tasks-create-epic}
@@ -1287,166 +1079,21 @@ Report your analysis including:
       :other {:action :exit :reason "user-provided-other"}}}
 
     :tasks-create-epic
-    {:prompt "Create the parent epic for this implementation work.
-
-## Epic Creation
-Run `br create` to create an epic with:
-- **Title**: Clear, concise name for the feature/change
-- **Description**: Reference the design document using @path/to/design.md
-- **Type**: epic
-
-The epic description should include:
-```
-## Design Document
-@path/to/design-document.md
-
-## Overview
-[Brief summary of what this epic delivers]
-
-## Acceptance Criteria
-[Copy or reference the acceptance criteria from the design]
-```"
+    {:prompt tasks-create-epic-prompt
      :outcomes #{:complete :other}
      :on-outcome
      {:complete {:next-step :tasks-create-tasks}
       :other {:action :exit :reason "user-provided-other"}}}
 
     :tasks-create-tasks
-    {:prompt "Create individual implementation tasks as children of the epic.
-
-## Task Creation Guidelines
-
-For each task, run `br create` with:
-- **Parent**: The epic you just created
-- **Title**: Action-oriented (e.g., 'Add validation to user input handler')
-- **Type**: task
-
-### Task Granularity
-Each task should be:
-- **Atomic**: Completes one logical unit of work
-- **Testable**: Has clear verification criteria
-- **Independent**: Can be worked on without blocking others (where possible)
-- **Small**: Completable in a single focused session
-
-### Required Task Sections
-
-Each task description must include:
-
-```
-## Design Reference
-@path/to/design-document.md#relevant-section
-
-## Context
-[Why this task exists and how it fits into the larger feature]
-
-## Requirements
-- [ ] Specific requirement 1
-- [ ] Specific requirement 2
-
-## Technical Approach
-[Key implementation details from the design document]
-- Files to modify: [list specific files]
-- New files to create: [if any]
-- Dependencies: [other tasks that must complete first]
-
-## Verification
-- [ ] Unit tests for [specific functionality]
-- [ ] Integration test for [specific interaction]
-- [ ] Manual verification: [specific steps]
-
-## Acceptance Criteria
-[Subset of epic criteria this task addresses]
-```
-
-### Task Ordering
-Create tasks in dependency order:
-1. Foundation tasks (data models, schemas, migrations)
-2. Core logic tasks (business logic, algorithms)
-3. Integration tasks (API endpoints, event handlers)
-4. UI tasks (if applicable)
-5. Documentation tasks (if needed beyond design doc)
-
-### Parallelization
-Mark tasks that can be worked in parallel with a note:
-```
-## Parallelization
-Can be worked alongside: [list task titles]
-```
-
-### Setting Up Dependency Links
-
-After creating all tasks, establish dependency links using `br dep add`.
-This ensures `br ready` only shows tasks that are actually ready to work on.
-
-**Syntax:** `br dep add <blocked-task> <blocking-task>`
-(The blocked-task depends on blocking-task completing first)
-
-**Required dependencies:**
-1. Epic depends on ALL child tasks (epic can't close until children complete):
-   ```bash
-   br dep add <epic-id> <child-task-1>
-   br dep add <epic-id> <child-task-2>
-   # ... repeat for each child
-   ```
-
-2. Tasks depend on their prerequisites (tests depend on implementation, etc.):
-   ```bash
-   # Example: \"Write tests\" depends on \"Implement handler\"
-   br dep add <test-task-id> <impl-task-id>
-   ```
-
-**Verify with:** `br blocked` to see dependency relationships"
+    {:prompt tasks-create-tasks-prompt
      :outcomes #{:complete :other}
      :on-outcome
      {:complete {:next-step :tasks-review}
       :other {:action :exit :reason "user-provided-other"}}}
 
     :tasks-review
-    {:prompt "Review the task breakdown for completeness and quality.
-
-## Review Checklist
-
-### Coverage
-- [ ] All acceptance criteria from design are addressed by at least one task
-- [ ] All components from design have corresponding tasks
-- [ ] Verification strategy from design is reflected in task verification sections
-
-### Task Quality
-- [ ] Each task has a design document reference
-- [ ] Each task has clear requirements
-- [ ] Each task has verification steps
-- [ ] No task is too large (should be completable in one session)
-- [ ] No task is too vague (specific files and changes identified)
-
-### Dependencies
-- [ ] Task dependencies are explicitly stated in descriptions
-- [ ] No circular dependencies exist
-- [ ] Foundation tasks come before dependent tasks
-- [ ] Parallelizable tasks are marked
-
-### Dependency Links (Critical)
-Run these commands to verify dependency links are properly set up:
-
-1. **Check blocked tasks:** `br blocked`
-   - Tasks with prerequisites should appear here
-   - If nothing is blocked but tasks have dependencies, links are missing
-
-2. **Check epic dependencies:** `br show <epic-id>`
-   - Epic should show \"Depends on\" section listing ALL child tasks
-   - If missing, epic will show as \"ready\" before children complete
-
-3. **Check ready tasks:** `br ready`
-   - Only foundation tasks (no prerequisites) should appear
-   - If all tasks appear, dependency links are missing
-
-### Traceability
-- [ ] Epic references the design document
-- [ ] Each task references the relevant design section
-- [ ] Acceptance criteria map back to design
-
-Run `br list` to see the created structure.
-
-Report any issues found."
+    {:prompt tasks-review-prompt
      :outcomes #{:no-issues :issues-found :other}
      :on-outcome
      {:no-issues {:next-step :tasks-commit}
@@ -1454,13 +1101,7 @@ Report any issues found."
       :other {:action :exit :reason "user-provided-other"}}}
 
     :tasks-fix
-    {:prompt "Address the issues found in the task review.
-
-Use `br update <task-id> --description/--notes/--design` to update task descriptions.
-Use `br create` to create missing tasks.
-Use `br delete <task-id>` to remove duplicate or unnecessary tasks.
-Use `br dep add <blocked> <blocking>` to add missing dependency links.
-Use `br dep remove <blocked> <blocking>` to remove incorrect dependencies."
+    {:prompt tasks-fix-prompt
      :outcomes #{:complete :other}
      :on-outcome
      {:complete {:next-step :tasks-review}

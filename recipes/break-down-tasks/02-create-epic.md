@@ -2,23 +2,23 @@
 
 Create the parent epic for this implementation work.
 
-## Epic Creation
-Run `br create` to create an epic with:
-- **Title**: Clear, concise name for the feature/change
-- **Description**: Reference the design document using @path/to/design.md
-- **Type**: epic
+Run `br create --type epic` with a clear, concise title for the feature and a
+description containing:
 
-The epic description should include:
 ```
 ## Design Document
 @path/to/design-document.md
 
 ## Overview
-[Brief summary of what this epic delivers]
+[What this epic delivers, in a sentence or two]
 
 ## Acceptance Criteria
-[Copy or reference the acceptance criteria from the design]
+[The acceptance criteria from the design]
 ```
+
+## Choosing Your Outcome
+- `complete` — epic created
+- `other` — explain in otherDescription
 
 **Outcomes:** complete, other
 

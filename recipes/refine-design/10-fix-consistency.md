@@ -1,14 +1,13 @@
 # Fix Consistency
 
-Address the consistency issues identified in the review.
+Fix the inconsistencies the review identified.
 
-## Guidelines
-- Standardize terminology throughout the document
-- Align code examples with the codebase style
-- Resolve contradictions (pick one approach, update all references)
-- Fix broken references and links
+Pick one term or approach and update every place it appears, correct code
+examples to match the codebase, and repair broken references.
 
-After making changes, the design will be re-reviewed for consistency.
+## Choosing Your Outcome
+- `complete` — every inconsistency resolved
+- `other` — explain in otherDescription
 
 **Outcomes:** complete, other
 

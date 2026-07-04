@@ -1,20 +1,14 @@
 # Fix Simplicity
 
-Simplify the over-engineered parts identified in the review.
+Simplify what the review flagged — remove, inline, and specialize; do not add.
 
-## Guidelines
-- Remove unnecessary abstractions
-- Inline things that don't need to be separate
-- Replace generic with specific
-- Delete speculative features
+Delete speculative features and unneeded flexibility. Prefer duplication over
+the wrong abstraction. The document should come out shorter or clearer, usually
+both.
 
-## Simplification Principles
-- Delete code/design that isn't needed NOW
-- Prefer duplication over the wrong abstraction
-- Make it work, make it right, make it fast - in that order
-- The best code is no code at all
-
-After making changes, the design will be re-reviewed for simplicity.
+## Choosing Your Outcome
+- `complete` — flagged complexity removed
+- `other` — explain in otherDescription
 
 **Outcomes:** complete, other
 

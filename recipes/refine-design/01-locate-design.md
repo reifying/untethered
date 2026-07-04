@@ -2,12 +2,17 @@
 
 Locate and read the design document to be refined.
 
-## Instructions
-1. Identify the design document (user should have specified which one, or it may be the most recent)
-2. Read the entire document thoroughly
-3. Note the current structure and content
+The user should have named it; if not, look for the most recently modified
+design document in the repository's docs directories (check `git log` on those
+paths). Read it fully and note its structure.
 
-Report what you found and confirm you're ready to begin the refinement process.
+Report which document you found and a one-paragraph summary of what it designs,
+so a wrong pick is caught before refinement begins.
+
+## Choosing Your Outcome
+- `found` — document located and read
+- `not-found` — no design document could be identified
+- `other` — explain in otherDescription
 
 **Outcomes:** found, not-found, other
 
@@ -15,5 +20,3 @@ Report what you found and confirm you're ready to begin the refinement process.
 - `found` → **Review Completeness**
 - `not-found` → **exit** (design-document-not-found)
 - `other` → **exit** (user-provided-other)
-
-**Model:** `haiku`

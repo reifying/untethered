@@ -1,20 +1,14 @@
 # Fix Breadth
 
-Address the breadth and coverage issues identified in the review.
+Address the coverage gaps the review identified — those and nothing else.
 
-## Guidelines
-- Add coverage for failure modes, integration points, etc. as identified
-- Keep additions proportional to the risk/importance
-- Document "we considered X and decided not to handle it because Y" where appropriate
+Keep additions proportional to real risk. Where the right answer is to not
+handle something, say so in the document — we considered X and are not handling
+it because Y — instead of designing machinery for it.
 
-## Simplicity Reminder
-When expanding coverage:
-- Prefer simple error handling over complex retry logic
-- Prefer clear failure modes over attempting to handle everything
-- It's OK to say "this is out of scope" in the design
-- Document tradeoffs rather than trying to solve everything
-
-After making changes, the design will be re-reviewed for breadth.
+## Choosing Your Outcome
+- `complete` — every gap addressed
+- `other` — explain in otherDescription
 
 **Outcomes:** complete, other
 

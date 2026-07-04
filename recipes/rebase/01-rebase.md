@@ -1,36 +1,36 @@
 # Rebase
 
-Rebase on the local (not remote) main branch.
+Rebase the current branch onto the **local** `main` branch. Local main is the target — do not fetch, and do not rebase onto origin/main.
 
 ## Before Starting
-1. Ensure working directory is clean (`git status`)
-2. Fetch latest changes (`git fetch origin`)
-3. Check current branch name
+- `git status` must be clean, with no rebase or merge already in progress. If
+  the tree is dirty or a rebase is mid-flight, choose `other` and describe the
+  state instead of plowing ahead.
+- Note the current branch, and record `git log --oneline main..HEAD` so you know
+  which commits are being replayed.
 
-## Rebase Best Practices
+## Execute
+Run `git rebase main` and resolve any conflicts.
 
-### Preserve Intent of Both Branches
-- The goal is to replay your commits on top of main while preserving the intent of BOTH branches
-- Your branch's changes should achieve their original purpose
-- Main's changes should remain intact and functional
-- The combined result should honor both sets of changes
+Every resolution must preserve the intent of both branches: your commits should
+still accomplish what they set out to do, and main's changes must remain intact
+and functional.
 
-### Conflict Resolution Guidelines
-- Read both versions carefully before making changes
-- Understand WHY each change was made, not just WHAT changed
-- If main refactored code your branch modifies, apply your changes to the new structure
-- If both branches modified the same logic, combine the intents thoughtfully
-- Test after resolving conflicts to ensure nothing is broken
+- Read both sides of each conflict and understand WHY each changed, not just what
+- If main refactored code your branch touches, re-express your change in the new structure
+- Never resolve by wholesale taking one side without reading the other
+- After the rebase completes, run the test suite
 
-### When in Doubt
-- If the correct resolution is unclear, select the `ask-questions` outcome
-- It's better to ask than to guess and introduce bugs
-- Provide context about what's unclear when asking
+## If You Cannot Resolve Cleanly
+Do not leave the repository mid-rebase. Run `git rebase --abort` to restore the
+branch, then exit through the matching outcome below. Asking is better than
+guessing and burying a bug in a conflict resolution.
 
-## Execution
-Run: `git rebase main`
-
-Handle any conflicts that arise following the guidelines above.
+## Choosing Your Outcome
+- `complete` — rebase finished, conflicts resolved, tests pass
+- `ask-questions` — aborted the rebase; a resolution depends on a judgment call the user should make (state the specific question)
+- `conflicts-unresolvable` — aborted the rebase; the branches' changes genuinely cannot be reconciled without human intervention
+- `other` — anything else (dirty tree, rebase already in progress, tests failing before you started); explain in otherDescription
 
 **Outcomes:** ask-questions, complete, conflicts-unresolvable, other
 

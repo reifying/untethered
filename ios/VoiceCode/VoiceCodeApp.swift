@@ -65,9 +65,11 @@ struct VoiceCodeApp: App {
             )
             .environment(\.managedObjectContext, persistenceController.container.viewContext)
             .environmentObject(draftManager)
-            #if os(iOS)
+            // Injected on BOTH platforms: macOS ConversationView / ConversationVoiceInputView
+            // now consume headsetManager via @EnvironmentObject (mic button shares the
+            // session reducer). Without this the macOS window tree lacks it and rendering a
+            // selected session traps with "No ObservableObject of type … found".
             .environmentObject(headsetManager)
-            #endif
         }
         #if os(macOS)
         .commands {

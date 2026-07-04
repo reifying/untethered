@@ -1,6 +1,11 @@
 # Commit
 
-Commit and push the design document. Use a descriptive commit message that summarizes what is being designed.
+Commit and push the design document. Write a commit message that summarizes what is being designed and the key decisions made.
+
+## Choosing Your Outcome
+- `committed` — committed and pushed
+- `nothing-to-commit` — no changes to commit
+- `other` — explain in otherDescription
 
 **Outcomes:** committed, nothing-to-commit, other
 
@@ -8,5 +13,3 @@ Commit and push the design document. Use a descriptive commit message that summa
 - `committed` → **exit** (design-committed)
 - `nothing-to-commit` → **exit** (no-changes-to-commit)
 - `other` → **exit** (user-provided-other)
-
-**Model:** `haiku`

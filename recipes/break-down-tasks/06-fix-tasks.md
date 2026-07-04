@@ -1,12 +1,15 @@
 # Fix Tasks
 
-Address the issues found in the task review.
+Fix the problems the task review identified — those and nothing else.
 
-Use `br update <task-id> --description/--notes/--design` to update task descriptions.
-Use `br create` to create missing tasks.
-Use `br delete <task-id>` to remove duplicate or unnecessary tasks.
-Use `br dep add <blocked> <blocking>` to add missing dependency links.
-Use `br dep remove <blocked> <blocking>` to remove incorrect dependencies.
+Useful commands:
+- `br update <task-id> --description/--design/--notes/--acceptance-criteria` — amend a task
+- `br create` / `br delete <task-id>` — add missing or remove duplicate tasks
+- `br dep add <blocked> <blocking>` / `br dep remove <blocked> <blocking>` — correct links
+
+## Choosing Your Outcome
+- `complete` — every reviewed issue is addressed
+- `other` — explain in otherDescription
 
 **Outcomes:** complete, other
 

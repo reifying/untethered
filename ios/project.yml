@@ -14,7 +14,7 @@ settings:
     DEVELOPMENT_TEAM: ${DEVELOPMENT_TEAM}
     CODE_SIGN_STYLE: Automatic
     MARKETING_VERSION: "1.0"
-    CURRENT_PROJECT_VERSION: 126
+    CURRENT_PROJECT_VERSION: 128
     IPHONEOS_DEPLOYMENT_TARGET: "18.5"
   configs:
     Debug:
@@ -144,6 +144,7 @@ targets:
           - "BridgingHeader.h"
           - "Managers/DeviceAudioSessionManager.swift"
           - "Managers/BlueParrottButtonManager.swift"
+          - "Managers/BPSniffer.swift"
           - "Views/QRScannerView.swift"
     resources:
       - VoiceCode/Assets.xcassets
@@ -158,6 +159,7 @@ targets:
         NSMicrophoneUsageDescription: Untethered needs microphone access for voice input to control Claude.
         NSSpeechRecognitionUsageDescription: Untethered needs speech recognition to transcribe your voice commands.
         NSLocalNetworkUsageDescription: Untethered needs to connect to your backend server on your local network.
+        NSBluetoothAlwaysUsageDescription: Untethered uses Bluetooth to connect to your BlueParrott headset for hands-free voice control.
         CFBundleURLTypes:
           - CFBundleURLSchemes:
               - voicecode
@@ -168,6 +170,7 @@ targets:
         com.apple.security.app-sandbox: true
         com.apple.security.network.client: true
         com.apple.security.device.audio-input: true
+        com.apple.security.device.bluetooth: true
         com.apple.security.files.user-selected.read-write: true
     settings:
       base:
@@ -185,7 +188,10 @@ targets:
     sources:
       - path: VoiceCodeTests
         excludes:
-          - "BluetoothAudioMonitorTests.swift"
+          - "BlueParrottBLEManagerTests.swift"
+          - "HeadsetRemoteCommandManagerMacTests.swift"
+          - "HeadsetEarconPlayerTests.swift"
+          - "MacAudioOutputRouterTests.swift"
     resources:
       - VoiceCodeTests/Fixtures
     dependencies:

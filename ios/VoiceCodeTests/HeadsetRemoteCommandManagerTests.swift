@@ -1,7 +1,11 @@
 // HeadsetRemoteCommandManagerTests.swift
-// Unit tests for HeadsetRemoteCommandManager state machine and auto-send logic.
+// Unit tests for HeadsetRemoteCommandManager's cross-platform lifecycle (activate /
+// deactivate / settings / reclaim) plus the iOS HeadsetState machine + auto-send.
 // Included in both VoiceCodeTests (iOS) and VoiceCodeMacTests targets.
-// PTT-specific tests are guarded by #if os(macOS) because PTT monitoring is macOS-only.
+// The iOS state-machine + message-shape tests are guarded by #if os(iOS) (they drive
+// the implicit HeadsetState via the media-key `simulate*` hooks, which are iOS-only).
+// The macOS SessionReducer-executor integration tests live in
+// HeadsetRemoteCommandManagerMacTests.swift (excluded from the iOS target).
 
 import XCTest
 @testable import VoiceCode
@@ -11,6 +15,11 @@ import XCTest
 class MockVoiceInputForHeadset: VoiceInputManager {
     var startRecordingCalled = false
     var stopRecordingCalled = false
+    /// F3 capture-readiness seams: count restart calls and stub the live buffer count
+    /// so the macOS session executor's capture-grace logic can be exercised without a
+    /// real audio route.
+    var restartCaptureCallCount = 0
+    var stubBufferCount = 0
 
     override func startRecording(onSessionReady: (() -> Void)? = nil) {
         startRecordingCalled = true
@@ -22,6 +31,12 @@ class MockVoiceInputForHeadset: VoiceInputManager {
         stopRecordingCalled = true
         DispatchQueue.main.async { self.isRecording = false }
     }
+
+    override func restartCapture() {
+        restartCaptureCallCount += 1
+    }
+
+    override var capturedBufferCount: Int { stubBufferCount }
 }
 
 class MockVoiceOutputForHeadset: VoiceOutputManager {
@@ -39,6 +54,13 @@ class MockVoiceCodeClientForHeadset: VoiceCodeClient {
     override func sendMessage(_ message: [String: Any]) {
         lastSentMessage = message
     }
+}
+
+/// Records which earcons were requested, so audible-cue wiring can be asserted without a
+/// live audio route.
+final class SpyEarconPlayer: EarconPlaying {
+    var played: [Earcon] = []
+    func play(_ earcon: Earcon) { played.append(earcon) }
 }
 
 struct HeadsetMockDependencies {
@@ -64,6 +86,11 @@ struct HeadsetMockDependencies {
             setupObservers: false
         )
         client.isConnected = true
+        // Default to a recording that captured audio, so send-path tests exercise the send.
+        // The send is now guarded on real capture (buffers>0) to prevent resending stale
+        // `transcribedText` after a no-audio recording (e.g. phone locked); tests that model
+        // "no audio captured" set stubBufferCount = 0 explicitly.
+        voiceInput.stubBufferCount = 10
     }
 }
 
@@ -75,14 +102,165 @@ final class HeadsetRemoteCommandManagerTests: XCTestCase {
         super.setUp()
         UserDefaults.standard.removeObject(forKey: "headsetModeEnabled")
         UserDefaults.standard.removeObject(forKey: "headsetAutoSend")
-        UserDefaults.standard.removeObject(forKey: "headsetPTTEnabled")
+        UserDefaults.standard.removeObject(forKey: "blueParrottEnabled")
     }
 
     override func tearDown() {
         UserDefaults.standard.removeObject(forKey: "headsetModeEnabled")
         UserDefaults.standard.removeObject(forKey: "headsetAutoSend")
-        UserDefaults.standard.removeObject(forKey: "headsetPTTEnabled")
+        UserDefaults.standard.removeObject(forKey: "blueParrottEnabled")
         super.tearDown()
+    }
+
+    // The implicit-HeadsetState machine and the media-key `simulate*` hooks are
+    // iOS-only now; macOS drives the pure SessionReducer via a thin executor (see
+    // HeadsetRemoteCommandManagerMacTests). These state-machine + message-shape tests
+    // run only in the iOS target.
+    #if os(iOS)
+
+    // MARK: - BlueParrott gesture de-bracketing (raw down/up/tap/long-press → one gesture)
+
+    /// Flush the initial Combine deliveries (e.g. blueParrottEnabled=false → stopBlueParrott,
+    /// which nils the recognizer) so a test can install its own recognizer afterward.
+    private func drainMain() {
+        let e = expectation(description: "main drain")
+        DispatchQueue.main.async { e.fulfill() }
+        wait(for: [e], timeout: 1.0)
+    }
+
+    /// Hold-to-talk: a held press is the raw stream `down, [hold timer], longPressCode, up`.
+    /// It must RECORD on hold and SEND on release — and the `longPressCode` arriving
+    /// mid-hold must be DROPPED, not fire an interrupt (the bug where releasing didn't send).
+    func testBlueParrottHold_recordsThenSendsOnRelease_longPressCodeDropped() {
+        let (manager, mocks) = makeManager()
+        manager.activate()
+        drainMain()
+        var holdBlock: (() -> Void)?
+        manager.gestureScheduleAfter = { _, block in holdBlock = block }   // capture, fire manually
+        manager.testInstallGestureRecognizer()
+        XCTAssertEqual(manager.state, .ready)
+
+        manager.blueParrottButtonDown()          // arms the hold timer (captured)
+        holdBlock?()                             // threshold elapses while still down → holdStarted
+        XCTAssertEqual(manager.state, .recording, "hold past threshold starts recording")
+        XCTAssertTrue(mocks.voiceInput.startRecordingCalled)
+
+        manager.blueParrottLongPress()           // raw 0x04 inside the hold bracket — must be DROPPED
+        XCTAssertEqual(manager.state, .recording, "long-press code must NOT interrupt a hold")
+        XCTAssertFalse(mocks.voiceOutput.stopCalled, "no TTS interrupt during hold-to-talk")
+
+        manager.blueParrottButtonUp()            // release → holdEnded → stop + send
+        XCTAssertEqual(manager.state, .sending, "releasing a hold sends (leaves .recording via stop+send)")
+        XCTAssertTrue(mocks.voiceInput.stopRecordingCalled)
+    }
+
+    /// Quick tap: the raw stream is `down, up, tapCode`, but only ONE clean `.tap` must act —
+    /// NOT down→start + up→stop + tap→reset (the bug where a tap reset a just-started send).
+    func testBlueParrottTap_singleAction_rawDownUpDoNotActIndependently() {
+        let (manager, mocks) = makeManager()
+        manager.activate()
+        drainMain()
+        manager.gestureScheduleAfter = { _, _ in }   // never fire the hold timer (quick release)
+        manager.testInstallGestureRecognizer()
+        XCTAssertEqual(manager.state, .ready)
+
+        manager.blueParrottButtonDown()   // arms hold timer (never fires)
+        manager.blueParrottButtonUp()     // quick release — no holdStarted; classified by trailing code
+        manager.blueParrottTap()          // tapCode → exactly one .tap
+
+        XCTAssertEqual(manager.state, .recording, "one tap from ready starts recording, exactly once")
+        XCTAssertTrue(mocks.voiceInput.startRecordingCalled)
+        XCTAssertFalse(mocks.voiceInput.stopRecordingCalled, "the raw `up` must not independently stop/send")
+    }
+
+    /// A second tap toggles the recording closed (stop+send); the bracketing raw down/up
+    /// don't double-fire.
+    func testBlueParrottTap_secondTap_finalizesAndSends() {
+        let (manager, mocks) = makeManager()
+        manager.activate()
+        drainMain()
+        manager.gestureScheduleAfter = { _, _ in }
+        manager.testInstallGestureRecognizer()
+
+        manager.blueParrottButtonDown(); manager.blueParrottButtonUp(); manager.blueParrottTap()
+        XCTAssertEqual(manager.state, .recording)
+
+        manager.blueParrottButtonDown(); manager.blueParrottButtonUp(); manager.blueParrottTap()
+        XCTAssertEqual(manager.state, .sending, "second tap finalizes and sends")
+        XCTAssertTrue(mocks.voiceInput.stopRecordingCalled)
+    }
+
+    // MARK: - Audible cues (eyes-free start/stop feedback)
+
+    /// Recording start plays the `.listening` cue ("mic is live, talk now").
+    func testCue_listeningOnRecordStart() {
+        let (manager, mocks) = makeManager()
+        let spy = SpyEarconPlayer()
+        manager.earconPlayer = spy
+        mocks.settings.headsetAudibleCuesEnabled = true
+        manager.activate()
+        drainMain()
+        manager.gestureScheduleAfter = { _, _ in }
+        manager.testInstallGestureRecognizer()
+
+        manager.blueParrottButtonDown(); manager.blueParrottButtonUp(); manager.blueParrottTap()
+
+        XCTAssertEqual(manager.state, .recording)
+        XCTAssertTrue(spy.played.contains(.listening), "record start plays the listening cue")
+    }
+
+    /// Stopping with nothing recognized plays the `.error` cue (not `.sent`).
+    func testCue_errorOnEmptyTranscriptionStop() {
+        let (manager, mocks) = makeManager()
+        let spy = SpyEarconPlayer()
+        manager.earconPlayer = spy
+        mocks.settings.headsetAudibleCuesEnabled = true
+        manager.activate()
+        drainMain()
+        manager.gestureScheduleAfter = { _, _ in }
+        manager.testInstallGestureRecognizer()
+        mocks.voiceInput.transcribedText = ""   // nothing recognized
+
+        manager.blueParrottButtonDown(); manager.blueParrottButtonUp(); manager.blueParrottTap()  // record
+        manager.blueParrottButtonDown(); manager.blueParrottButtonUp(); manager.blueParrottTap()  // stop
+        drainMain()   // run the deferred transcription read + cue
+
+        XCTAssertTrue(spy.played.contains(.error), "empty transcription on stop plays the error cue")
+        XCTAssertFalse(spy.played.contains(.sent), "no 'got it' cue when nothing was recognized")
+    }
+
+    /// No cues when the user has opted out.
+    func testCue_suppressedWhenDisabled() {
+        let (manager, mocks) = makeManager()
+        let spy = SpyEarconPlayer()
+        manager.earconPlayer = spy
+        mocks.settings.headsetAudibleCuesEnabled = false
+        manager.activate()
+        drainMain()
+        manager.gestureScheduleAfter = { _, _ in }
+        manager.testInstallGestureRecognizer()
+
+        manager.blueParrottButtonDown(); manager.blueParrottButtonUp(); manager.blueParrottTap()
+        drainMain()
+
+        XCTAssertEqual(manager.state, .recording)
+        XCTAssertTrue(spy.played.isEmpty, "no cues play when audible cues are disabled")
+    }
+
+    /// Canceling the assistant's speech plays the distinct `.cancelled` cue — NOT the
+    /// `.listening` record-start chirp — so cancel and start are audibly different.
+    func testCue_cancelledOnInterrupt_distinctFromStart() {
+        let (manager, mocks) = makeManager()
+        let spy = SpyEarconPlayer()
+        manager.earconPlayer = spy
+        mocks.settings.headsetAudibleCuesEnabled = true
+        manager.activate()
+        drainMain()
+
+        manager.simulateInterrupt()   // performInterrupt → .cancelled
+
+        XCTAssertTrue(spy.played.contains(.cancelled), "canceling output plays the cancelled cue")
+        XCTAssertFalse(spy.played.contains(.listening), "an interrupt must not sound like a record-start")
     }
 
     // MARK: - State Machine: Toggle Play/Pause
@@ -130,6 +308,27 @@ final class HeadsetRemoteCommandManagerTests: XCTestCase {
             XCTAssertEqual(mocks.client.lastSentMessage?["text"] as? String, "test prompt")
             XCTAssertEqual(mocks.client.lastSentMessage?["working_directory"] as? String, "/test/working-dir")
             XCTAssertEqual(mocks.client.lastSentMessage?["resume_session_id"] as? String, expectedSessionId)
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 1.0)
+    }
+
+    /// Locked-phone / no-audio regression: a press that records but captures NO audio
+    /// (buffers=0) must NOT send — `transcribedText` still holds the previous message, and
+    /// sending it would resend the last message. The press returns to ready instead.
+    func testStopRecording_noAudioCaptured_doesNotResendStaleText() {
+        let (manager, mocks) = makeManager()
+        manager.activate()
+        manager.simulateTogglePlayPause()                  // → .recording
+        mocks.voiceInput.transcribedText = "Testing"       // STALE text from a prior recording
+        mocks.voiceInput.stubBufferCount = 0               // this recording captured nothing (locked)
+
+        manager.simulateTogglePlayPause()                  // → .sending → async read
+
+        let expectation = expectation(description: "async no-send")
+        DispatchQueue.main.async {
+            XCTAssertNil(mocks.client.lastSentMessage, "no audio captured → must not resend stale transcription")
+            XCTAssertEqual(manager.state, .ready, "returns to ready after a no-audio recording")
             expectation.fulfill()
         }
         wait(for: [expectation], timeout: 1.0)
@@ -308,7 +507,9 @@ final class HeadsetRemoteCommandManagerTests: XCTestCase {
         wait(for: [expectation], timeout: 1.0)
     }
 
-    // MARK: - Activate / Deactivate
+    #endif  // iOS state-machine tests
+
+    // MARK: - Activate / Deactivate (cross-platform)
 
     func testActivate_setsIsActive() {
         let (manager, _) = makeManager()
@@ -326,7 +527,12 @@ final class HeadsetRemoteCommandManagerTests: XCTestCase {
         manager.deactivate()
 
         XCTAssertFalse(manager.isActive)
+        // Deactivate resets the interaction state to its idle value on both platforms.
+        #if os(iOS)
         XCTAssertEqual(manager.state, .ready)
+        #else
+        XCTAssertEqual(manager.state, .idle)
+        #endif
     }
 
     func testActivate_isIdempotent() {
@@ -346,6 +552,7 @@ final class HeadsetRemoteCommandManagerTests: XCTestCase {
         XCTAssertFalse(manager.isActive)
     }
 
+    #if os(iOS)
     func testDeactivate_duringRecording_stopsRecording() {
         let (manager, mocks) = makeManager()
         manager.activate()
@@ -358,6 +565,7 @@ final class HeadsetRemoteCommandManagerTests: XCTestCase {
         XCTAssertEqual(manager.state, .ready)
         XCTAssertTrue(mocks.voiceInput.stopRecordingCalled)
     }
+    #endif
 
     func testHeadsetModeEnabledSetting_activatesManager() {
         let mocks = HeadsetMockDependencies()
@@ -407,167 +615,9 @@ final class HeadsetRemoteCommandManagerTests: XCTestCase {
         manager.reclaimNowPlaying()
     }
 
-    // MARK: - PTT Mute Detection
+    // MARK: - Message Shape (iOS)
 
-    #if os(macOS)
-    func testMuteOff_fromReady_startsRecording() {
-        let (manager, mocks) = makeManager()
-        manager.activate()
-
-        manager.simulateMuteChanged(isMuted: false)
-
-        XCTAssertEqual(manager.state, .recording)
-        XCTAssertTrue(mocks.voiceInput.startRecordingCalled)
-    }
-
-    func testMuteOn_fromRecording_stopsAndSends() {
-        let (manager, mocks) = makeManager()
-        manager.activate()
-        manager.simulateMuteChanged(isMuted: false) // → .recording
-        mocks.voiceInput.transcribedText = "ptt test"
-
-        manager.simulateMuteChanged(isMuted: true) // → .sending
-
-        let expectation = expectation(description: "ptt send")
-        DispatchQueue.main.async {
-            XCTAssertTrue(mocks.voiceInput.stopRecordingCalled)
-            XCTAssertEqual(mocks.client.lastSentMessage?["text"] as? String, "ptt test")
-            expectation.fulfill()
-        }
-        wait(for: [expectation], timeout: 1.0)
-    }
-
-    func testMuteOff_fromRecording_isIgnored() {
-        let (manager, mocks) = makeManager()
-        manager.activate()
-        manager.simulateTogglePlayPause() // → .recording
-
-        let callsBefore = mocks.voiceInput.startRecordingCalled
-        manager.simulateMuteChanged(isMuted: false) // not in .ready → ignored
-
-        XCTAssertEqual(manager.state, .recording)
-        XCTAssertEqual(mocks.voiceInput.startRecordingCalled, callsBefore)
-    }
-
-    func testMuteOn_fromReady_isIgnored() {
-        let (manager, mocks) = makeManager()
-        manager.activate()
-        XCTAssertEqual(manager.state, .ready)
-
-        manager.simulateMuteChanged(isMuted: true) // not in .recording → ignored
-
-        XCTAssertEqual(manager.state, .ready)
-        XCTAssertFalse(mocks.voiceInput.stopRecordingCalled)
-    }
-    #endif
-
-    // MARK: - PTT Settings Integration
-
-    #if os(macOS)
-    func testActivate_withPTTEnabled_startsPTTMonitoring() {
-        let mocks = HeadsetMockDependencies()
-        mocks.settings.headsetPTTEnabled = true
-        let manager = makeManagerWithDeps(mocks)
-        drainMainQueue()
-
-        manager.activate()
-
-        XCTAssertTrue(manager.isPTTMonitoring)
-    }
-
-    func testActivate_withPTTDisabled_doesNotStartPTTMonitoring() {
-        let (manager, _) = makeManager()
-        drainMainQueue()
-
-        manager.activate()
-
-        XCTAssertFalse(manager.isPTTMonitoring)
-    }
-
-    func testDeactivate_stopsPTTMonitoring() {
-        let mocks = HeadsetMockDependencies()
-        mocks.settings.headsetPTTEnabled = true
-        let manager = makeManagerWithDeps(mocks)
-        drainMainQueue()
-        manager.activate()
-        XCTAssertTrue(manager.isPTTMonitoring)
-
-        manager.deactivate()
-
-        XCTAssertFalse(manager.isPTTMonitoring)
-    }
-
-    func testStartPTTMonitoring_isIdempotent() {
-        let mocks = HeadsetMockDependencies()
-        mocks.settings.headsetPTTEnabled = true
-        let manager = makeManagerWithDeps(mocks)
-        drainMainQueue()
-        manager.activate()
-        XCTAssertTrue(manager.isPTTMonitoring)
-
-        // A second call (e.g. from the $headsetPTTEnabled Combine delivery after activate)
-        // must not replace and leak the existing monitor.
-        manager.startPTTMonitoring()
-
-        // Still monitoring with the same (first) monitor — no replacement occurred.
-        XCTAssertTrue(manager.isPTTMonitoring)
-    }
-
-    func testHeadsetPTTEnabledSetting_whenActive_startsPTTMonitoring() {
-        let (manager, mocks) = makeManager()
-        // Drain initial Combine deliveries (headsetModeEnabled=false, headsetPTTEnabled=false)
-        // before activating — same pattern as testHeadsetModeEnabledSetting_activatesManager.
-        drainMainQueue()
-        manager.activate()
-        XCTAssertFalse(manager.isPTTMonitoring)
-
-        mocks.settings.headsetPTTEnabled = true
-
-        let expectation = expectation(description: "PTT monitoring starts from setting")
-        DispatchQueue.main.async {
-            XCTAssertTrue(manager.isPTTMonitoring)
-            expectation.fulfill()
-        }
-        wait(for: [expectation], timeout: 1.0)
-    }
-
-    func testHeadsetPTTDisabledSetting_whenActive_stopsPTTMonitoring() {
-        let mocks = HeadsetMockDependencies()
-        mocks.settings.headsetPTTEnabled = true
-        let manager = makeManagerWithDeps(mocks)
-        drainMainQueue()
-        manager.activate()
-        // headsetPTTEnabled is already true, activate() calls startPTTMonitoring() synchronously
-        XCTAssertTrue(manager.isPTTMonitoring)
-
-        mocks.settings.headsetPTTEnabled = false
-
-        let expectation = expectation(description: "PTT monitoring stops from setting")
-        DispatchQueue.main.async {
-            XCTAssertFalse(manager.isPTTMonitoring)
-            expectation.fulfill()
-        }
-        wait(for: [expectation], timeout: 1.0)
-    }
-
-    func testHeadsetPTTEnabledSetting_whenInactive_doesNotStartPTTMonitoring() {
-        let (manager, mocks) = makeManager()
-        drainMainQueue()
-        XCTAssertFalse(manager.isActive)
-
-        mocks.settings.headsetPTTEnabled = true
-
-        let expectation = expectation(description: "PTT monitoring does not start when inactive")
-        DispatchQueue.main.async {
-            XCTAssertFalse(manager.isPTTMonitoring)
-            expectation.fulfill()
-        }
-        wait(for: [expectation], timeout: 1.0)
-    }
-    #endif
-
-    // MARK: - Message Shape
-
+    #if os(iOS)
     func testSentMessage_containsRequiredFields() {
         let (manager, mocks) = makeManager()
         let expectedSessionId = testSessionId.uuidString.lowercased()
@@ -587,6 +637,44 @@ final class HeadsetRemoteCommandManagerTests: XCTestCase {
             XCTAssertEqual(msg["type"] as? String, "prompt")
             XCTAssertEqual(msg["text"] as? String, "hello world")
             XCTAssertEqual(msg["resume_session_id"] as? String, expectedSessionId)
+            XCTAssertEqual(msg["working_directory"] as? String, "/test/working-dir")
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 1.0)
+    }
+
+    func testSentMessage_newSession_usesNewSessionIdAndProvider() {
+        // A fresh session (messageCount == 0 → isNewSession true) initiated via the
+        // headset must MINT the session on the backend with new_session_id+provider,
+        // NOT resume_session_id. Regression guard for the phantom-resume kickoff bug:
+        // the headset path previously always resumed, so a first-time Bluetooth send
+        // to a never-created session left `claude --resume <uuid>` to time out.
+        let mocks = HeadsetMockDependencies()
+        let sessionId = testSessionId
+        let manager = HeadsetRemoteCommandManager(
+            voiceInput: mocks.voiceInput,
+            voiceOutput: mocks.voiceOutput,
+            client: mocks.client,
+            settings: mocks.settings,
+            resolveActiveSession: { (sessionId, "/test/working-dir", true, "claude") }
+        )
+        let expectedSessionId = sessionId.uuidString.lowercased()
+        manager.activate()
+        manager.simulateTogglePlayPause()
+        mocks.voiceInput.transcribedText = "start a new session"
+
+        manager.simulateTogglePlayPause()
+
+        let expectation = expectation(description: "new-session message shape")
+        DispatchQueue.main.async {
+            guard let msg = mocks.client.lastSentMessage else {
+                XCTFail("No message sent")
+                expectation.fulfill()
+                return
+            }
+            XCTAssertEqual(msg["new_session_id"] as? String, expectedSessionId)
+            XCTAssertEqual(msg["provider"] as? String, "claude")
+            XCTAssertNil(msg["resume_session_id"], "new session must not resume")
             XCTAssertEqual(msg["working_directory"] as? String, "/test/working-dir")
             expectation.fulfill()
         }
@@ -630,6 +718,7 @@ final class HeadsetRemoteCommandManagerTests: XCTestCase {
         }
         wait(for: [expectation], timeout: 1.0)
     }
+    #endif  // iOS message-shape tests
 
     // MARK: - Helpers
 
@@ -656,7 +745,7 @@ final class HeadsetRemoteCommandManagerTests: XCTestCase {
             voiceOutput: mocks.voiceOutput,
             client: mocks.client,
             settings: mocks.settings,
-            resolveActiveSession: { (sessionId, "/test/working-dir") }
+            resolveActiveSession: { (sessionId, "/test/working-dir", false, "claude") }
         )
     }
 }

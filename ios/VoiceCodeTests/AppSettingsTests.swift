@@ -835,10 +835,6 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertFalse(settings.headsetModeEnabled)
     }
 
-    func testDefaultHeadsetPTTEnabled() {
-        XCTAssertFalse(settings.headsetPTTEnabled)
-    }
-
     func testDefaultHeadsetAutoSend() {
         // headsetAutoSend defaults to true when key is absent
         XCTAssertTrue(settings.headsetAutoSend)
@@ -850,14 +846,6 @@ final class AppSettingsTests: XCTestCase {
 
         let reloaded = AppSettings()
         XCTAssertTrue(reloaded.headsetModeEnabled)
-    }
-
-    func testHeadsetPTTEnabledPersistence() {
-        settings.headsetPTTEnabled = true
-        XCTAssertTrue(UserDefaults.standard.bool(forKey: "headsetPTTEnabled"))
-
-        let reloaded = AppSettings()
-        XCTAssertTrue(reloaded.headsetPTTEnabled)
     }
 
     func testHeadsetAutoSendPersistence() {
@@ -881,5 +869,91 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertTrue(settings.headsetModeEnabled)
         settings.headsetModeEnabled = false
         XCTAssertFalse(settings.headsetModeEnabled)
+    }
+
+    func testDefaultHeadsetAudibleCuesEnabled() {
+        // Defaults OFF — ship quiet until validated on hardware (design §6 Rollback).
+        XCTAssertFalse(settings.headsetAudibleCuesEnabled)
+    }
+
+    func testHeadsetAudibleCuesEnabledPersistenceTrue() {
+        settings.headsetAudibleCuesEnabled = true
+        XCTAssertEqual(UserDefaults.standard.object(forKey: "headsetAudibleCuesEnabled") as? Bool, true)
+
+        let reloaded = AppSettings()
+        XCTAssertTrue(reloaded.headsetAudibleCuesEnabled)
+    }
+
+    func testHeadsetAudibleCuesEnabledPersistenceFalse() {
+        // Round-trip back to false after having been true.
+        settings.headsetAudibleCuesEnabled = true
+        settings.headsetAudibleCuesEnabled = false
+        XCTAssertEqual(UserDefaults.standard.object(forKey: "headsetAudibleCuesEnabled") as? Bool, false)
+
+        let reloaded = AppSettings()
+        XCTAssertFalse(reloaded.headsetAudibleCuesEnabled)
+    }
+
+    func testHeadsetAudibleCuesEnabledToggle() {
+        XCTAssertFalse(settings.headsetAudibleCuesEnabled)
+        settings.headsetAudibleCuesEnabled = true
+        XCTAssertTrue(settings.headsetAudibleCuesEnabled)
+        settings.headsetAudibleCuesEnabled = false
+        XCTAssertFalse(settings.headsetAudibleCuesEnabled)
+    }
+
+    // MARK: - BlueParrott Peripheral ID Tests
+
+    func testDefaultBlueParrottPeripheralIDIsNil() {
+        // Absent key → nil
+        XCTAssertNil(settings.blueParrottPeripheralID)
+        XCTAssertNil(UserDefaults.standard.string(forKey: "blueParrottPeripheralID"))
+    }
+
+    func testBlueParrottPeripheralIDSetRoundTrips() {
+        let id = UUID()
+        settings.setBlueParrottPeripheralID(id)
+
+        // In-memory value matches
+        XCTAssertEqual(settings.blueParrottPeripheralID, id)
+        // Persisted as the UUID string
+        XCTAssertEqual(UserDefaults.standard.string(forKey: "blueParrottPeripheralID"), id.uuidString)
+
+        // A fresh instance reads the same UUID back
+        let reloaded = AppSettings()
+        XCTAssertEqual(reloaded.blueParrottPeripheralID, id)
+    }
+
+    func testBlueParrottPeripheralIDClearReturnsNil() {
+        settings.setBlueParrottPeripheralID(UUID())
+        XCTAssertNotNil(settings.blueParrottPeripheralID)
+
+        settings.clearBlueParrottPeripheralID()
+        XCTAssertNil(settings.blueParrottPeripheralID)
+        // Key removed from UserDefaults
+        XCTAssertNil(UserDefaults.standard.string(forKey: "blueParrottPeripheralID"))
+
+        // A fresh instance also reads nil
+        let reloaded = AppSettings()
+        XCTAssertNil(reloaded.blueParrottPeripheralID)
+    }
+
+    func testBlueParrottPeripheralIDInvalidStringParsesToNil() {
+        // A non-UUID string left in UserDefaults should read back as nil
+        UserDefaults.standard.set("not-a-uuid", forKey: "blueParrottPeripheralID")
+        UserDefaults.standard.synchronize()
+
+        let fresh = AppSettings()
+        XCTAssertNil(fresh.blueParrottPeripheralID)
+    }
+
+    func testBlueParrottPeripheralIDAssignmentPersists() {
+        // Direct @Published assignment (not just the helper) also persists
+        let id = UUID()
+        settings.blueParrottPeripheralID = id
+        XCTAssertEqual(UserDefaults.standard.string(forKey: "blueParrottPeripheralID"), id.uuidString)
+
+        settings.blueParrottPeripheralID = nil
+        XCTAssertNil(UserDefaults.standard.string(forKey: "blueParrottPeripheralID"))
     }
 }
