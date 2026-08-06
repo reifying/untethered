@@ -287,8 +287,7 @@ class VoiceCodeClient: ObservableObject {
         currentError = detail
         isAuthenticated = false
 
-        reconnectionTimer?.cancel()
-        reconnectionTimer = nil
+        stopReconnectionTimer()
         stopPingTimer()
 
         webSocket?.cancel(with: .goingAway, reason: nil)
@@ -548,8 +547,7 @@ class VoiceCodeClient: ObservableObject {
         // Stop keepalive ping timer
         stopPingTimer()
 
-        reconnectionTimer?.cancel()
-        reconnectionTimer = nil
+        stopReconnectionTimer()
 
         webSocket?.cancel(with: .goingAway, reason: nil)
         webSocket = nil
@@ -622,59 +620,120 @@ class VoiceCodeClient: ObservableObject {
         return max(1.0, baseDelay + jitter)  // Never less than 1 second
     }
 
-    private func setupReconnection() {
-        reconnectionTimer?.cancel()
+    // MARK: - Reconnection Timer
+    //
+    // Invariant: the reconnection timer exists only while the socket is down.
+    // It is armed by `connect()` (for the attempt it just started) and by the
+    // socket-failure path; it is disarmed the moment `hello` confirms a live
+    // socket, and by every terminal state (deliberate disconnect, auth
+    // failure, required upgrade, attempts exhausted).
+    //
+    // It is deliberately NOT a repeating timer. A repeating timer survives a
+    // successful connect, so it wakes the device on every interval for the
+    // whole life of a healthy connection and logs a line each time while
+    // doing no work — that noise crowded real signal out of the 5000-line log
+    // buffer. A repeating timer also freezes its interval at whatever the
+    // attempt count was when it was created, so the exponential backoff never
+    // advanced on any retry path that did not route all the way through
+    // `connect()`.
+
+    /// Arm the reconnection timer for the next retry.
+    ///
+    /// One-shot: `handleReconnectionTick()` re-arms it if another retry is
+    /// warranted, so every path out of a tick either schedules the next
+    /// attempt deliberately or leaves reconnection stopped.
+    ///
+    /// Internal rather than private so tests can arm a retry without opening
+    /// a real socket — same reason `calculateReconnectionDelay` is internal.
+    internal func setupReconnection() {
+        stopReconnectionTimer()
+
+        // Nothing to reconnect to while the socket is live. Any caller that
+        // arms while connected would be scheduling a wakeup that can only
+        // ever no-op.
+        guard !isConnected else { return }
 
         let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.main)
 
         // Calculate delay with exponential backoff and jitter
         let delay = calculateReconnectionDelay(attempt: reconnectionAttempts)
 
-        timer.schedule(deadline: .now() + delay, repeating: delay)
+        timer.schedule(deadline: .now() + delay)
         timer.setEventHandler { [weak self] in
-            guard let self = self else { return }
-
-            LogManager.shared.log("🔄 Reconnection timer fired: \(self.connectionStateDescription)", category: "VoiceCodeClient")
-
-            // Don't reconnect if reauthentication is required - user must provide new credentials
-            if self.requiresReauthentication {
-                LogManager.shared.log("🔐 [VoiceCodeClient] Skipping reconnection - reauthentication required", category: "VoiceCodeClient")
-                self.reconnectionTimer?.cancel()
-                self.reconnectionTimer = nil
-                return
-            }
-
-            // Don't reconnect if the protocol versions don't match — the
-            // backend will reject us on every retry until the app is updated.
-            if self.requiresUpgrade {
-                LogManager.shared.log("⛔ [VoiceCodeClient] Skipping reconnection - app upgrade required", category: "VoiceCodeClient")
-                self.reconnectionTimer?.cancel()
-                self.reconnectionTimer = nil
-                return
-            }
-
-            if !self.isConnected {
-                // Check if we've exceeded max attempts
-                if self.reconnectionAttempts >= self.maxReconnectionAttempts {
-                    LogManager.shared.log("❌ [VoiceCodeClient] Max reconnection attempts (\(self.maxReconnectionAttempts)) reached. Stopping.", category: "VoiceCodeClient")
-                    self.reconnectionTimer?.cancel()
-                    self.reconnectionTimer = nil
-                    DispatchQueue.main.async { [weak self] in
-                        guard let self = self else { return }
-                        self.currentError = "Unable to connect to server after \(self.maxReconnectionAttempts) attempts. Please check your server settings."
-                    }
-                    return
-                }
-
-                self.reconnectionAttempts += 1
-                let nextDelay = self.calculateReconnectionDelay(attempt: self.reconnectionAttempts)
-                LogManager.shared.log("Attempting reconnection (attempt \(self.reconnectionAttempts)/\(self.maxReconnectionAttempts), next delay: \(String(format: "%.1f", nextDelay))s)...", category: "VoiceCodeClient")
-                self.connect()
-            }
+            self?.handleReconnectionTick()
         }
         timer.resume()
 
         reconnectionTimer = timer
+    }
+
+    /// Cancel the pending retry, if any. Silent: callers log their own reason
+    /// where one is worth recording.
+    private func stopReconnectionTimer() {
+        reconnectionTimer?.cancel()
+        reconnectionTimer = nil
+    }
+
+    /// Test seam: is a retry currently scheduled?
+    var isReconnectionTimerArmedForTesting: Bool { reconnectionTimer != nil }
+
+    /// Test seam: retries consumed so far on the current outage.
+    var reconnectionAttemptsForTesting: Int { reconnectionAttempts }
+
+    /// One firing of the reconnection timer. The timer that invoked this has
+    /// already been consumed (it is one-shot), so this method owns the
+    /// decision of whether another retry is scheduled.
+    ///
+    /// Internal so tests can drive a retry without waiting on wall clock.
+    internal func handleReconnectionTick() {
+        stopReconnectionTimer()
+
+        // The socket came up while this tick was already in flight. Stay
+        // disarmed and stay silent — the socket-failure path arms a fresh
+        // timer if this connection dies later.
+        guard !isConnected else { return }
+
+        LogManager.shared.log("🔄 Reconnection timer fired: \(connectionStateDescription)", category: "VoiceCodeClient")
+
+        // Don't reconnect if reauthentication is required - user must provide new credentials
+        if requiresReauthentication {
+            LogManager.shared.log("🔐 [VoiceCodeClient] Skipping reconnection - reauthentication required", category: "VoiceCodeClient")
+            return
+        }
+
+        // Don't reconnect if the protocol versions don't match — the
+        // backend will reject us on every retry until the app is updated.
+        if requiresUpgrade {
+            LogManager.shared.log("⛔ [VoiceCodeClient] Skipping reconnection - app upgrade required", category: "VoiceCodeClient")
+            return
+        }
+
+        // Check if we've exceeded max attempts
+        if reconnectionAttempts >= maxReconnectionAttempts {
+            LogManager.shared.log("❌ [VoiceCodeClient] Max reconnection attempts (\(maxReconnectionAttempts)) reached. Stopping.", category: "VoiceCodeClient")
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                self.currentError = "Unable to connect to server after \(self.maxReconnectionAttempts) attempts. Please check your server settings."
+            }
+            return
+        }
+
+        reconnectionAttempts += 1
+        let nextDelay = calculateReconnectionDelay(attempt: reconnectionAttempts)
+        LogManager.shared.log("Attempting reconnection (attempt \(reconnectionAttempts)/\(maxReconnectionAttempts), next delay: \(String(format: "%.1f", nextDelay))s)...", category: "VoiceCodeClient")
+        connect()
+
+        // `connect()` arms the next retry when it actually opens a socket,
+        // but it has early returns — an unusable server URL, or a socket
+        // already in `.running` that has not yet produced a `hello`. Those
+        // paths must still schedule a retry, and at the *new* attempt's
+        // delay: leaving them unarmed would strand the client offline, and
+        // the old repeating timer covered them only by re-firing forever at
+        // the attempt-0 interval, which burned all 20 attempts in ~23s
+        // instead of the ~17 minutes the attempt cap is documented to buy.
+        if reconnectionTimer == nil {
+            setupReconnection()
+        }
     }
 
     // MARK: - Ping Keepalive
@@ -744,31 +803,46 @@ class VoiceCodeClient: ObservableObject {
                 // Clear WebSocket reference inside main queue to ensure thread safety
                 // Both connect() and this failure handler must access webSocket on main thread
                 DispatchQueue.main.async { [weak self] in
-                    guard let self = self else { return }
-
-                    // Stop keepalive ping timer
-                    self.stopPingTimer()
-
-                    // Clear WebSocket reference to enable reconnection
-                    self.webSocket?.cancel(with: .goingAway, reason: nil)
-                    self.webSocket = nil
-
-                    LogManager.shared.log("🔄 VoiceCodeClient updating: isConnected=false (failure)", category: "VoiceCodeClient")
-                    self.isConnected = false
-                    // Auth state is socket-scoped; clear it so subscribe()'s
-                    // isAuthenticated guard doesn't let calls through during
-                    // the reconnect window (the new socket needs its own
-                    // hello → connect → connected handshake before sends are
-                    // valid). The next `connected` re-asserts it.
-                    self.isAuthenticated = false
-                    // Wire confirmation belonged to this dead socket; demote
-                    // so reconnect re-fires every desired subscribe.
-                    self.demoteConfirmedSubscriptions()
-                    self.scheduleUpdate(key: "currentError", value: error.localizedDescription as String?)
-                    self.flushPendingUpdates()
+                    self?.handleSocketFailure(errorDescription: error.localizedDescription)
                 }
             }
         }
+    }
+
+    /// The socket died on us (as opposed to `disconnect()`, which is
+    /// deliberate). Tears down socket-scoped state and schedules the next
+    /// reconnection attempt.
+    ///
+    /// Must run on the main queue. Internal so tests can drive a socket loss
+    /// without standing up a real server to kill.
+    internal func handleSocketFailure(errorDescription: String) {
+        // Stop keepalive ping timer
+        stopPingTimer()
+
+        // Clear WebSocket reference to enable reconnection
+        webSocket?.cancel(with: .goingAway, reason: nil)
+        webSocket = nil
+
+        LogManager.shared.log("🔄 VoiceCodeClient updating: isConnected=false (failure)", category: "VoiceCodeClient")
+        isConnected = false
+        // Auth state is socket-scoped; clear it so subscribe()'s
+        // isAuthenticated guard doesn't let calls through during
+        // the reconnect window (the new socket needs its own
+        // hello → connect → connected handshake before sends are
+        // valid). The next `connected` re-asserts it.
+        isAuthenticated = false
+        // Wire confirmation belonged to this dead socket; demote
+        // so reconnect re-fires every desired subscribe.
+        demoteConfirmedSubscriptions()
+        scheduleUpdate(key: "currentError", value: errorDescription as String?)
+        flushPendingUpdates()
+
+        // Nothing else brings the connection back on its own: `connect()` is
+        // only called again from app-foreground or from a reconnection tick.
+        // The timer was disarmed when this socket came up, so arm it here or
+        // the client stays offline until the user backgrounds and foregrounds
+        // the app.
+        setupReconnection()
     }
 
     func handleMessage(_ text: String) {  // internal for testing
@@ -804,6 +878,12 @@ class VoiceCodeClient: ObservableObject {
             case "hello":
                 // Mark as connected when we receive hello from server
                 self.isConnected = true
+                // The socket is live: there is nothing left to reconnect, so
+                // stop the retry timer. Leaving it armed is what made it wake
+                // the device — and log — once a second for the entire life of
+                // a healthy connection. The socket-failure path arms a fresh
+                // one if this connection later dies.
+                self.stopReconnectionTimer()
                 LogManager.shared.log("📡 [VoiceCodeClient] Received hello from server, connection confirmed", category: "VoiceCodeClient")
 
                 // Reject servers whose announced version is below the minimum floor.
@@ -988,8 +1068,7 @@ class VoiceCodeClient: ObservableObject {
                 self.authenticationError = errorMessage
                 LogManager.shared.log("Authentication failed: \(errorMessage)", category: "VoiceCodeClient")
                 // Stop reconnection attempts - user must provide new credentials
-                self.reconnectionTimer?.cancel()
-                self.reconnectionTimer = nil
+                self.stopReconnectionTimer()
                 LogManager.shared.log("🔐 [VoiceCodeClient] Stopped reconnection attempts - reauthentication required", category: "VoiceCodeClient")
                 // Note: Backend will close connection after auth_error
 
@@ -2021,8 +2100,7 @@ class VoiceCodeClient: ObservableObject {
                 self.requiresReauthentication = true
                 self.authenticationError = "API key not configured. Please scan QR code in Settings."
                 // Stop reconnection attempts - user must configure API key first
-                self.reconnectionTimer?.cancel()
-                self.reconnectionTimer = nil
+                self.stopReconnectionTimer()
                 LogManager.shared.log("🔐 [VoiceCodeClient] Stopped reconnection attempts - API key required", category: "VoiceCodeClient")
             }
             return
