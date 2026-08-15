@@ -347,6 +347,33 @@ silently re-admits agents nobody is waiting on.
 priority queue (the ball is with the agent) and is armed to re-enter when the reply lands. See
 `docs/design/priority-queue-revisit.md`.
 
+**Agent Replied (Ungated Turn Completion)**
+```json
+{
+  "type": "agent_replied",
+  "session_id": "<claude-session-id>"
+}
+```
+
+Emitted alongside `turn_complete` on every turn-complete detection, but sent to **every** connected
+non-deleted client regardless of `subscribed_sessions`.
+
+**Why both.** `turn_complete` drives UI unlock, so limiting it to subscribers is right — a client
+has nothing to unlock for a session it is not showing. `agent_replied` answers a different
+question: *is it the user's turn on this session again?* That must reach a client whether or not it
+is subscribed. The client unsubscribes when the user leaves a conversation, and the workflow the
+priority queue exists to serve is send-a-prompt-and-walk-away — so a subscriber-gated signal
+arrives exactly never for the case that matters. Returning to the session later replays the reply
+as *history*, below `live_from_offset`, which is deliberately not treated as a live arrival.
+
+**Fields:** `session_id` (required). No message content, so nothing leaks across clients.
+
+**iOS behavior:** claims the session's outstanding pending-reply record (armed by a `prompt` send or
+a `user_prompt` frame) and, if the claim succeeds, adds the session to the priority queue. The
+live-message path and this frame claim the *same* one-shot record, so whichever arrives first
+enqueues and the other is a no-op. A session with no outstanding record — a supervised agent
+nobody prompted — is ignored. See `docs/design/priority-queue-revisit.md` §4.2.
+
 **Ghost Prompt (Effective Prompt for a Ghost Send)**
 ```json
 {

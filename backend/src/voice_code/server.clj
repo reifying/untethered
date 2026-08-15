@@ -2207,7 +2207,9 @@
   "Handler for turn-complete events.
 
    Always broadcasts `{:type :turn-complete :session-id X}` to every connected
-   client subscribed to the session. Additionally, if a recipe step is waiting
+   client subscribed to the session, and `{:type :agent-replied :session-id X}`
+   to every connected client regardless of subscription (see the comment on
+   that fan-out below). Additionally, if a recipe step is waiting
    on this turn, fires its callback with the last assistant message text — but
    only when that message is a GENUINE end-of-turn assistant write (not an
    intermediate tool-use / partial / non-assistant write) AND is strictly newer
@@ -2244,7 +2246,30 @@
                  (not (is-session-deleted-for-client? channel session-id)))
         (send-to-client! channel
                          {:type :turn-complete
-                          :session-id session-id})))))
+                          :session-id session-id}))))
+
+  ;; Ungated sibling of the above. `turn_complete` drives UI unlock, so it is
+  ;; correctly limited to subscribers — a client has nothing to unlock for a
+  ;; session it isn't showing. `agent_replied` answers a different question:
+  ;; "is it the user's turn on this session again?" That has to reach a client
+  ;; whether or not it is subscribed, because the workflow the priority queue
+  ;; exists for is send-a-prompt-and-walk-away: the client unsubscribes on
+  ;; leaving the conversation, so a subscriber-gated signal arrives exactly
+  ;; never for the case that matters. Carries no message content — only the
+  ;; session id — so it leaks nothing across clients.
+  ;;
+  ;; See docs/design/priority-queue-revisit.md §4.2.
+  (let [eligible (remove (fn [[channel _]]
+                           (is-session-deleted-for-client? channel session-id))
+                         @connected-clients)]
+    (log/info "Broadcasting agent-replied"
+              {:session-id session-id
+               :total-clients (count @connected-clients)
+               :eligible-clients (count eligible)})
+    (doseq [[channel _] eligible]
+      (send-to-client! channel
+                       {:type :agent-replied
+                        :session-id session-id}))))
 
 (defn- handle-subscribe-v0-4-0
   "Legacy subscribe handler covering v0.4.0 (last_seq cursor) and v0.3.0

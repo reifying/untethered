@@ -235,6 +235,47 @@ class SessionSyncManager {
             LogManager.shared.log("📤 [PriorityQueue] Dequeued on outbound prompt (ball back with agent): \(key)", category: "PriorityQueue")
         }
     }
+
+    /// Called when the backend reports that an agent finished a turn
+    /// (`agent_replied`). This is the enqueue path that does NOT depend on
+    /// being subscribed to the session.
+    ///
+    /// The message-arrival path in the `session_history` handlers only fires
+    /// while the client holds a subscription and the reply arrives as a *live*
+    /// push. Leaving a conversation unsubscribes, and coming back replays the
+    /// reply as history (below `liveFromOffset`, so deliberately not "live") —
+    /// so for the send-and-walk-away workflow the queue exists to serve, that
+    /// path fires never. This one covers it.
+    ///
+    /// Both paths claim the same one-shot ledger entry, so whichever arrives
+    /// first enqueues and the other is a no-op. No double entry.
+    func recordAgentReply(sessionId: String) {
+        let key = sessionId.lowercased()
+
+        guard UserDefaults.standard.bool(forKey: "priorityQueueEnabled") else { return }
+        guard let sessionUUID = UUID(uuidString: key) else {
+            LogManager.shared.log("⚠️ [PriorityQueue] agent_replied for non-UUID session id: \(key)", category: "PriorityQueue")
+            return
+        }
+        // Claim before touching CoreData: the claim is the decision, and it is
+        // cheap to leave armed if we can't act on it.
+        guard pendingReplies.claim(sessionId: key) else { return }
+
+        let backgroundContext = persistenceController.container.newBackgroundContext()
+        backgroundContext.perform {
+            guard let session = try? backgroundContext
+                    .fetch(CDBackendSession.fetchBackendSession(id: sessionUUID)).first else {
+                // No local row yet (an agent this client has never seen). Re-arm
+                // so the claim isn't silently burned — the next reply, or the
+                // session showing up in a session_list, can still enqueue it.
+                self.pendingReplies.arm(sessionId: key)
+                LogManager.shared.log("⏭️ [PriorityQueue] agent_replied for unknown session, re-arming: \(key)", category: "PriorityQueue")
+                return
+            }
+            CDBackendSession.addToPriorityQueue(session, context: backgroundContext)
+            LogManager.shared.log("📌 [PriorityQueue] Enqueued on agent_replied (your turn): \(key)", category: "PriorityQueue")
+        }
+    }
     
     // MARK: - Session List Handling
     

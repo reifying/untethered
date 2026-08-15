@@ -222,6 +222,41 @@ costs one missed queue entry, which one more prompt fixes. A false "typed by the
 re-admits an agent nobody is waiting on — the original failure. Records expire after 10 minutes so
 a prompt that never landed cannot mute the user indefinitely.
 
+### 4.2 Delivering the reply when nobody is subscribed
+
+The first cut of §4 hung the enqueue on a *live assistant message arriving in a `session_history`
+push*. Device logs from 2026-08-15 showed that this fires almost never in real use:
+
+```
+12:06:52.251  → prompt resume=ed4f678d
+12:06:52.252  📮 Armed ed4f678d (2 outstanding)
+12:06:55.942  → unsubscribe sess=ed4f678d        ← user backed out, 3.7s later
+   … agent works for ~80s, nothing pushed (not subscribed) …
+12:08:15.507  reopened → file_replaced → history replay, 105/222/237/175 msgs
+```
+
+Two independent reasons the claim was never consumed. Leaving a conversation unsubscribes, so no
+push arrives at all. And reopening replays the reply as *history* — `liveFromOffset` stays 0
+through the chained `eof:false` payloads and is finally set to the batch end, above every offset in
+it, so nothing counts as a live arrival. Correctly so: that gate exists to stop history being read
+aloud. Across 866 lines there was no `📬 Claimed` and no `📌 Enqueued`.
+
+The old feature only appeared to work here because of the subscription leak in §1.2 —
+backgrounding the app kept pushes flowing. Removing the leak removed the delivery path with it.
+
+The fix is the mirror of §4.1: the backend already detects turn completion, so it broadcasts
+`agent_replied {session_id}` **ungated**, and the client claims against the ledger on receipt. No
+subscription required, so it works with the conversation closed.
+
+`turn_complete` stays subscriber-gated — it drives UI unlock, which is meaningless for a session
+the client isn't showing. The two frames answer different questions and deserve different fan-outs.
+
+The live-message path is kept as well. Both claim the same one-shot record, so whichever arrives
+first enqueues and the other no-ops: the push is the fast path when the user is watching, the
+broadcast is the reliable path when they are not. (A note in the original code warned that
+`turn_complete` was avoided for auto-add because it was "channel-specific" and therefore
+unreliable — that objection is exactly what the ungated fan-out removes.)
+
 ## 5. What this does to the reported symptom
 
 | Situation | Before | After |
@@ -231,6 +266,7 @@ a prompt that never landed cannot mute the user indefinitely.
 | Supervisor-driven agent, never touched by him | enqueued if subscribed | never enqueued |
 | Session Travis prompts from the phone | enqueued | enqueued, once, when the reply lands |
 | Agent he prompts by typing in its tmux pane | not enqueued (invisible to client) | enqueued when the reply lands |
+| He prompts, backs out, agent answers later | nothing (no push while unsubscribed) | enqueued via `agent_replied` |
 | He replies to a queued session | stays queued | leaves; returns when the agent answers |
 | CLI agent he *does* want to track | manual add | manual add (unchanged) |
 | Session he created but hasn't prompted | enqueued empty | not enqueued |
@@ -285,6 +321,14 @@ should be designed against real use of §3 rather than speculatively bundled wit
 - `on-user-prompt` broadcast in `server.clj`, new `user_prompt` frame (protocol doc updated)
 - Client `user_prompt` handler
 - Tests: `voice-code.prompt-origin-test` (12 tests / 22 assertions), plus two client tests
+
+**Ungated reply delivery (§4.2), added in a third pass:**
+
+- `agent_replied` broadcast in `server.clj`'s `on-turn-complete` (protocol doc updated)
+- `SessionSyncManager.recordAgentReply` — the subscription-independent enqueue path
+- Client `agent_replied` handler
+- Tests: five more in `PriorityQueueAdmissionSyncTests`, covering the unsubscribed workflow, the
+  unprompted-agent case, the shared claim across both paths, and the feature flag
 
 **Test status.** Backend: `prompt-origin-test` passes; `replication-test` (198),
 `tmux-test` (30), `claude-test` (29), `server-test` (134), `ghost-test`, `recipes-test` and

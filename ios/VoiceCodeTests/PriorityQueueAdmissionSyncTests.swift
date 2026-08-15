@@ -256,6 +256,98 @@ final class PriorityQueueAdmissionSyncTests: XCTestCase {
                        "Without a user_prompt frame there is nothing to claim, so the agent stays out of the queue")
     }
 
+    // MARK: - agent_replied (the unsubscribed path)
+
+    /// The workflow from the 2026-08-15 device logs, which the message-arrival
+    /// path could not serve: send a prompt, immediately leave the conversation
+    /// (which unsubscribes), agent answers while we are not subscribed. No
+    /// session_history push ever arrives, so only `agent_replied` can enqueue.
+    func test_agentRepliedEnqueuesWithoutAnySessionHistory() {
+        seedSession()
+
+        manager.recordOutboundPrompt(sessionId: sessionIdString)
+        drainMainQueue()
+
+        // Note: no deliverAndWait — nothing is pushed to an unsubscribed client.
+        manager.recordAgentReply(sessionId: sessionIdString)
+        drainMainQueue()
+
+        XCTAssertTrue(fetchSession()?.isInPriorityQueue ?? false,
+                      "The reply must enqueue even though no session_history push arrived")
+    }
+
+    /// Reaching the client is not enough on its own — an agent nobody prompted
+    /// finishing a turn must still stay out. `agent_replied` is broadcast for
+    /// every session, so the ledger is the only thing keeping supervised agents
+    /// out of the queue on this path.
+    func test_agentRepliedOnUnpromptedSessionDoesNotEnqueue() {
+        seedSession()
+
+        manager.recordAgentReply(sessionId: sessionIdString)
+        drainMainQueue()
+
+        XCTAssertFalse(fetchSession()?.isInPriorityQueue ?? true,
+                       "A supervised agent finishing a turn is not the user's turn")
+    }
+
+    /// Both enqueue paths share one claim, so a live push and the broadcast
+    /// racing on the same reply must not produce two entries or leave the
+    /// session enqueued after the user deals with it.
+    func test_bothPathsShareOneClaim() {
+        seedSession()
+
+        manager.recordOutboundPrompt(sessionId: sessionIdString)
+        drainMainQueue()
+
+        deliverAndWait(assistantPayload(offset: 1))
+        XCTAssertTrue(fetchSession()?.isInPriorityQueue ?? false)
+
+        // The broadcast for the same turn arrives after the push already won.
+        manager.recordAgentReply(sessionId: sessionIdString)
+        drainMainQueue()
+
+        XCTAssertFalse(ledger.isArmed(sessionId: sessionIdString),
+                       "One claim, consumed once")
+
+        // User deals with it; the late broadcast must not resurrect it.
+        CDBackendSession.removeFromPriorityQueue(fetchSession()!, context: context)
+        manager.recordAgentReply(sessionId: sessionIdString)
+        drainMainQueue()
+
+        XCTAssertFalse(fetchSession()?.isInPriorityQueue ?? true,
+                       "A second agent_replied with no outstanding claim must not re-enqueue")
+    }
+
+    func test_agentRepliedRespectsFeatureFlag() {
+        UserDefaults.standard.set(false, forKey: "priorityQueueEnabled")
+        seedSession()
+
+        manager.recordOutboundPrompt(sessionId: sessionIdString)
+        drainMainQueue()
+        manager.recordAgentReply(sessionId: sessionIdString)
+        drainMainQueue()
+
+        XCTAssertFalse(fetchSession()?.isInPriorityQueue ?? true)
+        XCTAssertTrue(ledger.isArmed(sessionId: sessionIdString),
+                      "A disabled feature must not burn the claim")
+    }
+
+    /// End-to-end through the wire frame, not just the manager method.
+    func test_agentRepliedFrameEnqueues() {
+        seedSession()
+
+        let client = VoiceCodeClient(serverURL: "ws://localhost:8080",
+                                     sessionSyncManager: manager,
+                                     setupObservers: false)
+        client.handleMessage("{\"type\":\"user_prompt\",\"session_id\":\"\(sessionIdString)\"}")
+        drainMainQueue()
+        client.handleMessage("{\"type\":\"agent_replied\",\"session_id\":\"\(sessionIdString)\"}")
+        drainMainQueue()
+
+        XCTAssertTrue(fetchSession()?.isInPriorityQueue ?? false,
+                      "Pane-typed prompt then agent_replied enqueues with no subscription at all")
+    }
+
     /// `recordOutboundPrompt` runs for every prompt, including for sessions the
     /// local store has never seen (a brand-new session's row is created by the
     /// first payload). It must arm without needing the row to exist.

@@ -1109,6 +1109,16 @@ class VoiceCodeClient: ObservableObject {
                     self.sessionSyncManager.recordOutboundPrompt(sessionId: sessionId)
                 }
 
+            case "agent_replied":
+                // Ungated sibling of turn_complete: the agent finished a turn,
+                // so if the user was waiting on this session it is their turn
+                // again. Broadcast to every client precisely because the
+                // send-and-walk-away workflow leaves us unsubscribed by the
+                // time the answer lands.
+                if let sessionId = json["session_id"] as? String {
+                    self.sessionSyncManager.recordAgentReply(sessionId: sessionId)
+                }
+
             case "turn_complete":
                 // Backend signals that the provider finished its turn.
                 // Optional `aborted:true` indicates the turn was cut short by kill_session
