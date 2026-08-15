@@ -6,7 +6,8 @@
             [clojure.tools.logging :as log]
             [clojure.java.io :as io]
             [clojure.java.process :as proc]
-            [voice-code.env :as env])
+            [voice-code.env :as env]
+            [voice-code.prompt-origin :as origin])
   (:import [java.io File]
            [java.lang ProcessBuilder$Redirect]))
 
@@ -114,6 +115,12 @@
                  resume-session-id (concat ["--resume" resume-session-id])
                  has-system-prompt? (concat ["--append-system-prompt" trimmed-system-prompt])
                  true (concat [prompt]))
+
+          ;; Non-tmux injection path (the supervisor's dispatch_prompt). Record
+          ;; before the CLI runs so the human-role turn it writes is attributed
+          ;; to the backend and does not read as the user typing in a pane.
+          ;; See voice-code.prompt-origin.
+          _ (origin/record-injected! (or resume-session-id new-session-id) prompt)
 
           _ (log/info "Invoking Claude CLI"
                       {:new-session-id new-session-id

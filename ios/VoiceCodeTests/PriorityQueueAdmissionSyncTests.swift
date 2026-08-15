@@ -222,6 +222,40 @@ final class PriorityQueueAdmissionSyncTests: XCTestCase {
         XCTAssertTrue(fetchSession()?.isInPriorityQueue ?? false)
     }
 
+    /// A prompt the user types straight into an agent's tmux pane arrives as a
+    /// `user_prompt` frame and must enroll the session exactly like an in-app
+    /// send. This is the path that makes "I go prompt it myself, anywhere"
+    /// work for agents launched and driven outside the app.
+    func test_userPromptFrameEnrollsSessionTypedInPane() {
+        seedSession()
+
+        let client = VoiceCodeClient(serverURL: "ws://localhost:8080",
+                                     sessionSyncManager: manager,
+                                     setupObservers: false)
+        client.handleMessage("{\"type\":\"user_prompt\",\"session_id\":\"\(sessionIdString)\"}")
+        drainMainQueue()
+
+        XCTAssertTrue(ledger.isArmed(sessionId: sessionIdString),
+                      "A pane-typed prompt arms the session just like an in-app send")
+
+        deliverAndWait(assistantPayload(offset: 1, text: "done, here's what I found"))
+
+        XCTAssertTrue(fetchSession()?.isInPriorityQueue ?? false,
+                      "The reply to a prompt the user typed in the pane is the user's turn")
+    }
+
+    /// The contrast that motivates the whole mechanism: a supervisor- or
+    /// recipe-driven turn produces no `user_prompt` frame (the backend
+    /// attributes its own injections), so the session stays out.
+    func test_noUserPromptFrameMeansNoEnrollment() {
+        seedSession()
+
+        deliverAndWait(assistantPayload(offset: 1, text: "supervisor told me to do this"))
+
+        XCTAssertFalse(fetchSession()?.isInPriorityQueue ?? true,
+                       "Without a user_prompt frame there is nothing to claim, so the agent stays out of the queue")
+    }
+
     /// `recordOutboundPrompt` runs for every prompt, including for sessions the
     /// local store has never seen (a brand-new session's row is created by the
     /// first payload). It must arm without needing the row to exist.

@@ -1092,6 +1092,23 @@ class VoiceCodeClient: ObservableObject {
                     }
                 }
 
+            case "user_prompt":
+                // The user typed a prompt straight into this agent's tmux pane
+                // rather than sending from a client. Backend attribution (it
+                // knows every prompt it injected — voice-code.prompt-origin)
+                // means this frame only ever describes a real keyboard prompt,
+                // never a supervisor or recipe dispatch.
+                //
+                // Semantically identical to a send from this device: the ball
+                // moves to the agent, and the reply is the user's to read. So
+                // it runs the same bookkeeping, which dequeues the session and
+                // arms it to re-enter when the answer lands. Broadcast to every
+                // client, so this fires whether or not we ever subscribed.
+                if let sessionId = json["session_id"] as? String {
+                    LogManager.shared.log("⌨️ [VoiceCodeClient] User prompted \(sessionId) directly in its pane", category: "VoiceCodeClient")
+                    self.sessionSyncManager.recordOutboundPrompt(sessionId: sessionId)
+                }
+
             case "turn_complete":
                 // Backend signals that the provider finished its turn.
                 // Optional `aborted:true` indicates the turn was cut short by kill_session

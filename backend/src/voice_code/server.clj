@@ -2175,6 +2175,34 @@
   (log/info "Session deleted from filesystem" {:session-id session-id}))
   ;; This is informational - we don't broadcast deletes since it's just local cleanup
 
+(defn on-user-prompt
+  "Handler for a prompt the user typed straight into an agent's tmux pane
+   (a human-role transcript line this backend did not inject — see
+   voice-code.prompt-origin).
+
+   Broadcast to every connected non-deleted client, deliberately WITHOUT the
+   `:subscribed-sessions` gate every other push uses. That gate exists to stop
+   one client's session traffic leaking to another (tmux-untethered-2yp), but
+   this frame carries no message content — only the session id — and its entire
+   purpose is to reach a client that has never subscribed to this agent. A
+   subscriber-gated version would fire exactly never for the case it exists to
+   serve: the user walks over to a supervised agent, types at it, and wants it
+   to show up in the priority queue on his phone.
+
+   See docs/design/priority-queue-revisit.md."
+  [session-id]
+  (let [eligible (filter (fn [[channel _]]
+                           (not (is-session-deleted-for-client? channel session-id)))
+                         @connected-clients)]
+    (log/info "Broadcasting user-prompt (typed in pane)"
+              {:session-id session-id
+               :total-clients (count @connected-clients)
+               :eligible-clients (count eligible)})
+    (doseq [[channel _] eligible]
+      (send-to-client! channel
+                       {:type :user-prompt
+                        :session-id session-id}))))
+
 (defn on-turn-complete
   "Handler for turn-complete events.
 
@@ -3941,7 +3969,8 @@
        :on-session-updated broadcast-session-history!
        :on-session-updated-v5 push-to-subscribers!
        :on-session-deleted on-session-deleted
-       :on-turn-complete on-turn-complete)
+       :on-turn-complete on-turn-complete
+       :on-user-prompt on-user-prompt)
       (log/info "Filesystem watcher started successfully")
       (catch Exception e
         (log/error e "Failed to start filesystem watcher")))

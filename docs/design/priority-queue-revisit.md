@@ -128,11 +128,17 @@ did not prompt from the device never enters on its own, whatever launched it.
 
 ```
 ENTER  when a live assistant message lands on a session with an outstanding
-       prompt from this device (one-shot: the arrival consumes the claim)
+       prompt the USER sent (one-shot: the arrival consumes the claim)
 
-LEAVE  when this device sends the next prompt to a queued session
+LEAVE  when the user sends the next prompt to a queued session
        (the ball is back in the agent's court), or on manual removal
 ```
+
+"A prompt the user sent" means **any prompt he issued himself, from anywhere** — the iOS or macOS
+app, the headset, or typed straight into the agent's tmux pane. It deliberately excludes prompts
+issued *on his behalf* by automation: supervisor dispatches, recipe steps, ghost prompts,
+`tmux-agent` launches. An agent driven only by the supervisor never enters the queue; the moment he
+goes and talks to it himself, it does. See §4.1 for how the pane case is detected.
 
 Two consequences worth stating because they are choices, not fallout:
 
@@ -184,13 +190,47 @@ Wiring:
   `SessionsForDirectoryView.swift:363`) are removed. A freshly created session has no prompt in
   flight and is already on screen; it enters, like everything else, when its first reply lands.
 
+### 4.1 Prompts typed into the pane
+
+The client cannot see these at all: human-role prompts are deliberately filtered out of the message
+stream (`claude-human-prompt?` in `replication.clj`, because iOS already renders its own sends
+optimistically). So the signal has to come from the backend, which *can* see them — it parses and
+seq-stamps every one before dropping it from the broadcast.
+
+The discriminator is **attribution by elimination**. Every prompt the backend injects passes through
+a small enumerable set of choke points, and each records the text first:
+
+| Choke point | Covers |
+|---|---|
+| `tmux/deliver!` (live-window branch) | client sends, recipe steps, ghost prompts to a live pane |
+| `tmux/start-window!` (both nudge sites) | new sessions, respawn-after-eviction, `tmux-agent start` |
+| `claude/invoke-claude` | the supervisor's `dispatch_prompt` |
+
+Recording sits at the three `nudge!` call sites rather than at the top of `deliver!` precisely
+because they are mutually exclusive per delivery — `deliver!` → `respawn-and-deliver!` →
+`start-window!` would otherwise record one prompt twice. On a failed nudge the record is withdrawn
+(claimed back) before the respawn re-records it.
+
+A human prompt in the transcript with no matching record was typed at the keyboard. The backend
+then emits `user_prompt {session_id}` to **every** connected client — not subscriber-gated, since
+the whole point is reaching a client that never subscribed to that agent. The client treats it
+exactly like one of its own sends: `recordOutboundPrompt`, which dequeues and re-arms.
+
+**The bias is asymmetric on purpose.** When a human prompt cannot be text-matched but an injection
+is still outstanding for that session, it is claimed as backend-injected anyway. A false "injected"
+costs one missed queue entry, which one more prompt fixes. A false "typed by the user" silently
+re-admits an agent nobody is waiting on — the original failure. Records expire after 10 minutes so
+a prompt that never landed cannot mute the user indefinitely.
+
 ## 5. What this does to the reported symptom
 
 | Situation | Before | After |
 |---|---|---|
 | CLI/recipe agent Travis peeks at | enqueued on every turn while subscribed | never enqueued |
 | Same agent, app backgrounded mid-look | enqueued forever (subscription leak) | never enqueued |
+| Supervisor-driven agent, never touched by him | enqueued if subscribed | never enqueued |
 | Session Travis prompts from the phone | enqueued | enqueued, once, when the reply lands |
+| Agent he prompts by typing in its tmux pane | not enqueued (invisible to client) | enqueued when the reply lands |
 | He replies to a queued session | stays queued | leaves; returns when the agent answers |
 | CLI agent he *does* want to track | manual add | manual add (unchanged) |
 | Session he created but hasn't prompted | enqueued empty | not enqueued |
@@ -237,7 +277,21 @@ should be designed against real use of §3 rather than speculatively bundled wit
 - Tests: `PriorityQueueAdmissionTests`, `PendingReplyLedgerTests`,
   `PriorityQueueAdmissionSyncTests` (end-to-end through the v0.5.0 payload path)
 
-**Test status.** iOS: all three new classes pass, as do the six existing `SessionSyncManager`
+**Pane-typed prompts (§4.1), added in a second pass:**
+
+- `voice-code.prompt-origin` — injection ledger and attribution
+- Recording at the three `nudge!` call sites in `tmux.clj` + `claude/invoke-claude`
+- `:on-user-prompt` watcher callback in `replication.clj` (+ `human-prompt-text`)
+- `on-user-prompt` broadcast in `server.clj`, new `user_prompt` frame (protocol doc updated)
+- Client `user_prompt` handler
+- Tests: `voice-code.prompt-origin-test` (12 tests / 22 assertions), plus two client tests
+
+**Test status.** Backend: `prompt-origin-test` passes; `replication-test` (198),
+`tmux-test` (30), `claude-test` (29), `server-test` (134), `ghost-test`, `recipes-test` and
+`dual-protocol-test` all pass. `orchestration-server-test` has 6 failures in
+`recipe-provider-extraction-from-message-test` / `recipe-provider-invalid-provider-test` that
+reproduce identically at `HEAD` in a clean worktree — pre-existing, unrelated.
+iOS: all three new classes pass, as do the six existing `SessionSyncManager`
 suites and the 106-test `PriorityQueueManagementTests`. The full `make test` run has two failing
 suites — `BlueParrottButtonManagerTests` (15) and `HeadsetIOSAudioSessionTests` (1) — which fail
 identically at `HEAD` in a clean worktree; they are simulator audio-session failures unrelated to

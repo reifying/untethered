@@ -7,6 +7,7 @@
   (:require [clojure.java.shell :as shell]
             [clojure.string :as str]
             [clojure.tools.logging :as log]
+            [voice-code.prompt-origin :as origin]
             [voice-code.providers :as providers]))
 
 ;; Declared up front so start-window! can reference evict-if-needed! and
@@ -597,11 +598,15 @@
                      :tmux-session tmux-session
                      :tmux-window (:tmux-window descriptor)})
           (when initial-prompt
+            ;; Record before the pane sees it so the transcript line can never
+            ;; race ahead of its own attribution (see voice-code.prompt-origin).
+            (origin/record-injected! session-uuid initial-prompt)
             (nudge! tmux-session (:tmux-window descriptor) initial-prompt))
           descriptor)
         (let [ready-result (wait-for-ready tmux-session window provider)]
           (if (= :ready ready-result)
             (do (when initial-prompt
+                  (origin/record-injected! session-uuid initial-prompt)
                   (nudge! tmux-session window initial-prompt))
                 descriptor)
             (throw (ex-info "Provider TUI did not become ready before timeout"
@@ -738,8 +743,20 @@
   (let [desc (or (get @live-windows session-uuid)
                  (scan-window-for-uuid! session-uuid))]
     (if-let [{:keys [tmux-session tmux-window]} desc]
-      (let [result (nudge! tmux-session tmux-window prompt-text)]
-        (when (= :failed result)
-          (swap! live-windows dissoc session-uuid)
-          (respawn-and-deliver! session-uuid prompt-text)))
+      (do
+        ;; Recorded here rather than at the top of deliver! so the respawn
+        ;; fallback (which reaches start-window!, itself a recording site)
+        ;; cannot double-record one delivered prompt. Recorded BEFORE the send
+        ;; so the transcript line can never race ahead of its own attribution.
+        ;; See voice-code.prompt-origin.
+        (origin/record-injected! session-uuid prompt-text)
+        (let [result (nudge! tmux-session tmux-window prompt-text)]
+          (when (= :failed result)
+            ;; The prompt never reached the pane. Withdraw our record (claiming
+            ;; it back consumes exactly the one we just wrote) so the respawn
+            ;; below is the single record for this prompt — otherwise the
+            ;; leftover would later absorb a genuine keyboard prompt.
+            (origin/claim-injected! session-uuid prompt-text)
+            (swap! live-windows dissoc session-uuid)
+            (respawn-and-deliver! session-uuid prompt-text))))
       (respawn-and-deliver! session-uuid prompt-text))))

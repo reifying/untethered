@@ -6,6 +6,7 @@
             [clojure.edn :as edn]
             [cheshire.core :as json]
             [clojure.tools.logging :as log]
+            [voice-code.prompt-origin :as origin]
             [voice-code.providers :as providers])
   (:import [java.nio.file FileSystems Path Paths WatchService WatchKey StandardWatchEventKinds]
            [java.io RandomAccessFile]
@@ -1023,6 +1024,25 @@
            (string? content) true
            (sequential? content) (not-any? #(= "tool_result" (:type %)) content)
            :else true))))
+
+(defn human-prompt-text
+  "Plain text of a raw human-typed user message. Content is either a bare
+  string or a block vector; only `text` blocks carry prompt text (a
+  human-typed prompt has no tool_result blocks by claude-human-prompt?'s
+  definition, but images and other block types can ride along). Returns \"\"
+  when nothing textual is present — prompt-origin treats an empty prompt as
+  unrecordable and unmatchable, so such a message is never mistaken for a
+  keyboard-typed prompt on the strength of its text."
+  [raw-msg]
+  (let [content (get-in raw-msg [:message :content])]
+    (cond
+      (string? content) content
+      (sequential? content) (->> content
+                                 (filter #(= "text" (:type %)))
+                                 (map :text)
+                                 (remove nil?)
+                                 (str/join "\n"))
+      :else "")))
 
 (defn parse-jsonl-file
   "Parse all messages from a .jsonl file.
@@ -2133,6 +2153,7 @@
          :on-session-updated-v5 nil ;; v0.5.0 fan-out: (fn [session-id provider file-path snapshot snapshot-from-offset file-end-line-count current-sig])
          :on-session-deleted nil ;; Callback: (fn [session-id])
          :on-turn-complete nil ;; Callback: (fn [session-id])
+         :on-user-prompt nil ;; Callback: (fn [session-id]) — user typed into the pane, not backend-injected
          :opencode-part-msg-dirs #{}})) ;; Set of watched opencode part message dirs
 
 ;; ============================================================================
@@ -2665,9 +2686,25 @@
                       ;; (:type / nested :message.content), and positional
                       ;; pairing (rather than joining on :uuid) keeps the
                       ;; filter correct even for raw entries that lack :uuid.
+                      human-prompts (->> (map first raw+canonical)
+                                         (filter claude-human-prompt?)
+                                         (vec))
                       broadcast-messages (->> (map vector (map first raw+canonical) canonical-seq)
                                               (remove (fn [[raw _]] (claude-human-prompt? raw)))
                                               (mapv second))
+                      ;; Of the human prompts we just dropped, which were NOT
+                      ;; injected by this backend? Those were typed by the user
+                      ;; at the keyboard, in the pane — the only evidence the
+                      ;; backend has that the user personally went and talked to
+                      ;; this agent. `claim-injected!` consumes a record per
+                      ;; prompt and biases toward "injected" when uncertain; see
+                      ;; voice-code.prompt-origin.
+                      user-typed-prompts (->> human-prompts
+                                              (remove (fn [raw]
+                                                        (origin/claim-injected!
+                                                         session-id
+                                                         (human-prompt-text raw))))
+                                              (vec))
                       old-count (:message-count old-metadata 0)
                       new-count (+ old-count (count filtered-messages))
                       ios-notified? (:ios-notified old-metadata false)
@@ -2703,6 +2740,18 @@
                              :last-modified last-modified
                              :used-message-timestamp (boolean last-message-timestamp)
                              :ios-notified ios-notified?})
+
+                  ;; Fired regardless of subscription AND of which branch below
+                  ;; runs — the whole point is to reach a client that has never
+                  ;; subscribed to this agent, and a pane-typed prompt is just as
+                  ;; real on a session's first message as on its hundredth.
+                  ;; See :on-user-prompt in start-watcher!.
+                  (when (seq user-typed-prompts)
+                    (log/info "User typed a prompt directly into the pane"
+                              {:session-id session-id
+                               :count (count user-typed-prompts)})
+                    (when-let [callback (:on-user-prompt @watcher-state)]
+                      (callback session-id)))
 
                   ;; Check if this is the 0→N transition (time to notify iOS!)
                   (if (and (zero? old-count)
@@ -3514,8 +3563,14 @@
   - :on-session-created (fn [session-metadata])
   - :on-session-updated (fn [session-id new-messages])
   - :on-session-deleted (fn [session-id])
-  - :on-turn-complete (fn [session-id])"
-  [& {:keys [on-session-created on-session-updated on-session-updated-v5 on-session-deleted on-turn-complete]}]
+  - :on-turn-complete (fn [session-id])
+  - :on-user-prompt (fn [session-id]) — a human-role prompt appeared in the
+    transcript that this backend did not inject, i.e. the user typed it
+    directly into the tmux pane. Fires regardless of subscription, because its
+    whole purpose is to reach clients that have never subscribed to the
+    session. See voice-code.prompt-origin and
+    docs/design/priority-queue-revisit.md."
+  [& {:keys [on-session-created on-session-updated on-session-updated-v5 on-session-deleted on-turn-complete on-user-prompt]}]
   (when (:running @watcher-state)
     (log/warn "Watcher already running")
     (throw (ex-info "Watcher already running" {})))
@@ -3584,7 +3639,8 @@
                :on-session-updated on-session-updated
                :on-session-updated-v5 on-session-updated-v5
                :on-session-deleted on-session-deleted
-               :on-turn-complete on-turn-complete)
+               :on-turn-complete on-turn-complete
+               :on-user-prompt on-user-prompt)
 
         ;; Start watcher thread
         (let [watcher-thread (Thread.

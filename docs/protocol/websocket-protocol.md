@@ -314,6 +314,39 @@ Sent when a provider CLI finishes processing a prompt successfully (turn is comp
 - `session_id` (required): Provider session ID
 - `aborted` (optional, default `false`, omitted when false): Set to `true` on the synthesized `turn_complete` emitted when the provider window was killed mid-turn (by `kill_session` or compaction). iOS should treat `aborted:true` identically to a normal `turn_complete` for UI-unlock purposes; it is informational so the client may render a distinct badge.
 
+**User Prompt (Typed Directly Into the Agent's Pane)**
+```json
+{
+  "type": "user_prompt",
+  "session_id": "<claude-session-id>"
+}
+```
+
+Sent when a human-role prompt appears in a session transcript that **this backend did not
+inject**. Every backend-originated prompt — client sends, recipe steps, ghost prompts, supervisor
+`dispatch_prompt`, `tmux-agent` launches — is recorded at its injection choke point
+(`voice-code.prompt-origin`), so an unrecorded one means the user typed at the keyboard, in the
+tmux pane. This is the only signal distinguishing *the user personally went and talked to this
+agent* from *something automated drove it*.
+
+**Fields:** `session_id` (required). No message content is carried — the prompt text itself is
+still filtered out of the message stream as before (`claude-human-prompt?`).
+
+**Broadcast, not subscriber-gated.** Unlike `session_history` / `session_updated`, this frame goes
+to every connected non-deleted client regardless of `subscribed_sessions`. That gate exists to stop
+session content leaking between clients (tmux-untethered-2yp); this frame carries no content, and
+its entire purpose is to reach a client that has *never* subscribed to the session. A gated version
+would fire exactly never for the case it exists to serve.
+
+**Attribution is biased toward "injected".** When a human prompt cannot be text-matched against an
+outstanding injection record for that session, it is still claimed as backend-injected if any
+record is outstanding. A false "injected" costs one missed queue entry; a false "typed by the user"
+silently re-admits agents nobody is waiting on.
+
+**iOS behavior:** treated identically to a prompt sent from the device — the session leaves the
+priority queue (the ball is with the agent) and is armed to re-enter when the reply lands. See
+`docs/design/priority-queue-revisit.md`.
+
 **Ghost Prompt (Effective Prompt for a Ghost Send)**
 ```json
 {
