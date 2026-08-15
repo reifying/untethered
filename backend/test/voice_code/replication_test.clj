@@ -4,6 +4,7 @@
             [voice-code.providers :as providers]
             [clojure.java.io :as io]
             [clojure.java.shell :as shell]
+            [clojure.edn :as edn]
             [clojure.string :as str]
             [cheshire.core :as json]
             [clojure.tools.logging :as log])
@@ -3208,6 +3209,232 @@
           filtered (repl/filter-internal-messages messages)]
       (is (= 0 (count filtered))))))
 
+;; ============================================================================
+;; Session ordering: closing a session is not activity
+;; ============================================================================
+;;
+;; Claude Code appends untimestamped session-state records (`last-prompt`,
+;; `ai-title`, `mode`, `permission-mode`, `agent-name`) to a transcript when
+;; session state changes and again when the session exits. Closing the tmux
+;; window of a week-idle session therefore rewrites its .jsonl's mtime with
+;; records that describe settings, not work. The session list must not read
+;; that as recency.
+
+(def close-time-state-records
+  "The records Claude Code appends when a session exits, verbatim in shape:
+   no `timestamp`, no `message`."
+  [(json/generate-string {:type "last-prompt" :lastPrompt "do the thing"
+                          :leafUuid "2b2daa07-58a2-425a-bed7-17d4fc99e7a1"})
+   (json/generate-string {:type "ai-title" :title "Do the thing"})
+   (json/generate-string {:type "mode" :mode "default"})
+   (json/generate-string {:type "permission-mode" :permissionMode "acceptEdits"})])
+
+(deftest test-session-state-record?
+  (testing "Untimestamped non-message records are session state"
+    (doseq [t ["last-prompt" "ai-title" "mode" "permission-mode" "agent-name"]]
+      (is (repl/session-state-record? {:type t})
+          (str t " should be classified as session state"))))
+
+  (testing "Timestamped timeline records are not session state"
+    (doseq [t ["user" "assistant" "attachment" "queue-operation" "pr-link"]]
+      (is (not (repl/session-state-record? {:type t :timestamp "2026-08-01T12:00:00.000Z"}))
+          (str t " should not be classified as session state"))))
+
+  (testing "user/assistant records are messages even without a timestamp"
+    (is (not (repl/session-state-record? {:type "user"})))
+    (is (not (repl/session-state-record? {:type "assistant"}))))
+
+  (testing "filter-internal-messages drops session-state records"
+    (let [filtered (repl/filter-internal-messages
+                    [{:type "user" :text "msg" :timestamp "2026-08-01T12:00:00.000Z"}
+                     {:type "last-prompt" :lastPrompt "msg"}
+                     {:type "ai-title" :title "T"}
+                     {:type "mode" :mode "default"}
+                     {:type "permission-mode" :permissionMode "default"}])]
+      (is (= 1 (count filtered)))
+      (is (= "user" (:type (first filtered)))))))
+
+(deftest test-last-activity-timestamp
+  (testing "Reads through trailing session-state records to the last real message"
+    (is (= (.toEpochMilli (java.time.Instant/parse "2026-08-01T12:00:00.000Z"))
+           (repl/last-activity-timestamp
+            [{:type "user" :timestamp "2026-07-25T09:00:00.000Z"}
+             {:type "assistant" :timestamp "2026-08-01T12:00:00.000Z"}
+             {:type "last-prompt"}
+             {:type "ai-title"}]))))
+
+  (testing "Returns nil when nothing in the batch carries a timestamp"
+    (is (nil? (repl/last-activity-timestamp [{:type "last-prompt"} {:type "mode"}]))))
+
+  (testing "Returns nil for an empty batch"
+    (is (nil? (repl/last-activity-timestamp []))))
+
+  (testing "Ignores an unparseable timestamp and keeps looking"
+    (is (= (.toEpochMilli (java.time.Instant/parse "2026-08-01T12:00:00.000Z"))
+           (repl/last-activity-timestamp
+            [{:type "user" :timestamp "2026-08-01T12:00:00.000Z"}
+             {:type "assistant" :timestamp "not-a-timestamp"}])))))
+
+(deftest test-build-session-metadata-ignores-close-time-writes
+  (testing "A week-idle session closed just now keeps its week-old last-modified"
+    (let [session-id "550e8400-e29b-41d4-a716-4466554400a1"
+          last-real-activity "2026-08-01T19:24:00.000Z"
+          last-real-ms (.toEpochMilli (java.time.Instant/parse last-real-activity))
+          file (create-test-jsonl-file
+                (str session-id ".jsonl")
+                (concat [(claude-jsonl {:type "user" :text "please look at the schema"
+                                        :timestamp "2026-08-01T19:20:00.000Z"})
+                         (claude-jsonl {:type "assistant" :text "here is what I found"
+                                        :timestamp last-real-activity})]
+                        close-time-state-records))
+          ;; The tmux window is closed a week later: Claude Code's exit write
+          ;; stamps the file mtime with "now".
+          close-time (System/currentTimeMillis)]
+      (.setLastModified file close-time)
+      (let [metadata (repl/build-session-metadata file)]
+        (is (= last-real-ms (:last-modified metadata))
+            "last-modified must be the last real message, not the close-time mtime")
+        (is (= last-real-ms (:last-modified-ms metadata)))
+        (is (= 2 (:message-count metadata))
+            "session-state records must not be counted as messages"))))
+
+  (testing "The last message is a real message, not a trailing state record"
+    (let [file (create-test-jsonl-file
+                "550e8400-e29b-41d4-a716-4466554400a2.jsonl"
+                (concat [(json/generate-string {:role "user" :text "please look at the schema"
+                                                :timestamp "2026-08-01T19:20:00.000Z"})
+                         (json/generate-string {:role "assistant" :text "here is what I found"
+                                                :timestamp "2026-08-01T19:24:00.000Z"})]
+                        close-time-state-records))
+          metadata (repl/extract-metadata-from-file file)]
+      (is (= "here is what I found" (:last-message metadata)))
+      (is (str/includes? (:preview metadata) "here is what I found")))))
+
+(deftest test-get-recent-sessions-orders-by-real-activity
+  (testing "A session closed moments ago does not outrank a genuinely recent one"
+    (let [stale-id "550e8400-e29b-41d4-a716-4466554400b1"
+          recent-id "550e8400-e29b-41d4-a716-4466554400b2"
+          now (System/currentTimeMillis)
+          week-ago (- now (* 7 24 60 60 1000))
+          hour-ago (- now (* 60 60 1000))
+          stale-file (create-test-jsonl-file
+                      (str stale-id ".jsonl")
+                      (concat [(claude-jsonl {:type "user" :text "old work"
+                                              :timestamp (str (java.time.Instant/ofEpochMilli week-ago))})]
+                              close-time-state-records))
+          recent-file (create-test-jsonl-file
+                       (str recent-id ".jsonl")
+                       [(claude-jsonl {:type "user" :text "recent work"
+                                       :timestamp (str (java.time.Instant/ofEpochMilli hour-ago))})])]
+      ;; Both files were touched just now — the stale one because its tmux
+      ;; window was closed, the recent one because work is ongoing.
+      (.setLastModified stale-file now)
+      (.setLastModified recent-file now)
+      (reset! repl/session-index
+              {stale-id (repl/build-session-metadata stale-file)
+               recent-id (repl/build-session-metadata recent-file)})
+      (let [ordered (mapv :session-id (repl/get-recent-sessions 10))]
+        (is (= [recent-id stale-id] ordered)
+            "the session with genuinely recent work must sort first")))))
+
+(deftest test-handle-file-modified-close-time-write-is-not-activity
+  (testing "Appending only session-state records leaves last-modified untouched"
+    (let [session-id "550e8400-e29b-41d4-a716-4466554400c1"
+          last-real-ms (.toEpochMilli (java.time.Instant/parse "2026-08-01T19:24:00.000Z"))
+          file (create-test-jsonl-file
+                (str session-id ".jsonl")
+                [(claude-jsonl {:type "assistant" :text "here is what I found"
+                                :timestamp "2026-08-01T19:24:00.000Z"})])
+          file-path (.getAbsolutePath file)]
+      ;; The watcher has already consumed the real message.
+      (swap! repl/file-positions assoc file-path (.length file))
+      (swap! repl/line-counts assoc file-path 1)
+      (swap! repl/session-index assoc session-id
+             {:session-id session-id
+              :file file-path
+              :message-count 1
+              :last-modified last-real-ms
+              :last-modified-ms last-real-ms
+              :ios-notified true})
+
+      ;; A week later the tmux window is closed and Claude Code appends its
+      ;; exit records, refreshing the file's mtime.
+      (spit file (str (str/join "\n" close-time-state-records) "\n") :append true)
+      (.setLastModified file (System/currentTimeMillis))
+      (repl/handle-file-modified file)
+
+      (let [entry (get @repl/session-index session-id)]
+        (is (= last-real-ms (:last-modified entry))
+            "closing a session must not restamp it as recently active")
+        (is (= last-real-ms (:last-modified-ms entry)))
+        (is (= 1 (:message-count entry))
+            "session-state records must not inflate the message count")))))
+
+(deftest test-handle-file-modified-real-message-updates-activity
+  (testing "A real appended message still advances last-modified"
+    (let [session-id "550e8400-e29b-41d4-a716-4466554400c2"
+          old-ms (.toEpochMilli (java.time.Instant/parse "2026-08-01T19:24:00.000Z"))
+          new-ts "2026-08-08T10:00:00.000Z"
+          new-ms (.toEpochMilli (java.time.Instant/parse new-ts))
+          file (create-test-jsonl-file
+                (str session-id ".jsonl")
+                [(claude-jsonl {:type "assistant" :text "older"
+                                :timestamp "2026-08-01T19:24:00.000Z"})])
+          file-path (.getAbsolutePath file)]
+      (swap! repl/file-positions assoc file-path (.length file))
+      (swap! repl/line-counts assoc file-path 1)
+      (swap! repl/session-index assoc session-id
+             {:session-id session-id
+              :file file-path
+              :message-count 1
+              :last-modified old-ms
+              :last-modified-ms old-ms
+              :ios-notified true})
+
+      ;; Real work, followed by the state records Claude Code writes alongside it.
+      (spit file (str (str/join "\n" (cons (claude-jsonl {:type "assistant" :text "newer"
+                                                          :timestamp new-ts})
+                                           close-time-state-records))
+                      "\n")
+            :append true)
+      (repl/handle-file-modified file)
+
+      (let [entry (get @repl/session-index session-id)]
+        (is (= new-ms (:last-modified entry))
+            "a timestamped message must advance last-modified even with state records after it")
+        (is (= 2 (:message-count entry)))))))
+
+(deftest test-load-index-rebuilds-on-format-change
+  (testing "An index written under an older format version is not loaded"
+    (let [index-file (io/file test-dir "stale-format" "session-index.edn")]
+      (io/make-parents index-file)
+      ;; Version 1: :last-modified derived from file mtime for closed sessions.
+      (spit index-file (pr-str {:sessions {"550e8400-e29b-41d4-a716-4466554400d1"
+                                           {:session-id "550e8400-e29b-41d4-a716-4466554400d1"
+                                            :last-modified 1}}}))
+      (with-redefs [repl/get-index-file-path (fn [] (.getAbsolutePath index-file))
+                    repl/get-legacy-index-file-path (fn [] (str test-dir "/no-such-legacy-index.edn"))]
+        (is (nil? (repl/load-index))
+            "a pre-versioning index must be rebuilt, not served"))))
+
+  (testing "An index written under the current format version loads"
+    (let [index-file (io/file test-dir "current-format" "session-index.edn")
+          sessions {"550e8400-e29b-41d4-a716-4466554400d2"
+                    {:session-id "550e8400-e29b-41d4-a716-4466554400d2" :last-modified 1}}]
+      (io/make-parents index-file)
+      (spit index-file (pr-str {:index-version repl/index-format-version :sessions sessions}))
+      (with-redefs [repl/get-index-file-path (fn [] (.getAbsolutePath index-file))
+                    repl/get-legacy-index-file-path (fn [] (str test-dir "/no-such-legacy-index.edn"))]
+        (is (= sessions (repl/load-index))))))
+
+  (testing "save-index! stamps the current format version"
+    (let [index-file (io/file test-dir "roundtrip" "session-index.edn")]
+      (io/make-parents index-file)
+      (with-redefs [repl/get-index-file-path (fn [] (.getAbsolutePath index-file))]
+        (repl/save-index! {"550e8400-e29b-41d4-a716-4466554400d3" {:last-modified 1}}))
+      (is (= repl/index-format-version
+             (:index-version (edn/read-string (slurp index-file))))))))
+
 (deftest test-handle-file-modified-sidechain-filtering
   (testing "session_updated NOT sent when only sidechain messages present"
     (let [callback-called (atom false)
@@ -4347,7 +4574,8 @@
           new-voice-code-dir (io/file test-home ".voice-code")
           legacy-index-file (io/file legacy-claude-dir ".session-index.edn")
           new-index-file (io/file new-voice-code-dir "session-index.edn")
-          test-data {:sessions {"test-uuid" {:session-id "test-uuid" :name "Test"}}}]
+          test-data {:index-version repl/index-format-version
+                     :sessions {"test-uuid" {:session-id "test-uuid" :name "Test"}}}]
 
       ;; Create legacy directory and index file
       (.mkdirs legacy-claude-dir)
@@ -4375,8 +4603,10 @@
           new-voice-code-dir (io/file test-home ".voice-code")
           legacy-index-file (io/file legacy-claude-dir ".session-index.edn")
           new-index-file (io/file new-voice-code-dir "session-index.edn")
-          legacy-data {:sessions {"old-uuid" {:session-id "old-uuid" :name "Old"}}}
-          new-data {:sessions {"new-uuid" {:session-id "new-uuid" :name "New"}}}]
+          legacy-data {:index-version repl/index-format-version
+                       :sessions {"old-uuid" {:session-id "old-uuid" :name "Old"}}}
+          new-data {:index-version repl/index-format-version
+                    :sessions {"new-uuid" {:session-id "new-uuid" :name "New"}}}]
 
       ;; Create both directories and files
       (.mkdirs legacy-claude-dir)
@@ -4422,7 +4652,8 @@
           new-voice-code-dir (io/file test-home ".voice-code")
           legacy-index-file (io/file legacy-claude-dir ".session-index.edn")
           new-index-file (io/file new-voice-code-dir "session-index.edn")
-          legacy-data {:sessions {"legacy-uuid" {:session-id "legacy-uuid" :name "Legacy Session"}}}]
+          legacy-data {:index-version repl/index-format-version
+                       :sessions {"legacy-uuid" {:session-id "legacy-uuid" :name "Legacy Session"}}}]
 
       ;; Create both, but new file is empty
       (.mkdirs legacy-claude-dir)

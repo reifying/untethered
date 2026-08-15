@@ -125,12 +125,27 @@
 
 (defn get-index-file-path
   "Get path to the persisted session index file.
-   
+
    Uses ~/.voice-code/session-index.edn for provider-agnostic storage.
    This allows voice-code to work even without Claude installed."
   []
   (let [home (System/getProperty "user.home")]
     (str home "/.voice-code/session-index.edn")))
+
+(def index-format-version
+  "Schema version of the persisted session index.
+
+   Bump this when the *meaning* of a stored field changes, so an index written
+   by an older build is rebuilt from the filesystem instead of silently serving
+   values computed under the old semantics.
+
+   1 — pre-versioned indexes (no :index-version key on disk).
+   2 — :last-modified means \"when the session was last genuinely active\": the
+       timestamp of the newest transcript record that carries one. Version 1
+       read the timestamp off the last record only, which is an untimestamped
+       session-state record in ~95% of real transcripts, so :last-modified fell
+       through to the file mtime and closing a stale session ranked it as new."
+  2)
 
 (defn find-jsonl-files
   "Recursively find all .jsonl files in the Claude projects directory.
@@ -289,20 +304,57 @@
         (log/debug "Failed to parse JSONL line" {:error (ex-message e) :line (subs line 0 (min 50 (count line)))})
         nil))))
 
+(defn parse-timestamp-ms
+  "Parse an ISO-8601 timestamp string to epoch milliseconds. Returns nil for a
+  missing or unparseable value."
+  [ts]
+  (when ts
+    (try
+      (.toEpochMilli (java.time.Instant/parse ts))
+      (catch Exception e
+        (log/debug "Failed to parse timestamp" {:timestamp ts :error (ex-message e)})
+        nil))))
+
+(defn session-state-record?
+  "True for Claude Code's session-state records: `last-prompt`, `ai-title`,
+  `mode`, `permission-mode`, `agent-name` and their future kin.
+
+  Claude Code appends these to the transcript whenever session state changes
+  and again when the session exits, so a transcript that has been idle for a
+  week still gets fresh bytes the moment its tmux window is closed. They carry
+  no `timestamp` because they are settings snapshots, not timeline events.
+
+  The test is structural rather than a type allowlist so new record types stay
+  classified correctly: every genuine transcript record (user, assistant,
+  attachment, queue-operation, pr-link, frame-link) carries a timestamp, and a
+  record that identifies itself as a user or assistant message — by raw `type`
+  or by canonical `role` — is a message whether or not one is present."
+  [msg]
+  (and (nil? (:timestamp msg))
+       (not (contains? #{"user" "assistant"} (:type msg)))
+       (not (contains? #{"user" "assistant"} (:role msg)))))
+
+(defn- internal-message?
+  "True for transcript records that are not part of the user-visible
+  conversation: sidechain overhead, `summary` / `system` records, and the
+  session-state records above."
+  [msg]
+  (or (boolean (:isSidechain msg))
+      (= (:type msg) "summary")
+      (= (:type msg) "system")
+      (session-state-record? msg)))
+
 (defn filter-internal-messages
   "Filter out internal Claude Code messages.
   Removes:
   - Sidechain messages (warmup, internal overhead where isSidechain=true)
   - Summary messages (error summaries, type='summary')
   - System messages (local command notifications, type='system')
-  Returns only user/assistant messages."
+  - Session-state records (see `session-state-record?`)
+  Returns only conversation messages."
   [messages]
   (let [total-count (count messages)
-        filtered (filter (fn [msg]
-                           (and (not (:isSidechain msg))
-                                (not= (:type msg) "summary")
-                                (not= (:type msg) "system")))
-                         messages)
+        filtered (remove internal-message? messages)
         filtered-count (count filtered)
         removed-count (- total-count filtered-count)]
     (when (pos? removed-count)
@@ -314,13 +366,22 @@
                                                       (:isSidechain %) :sidechain
                                                       (= (:type %) "summary") :summary
                                                       (= (:type %) "system") :system
+                                                      (session-state-record? %) :session-state
                                                       :else :unknown)
-                                                   (remove (fn [msg]
-                                                             (and (not (:isSidechain msg))
-                                                                  (not= (:type msg) "summary")
-                                                                  (not= (:type msg) "system")))
-                                                           messages)))}))
+                                                   (filter internal-message? messages)))}))
     filtered))
+
+(defn last-activity-timestamp
+  "Epoch milliseconds of the most recent record in `messages` that carries a
+  parseable timestamp, or nil when none does.
+
+  Scans from the end rather than reading `(last messages)` because a
+  transcript's trailing records are routinely untimestamped session-state
+  records. Taking the timestamp of the last record alone yields nil for ~95% of
+  real transcripts, and every caller falls back to the file mtime when it does
+  — which is how closing a week-old session used to stamp it as active now."
+  [messages]
+  (some (comp parse-timestamp-ms :timestamp) (reverse messages)))
 
 (defn extract-metadata-from-file
   "Extract metadata from a .jsonl file without loading all messages.
@@ -387,14 +448,7 @@
                         truncated)))
          :first-message (when first-msg (:text first-msg))
          :last-message (when last-msg (:text last-msg))
-         :last-message-timestamp (when last-msg
-                                   (when-let [ts (:timestamp last-msg)]
-                                     (try
-                                        ;; Parse ISO-8601 timestamp to milliseconds
-                                       (.toEpochMilli (java.time.Instant/parse ts))
-                                       (catch Exception e
-                                         (log/debug "Failed to parse timestamp" {:timestamp ts :error (ex-message e)})
-                                         nil))))
+         :last-message-timestamp (last-activity-timestamp messages)
          :claude-summary claude-summary}))
     (catch Exception e
       (log/warn e "Failed to extract metadata from file" {:file (.getPath file)})
@@ -509,11 +563,9 @@
         message-count (count messages)
         first-msg (first messages)
         last-msg (last messages)
-        ;; Extract timestamp from last message, or fall back to events file modification time
-        last-modified (or (when-let [ts (:timestamp last-msg)]
-                            (try
-                              (.toEpochMilli (java.time.Instant/parse ts))
-                              (catch Exception _ nil)))
+        ;; Timestamp of the last message that carries one, or fall back to the
+        ;; events file modification time
+        last-modified (or (last-activity-timestamp messages)
                           (when (.exists events-file)
                             (.lastModified events-file)))
         created-at (if (.exists events-file)
@@ -766,7 +818,7 @@
       (let [index-path (get-index-file-path)
             index-file (io/file index-path)]
         (io/make-parents index-file)
-        (spit index-file (pr-str {:sessions index}))
+        (spit index-file (pr-str {:index-version index-format-version :sessions index}))
         (log/debug "Session index saved" {:path index-path :session-count (count index)}))
       (catch Exception e
         (log/error e "Failed to save session index"))
@@ -792,7 +844,13 @@
         new-file (io/file new-path)
         legacy-path (get-legacy-index-file-path)
         legacy-file (io/file legacy-path)
-        new-empty? (and (.exists new-file) (<= (.length new-file) 14)) ;; {:sessions {}} = 14 bytes
+        ;; A populated index is megabytes, so the length check short-circuits
+        ;; the common case; the parse then answers exactly, without depending
+        ;; on the byte length of any particular envelope format.
+        new-empty? (and (.exists new-file)
+                        (< (.length new-file) 1024)
+                        (try (empty? (:sessions (edn/read-string (slurp new-file))))
+                             (catch Exception _ true)))
         should-migrate? (and (.exists legacy-file)
                              (or (not (.exists new-file))
                                  (and new-empty? (> (.length legacy-file) 14))))]
@@ -817,7 +875,13 @@
 
 (defn load-index
   "Load session index from disk. Returns nil if file doesn't exist or is invalid.
-   
+
+   Returns nil for an index written under an older `index-format-version` so
+   the caller rebuilds from the filesystem. A stored index carries derived
+   values, not source of truth: when the derivation changes, the stored values
+   are wrong and no amount of validation will notice, because they are
+   perfectly well-formed.
+
    On first call, migrates index from legacy ~/.claude location if needed."
   []
   ;; Attempt migration from legacy location on first load
@@ -828,9 +892,18 @@
       (when (.exists index-file)
         (log/info "Loading session index from disk" {:path index-path})
         (let [data (edn/read-string (slurp index-file))
-              sessions (:sessions data)]
-          (log/info "Session index loaded" {:session-count (count sessions)})
-          sessions)))
+              sessions (:sessions data)
+              ;; Indexes written before versioning are version 1.
+              version (get data :index-version 1)]
+          (if (< version index-format-version)
+            (log/info "Session index was written by an older format, will rebuild"
+                      {:path index-path
+                       :stored-version version
+                       :current-version index-format-version
+                       :session-count (count sessions)})
+            (do
+              (log/info "Session index loaded" {:session-count (count sessions)})
+              sessions)))))
     (catch Exception e
       (log/error e "Failed to load session index, will rebuild")
       nil)))
@@ -996,20 +1069,6 @@
   ;; `pre-line-count` for each tick — the deterministic offset stamp that
   ;; replaces the persisted `:next-seq` counter in v0.5.0.
   (atom {}))
-
-(defn filter-internal-messages
-  "Filter out internal Claude Code messages.
-  Removes:
-  - Sidechain messages (warmup, internal overhead where isSidechain=true)
-  - Summary messages (error summaries, type='summary')
-  - System messages (local command notifications, type='system')
-  Returns only user/assistant messages."
-  [messages]
-  (filter (fn [msg]
-            (and (not (:isSidechain msg))
-                 (not= (:type msg) "summary")
-                 (not= (:type msg) "system")))
-          messages))
 
 (defn claude-human-prompt?
   "True when a raw Claude .jsonl message is a human-typed user prompt with no
@@ -2708,16 +2767,17 @@
                       old-count (:message-count old-metadata 0)
                       new-count (+ old-count (count filtered-messages))
                       ios-notified? (:ios-notified old-metadata false)
-                      ;; Extract timestamp from last message, fall back to file modification time
-                      last-message-timestamp (when-let [last-msg (last filtered-messages)]
-                                               (when-let [ts (:timestamp last-msg)]
-                                                 (try
-                                                   (.toEpochMilli (java.time.Instant/parse ts))
-                                                   (catch Exception e
-                                                     (log/debug "Failed to parse message timestamp"
-                                                                {:timestamp ts :error (ex-message e)})
-                                                     nil))))
-                      last-modified (or last-message-timestamp (.lastModified file))]
+                      ;; Timestamp of the newest message in this batch that
+                      ;; carries one. When the batch has none, keep the
+                      ;; session's existing :last-modified rather than
+                      ;; stamping the file mtime — an untimestamped write is
+                      ;; not activity, and the previously recorded activity is
+                      ;; a better answer than "now". The file mtime is the last
+                      ;; resort for an index entry that has no timestamp yet.
+                      last-message-timestamp (last-activity-timestamp filtered-messages)
+                      last-modified (or last-message-timestamp
+                                        (:last-modified old-metadata)
+                                        (.lastModified file))]
 
                   ;; ALWAYS update index with correct timestamp.
                   ;; Merge onto the current entry (which now carries the
@@ -2978,12 +3038,10 @@
               (let [old-count (:message-count old-metadata 0)
                     new-count (+ old-count (count new-messages))
                     ios-notified? (:ios-notified old-metadata false)
-                    last-message-timestamp (when-let [last-msg (last new-messages)]
-                                             (when-let [ts (:timestamp last-msg)]
-                                               (try
-                                                 (.toEpochMilli (java.time.Instant/parse ts))
-                                                 (catch Exception _ nil))))
-                    last-modified (or last-message-timestamp (.lastModified events-file))
+                    last-message-timestamp (last-activity-timestamp new-messages)
+                    last-modified (or last-message-timestamp
+                                      (:last-modified old-metadata)
+                                      (.lastModified events-file))
                     new-metadata (assoc old-metadata
                                         :last-modified last-modified
                                         :last-modified-ms (or (some-> last-modified long) 0)
