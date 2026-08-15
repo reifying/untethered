@@ -2355,6 +2355,14 @@ class VoiceCodeClient: ObservableObject {
 
         onMessageSent?(message)
 
+        // Turn-taking bookkeeping for the priority queue. Recognizing the prompt
+        // here rather than at each call site covers the typed send, the voice
+        // send, the headset send, the menu-bar quick prompt and recipe launches
+        // with one hook. See docs/design/priority-queue-revisit.md.
+        if let promptTarget = PriorityQueueAdmission.promptTarget(ofOutgoing: message) {
+            sessionSyncManager.recordOutboundPrompt(sessionId: promptTarget)
+        }
+
         let message = URLSessionWebSocketTask.Message.string(text)
         webSocket?.send(message) { error in
             if let error = error {

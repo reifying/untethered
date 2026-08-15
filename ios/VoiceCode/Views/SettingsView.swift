@@ -154,7 +154,7 @@ struct SettingsView: View {
             Section(header: Text("Priority Queue")) {
                 Toggle("Enable Priority Queue", isOn: $settings.priorityQueueEnabled)
 
-                Text("Track sessions in priority-based queue. Add sessions manually via toolbar button and adjust priorities to control sort order. Lower numbers = higher priority.")
+                Text("A list of sessions waiting on you. A session joins when a reply lands for a prompt you sent from this device, and leaves when you send it your next one. Agents you didn't prompt from here — CLI-launched, recipe-driven, or just being watched — never join on their own; add those from Session Info. Drag to reorder; lower priority numbers sort higher.")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }

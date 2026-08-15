@@ -86,6 +86,12 @@ class SessionSyncManager {
     private let context: NSManagedObjectContext
     private weak var voiceOutputManager: VoiceOutputManager?
 
+    /// One-shot record of prompts this device has sent and not yet seen answered.
+    /// It is the sole admission signal for the priority queue: an assistant
+    /// message only enqueues its session if the user is the one who asked for it.
+    /// See `PriorityQueueAdmission` and docs/design/priority-queue-revisit.md.
+    let pendingReplies: PendingReplyLedger
+
     /// UI-layer sink for pruned-gap and similar events. See `SessionSyncDelegate`.
     weak var delegate: SessionSyncDelegate?
 
@@ -183,10 +189,51 @@ class SessionSyncManager {
         return true
     }
 
-    init(persistenceController: PersistenceController = .shared, voiceOutputManager: VoiceOutputManager? = nil) {
+    init(persistenceController: PersistenceController = .shared,
+         voiceOutputManager: VoiceOutputManager? = nil,
+         pendingReplies: PendingReplyLedger = .shared) {
         self.persistenceController = persistenceController
         self.context = persistenceController.container.viewContext
         self.voiceOutputManager = voiceOutputManager
+        self.pendingReplies = pendingReplies
+    }
+
+    // MARK: - Priority Queue Admission
+
+    /// Called when this device sends a prompt to `sessionId`. Two effects, both
+    /// halves of the same turn-taking rule (docs/design/priority-queue-revisit.md):
+    ///
+    /// 1. The ball moves to the agent, so the session leaves the priority queue.
+    ///    Priority is preserved — it is coming back as soon as the agent answers.
+    /// 2. The ledger is armed, so the reply that lands is recognized as one the
+    ///    user is the addressee of and re-enqueues the session.
+    ///
+    /// Safe to call for any session, queued or not, and for sessions the local
+    /// store has never seen (a brand-new session's row is created on first
+    /// payload) — the dequeue half is simply a no-op there.
+    func recordOutboundPrompt(sessionId: String) {
+        let key = sessionId.lowercased()
+        pendingReplies.arm(sessionId: key)
+
+        guard let sessionUUID = UUID(uuidString: key) else {
+            LogManager.shared.log("⚠️ [PriorityQueue] Outbound prompt for non-UUID session id: \(key)", category: "PriorityQueue")
+            return
+        }
+
+        let backgroundContext = persistenceController.container.newBackgroundContext()
+        backgroundContext.perform {
+            guard let session = try? backgroundContext
+                    .fetch(CDBackendSession.fetchBackendSession(id: sessionUUID)).first,
+                  session.isInPriorityQueue else {
+                return
+            }
+            // resetPriority: false — the user's chosen priority must survive the
+            // round trip, or a P1 session returns as P10 after every reply.
+            CDBackendSession.removeFromPriorityQueue(session,
+                                                     context: backgroundContext,
+                                                     resetPriority: false)
+            LogManager.shared.log("📤 [PriorityQueue] Dequeued on outbound prompt (ball back with agent): \(key)", category: "PriorityQueue")
+        }
     }
     
     // MARK: - Session List Handling
@@ -566,13 +613,15 @@ class SessionSyncManager {
                 session.unreadCount += Int32(newRows)
             }
 
-            // Auto-add to priority queue when an assistant response lands on a
-            // session the user has opted into. Read the flag before save so
-            // the relationship mutation batches into the same context commit.
-            if !newAssistantTexts.isEmpty
-                && UserDefaults.standard.bool(forKey: "priorityQueueEnabled") {
+            // Enqueue only when this reply answers a prompt the user sent from
+            // this device — see `PriorityQueueAdmission`. Read the flag before
+            // save so the mutation batches into the same context commit.
+            if PriorityQueueAdmission.shouldEnqueue(
+                featureEnabled: UserDefaults.standard.bool(forKey: "priorityQueueEnabled"),
+                hasLiveAssistantMessages: !newAssistantTexts.isEmpty,
+                claimAwaitedReply: { self.pendingReplies.claim(sessionId: payload.sessionId) }) {
                 CDBackendSession.addToPriorityQueue(session, context: backgroundContext)
-                LogManager.shared.log("📌 Auto-added session to priority queue after assistant response: \(payload.sessionId)", category: "SessionSync")
+                LogManager.shared.log("📌 Enqueued session — reply to a prompt from this device: \(payload.sessionId)", category: "SessionSync")
             }
 
             // Keep messageCount in sync with actual row count to avoid
@@ -587,15 +636,19 @@ class SessionSyncManager {
             do {
                 if backgroundContext.hasChanges {
                     try backgroundContext.save()
-                    if newRows > 0 {
-                        let sessionId = payload.sessionId
-                        DispatchQueue.main.async {
-                            NotificationCenter.default.post(
-                                name: .sessionHistoryDidUpdate,
-                                object: nil,
-                                userInfo: ["sessionId": sessionId]
-                            )
-                        }
+                }
+                // Posted on `newRows`, not on `hasChanges`: the priority-queue
+                // enqueue above commits the context itself, so gating the
+                // notification on pending changes silently dropped the refresh
+                // for exactly the batches that mattered most.
+                if newRows > 0 {
+                    let sessionId = payload.sessionId
+                    DispatchQueue.main.async {
+                        NotificationCenter.default.post(
+                            name: .sessionHistoryDidUpdate,
+                            object: nil,
+                            userInfo: ["sessionId": sessionId]
+                        )
                     }
                 }
             } catch {
@@ -908,24 +961,30 @@ class SessionSyncManager {
                     session.unreadCount += Int32(newRows)
                 }
 
-                if !newAssistantTexts.isEmpty
-                    && UserDefaults.standard.bool(forKey: "priorityQueueEnabled") {
+                // Enqueue only when this reply answers a prompt the user sent
+                // from this device — see `PriorityQueueAdmission`.
+                if PriorityQueueAdmission.shouldEnqueue(
+                    featureEnabled: UserDefaults.standard.bool(forKey: "priorityQueueEnabled"),
+                    hasLiveAssistantMessages: !newAssistantTexts.isEmpty,
+                    claimAwaitedReply: { self.pendingReplies.claim(sessionId: payload.sessionId) }) {
                     CDBackendSession.addToPriorityQueue(session, context: ctx)
-                    LogManager.shared.log("📌 Auto-added session to priority queue after assistant response: \(payload.sessionId)", category: "SessionSync")
+                    LogManager.shared.log("📌 Enqueued session — reply to a prompt from this device: \(payload.sessionId)", category: "SessionSync")
                 }
 
                 do {
                     if ctx.hasChanges {
                         try ctx.save()
-                        if newRows > 0 {
-                            let sessionIdString = payload.sessionId
-                            DispatchQueue.main.async {
-                                NotificationCenter.default.post(
-                                    name: .sessionHistoryDidUpdate,
-                                    object: nil,
-                                    userInfo: ["sessionId": sessionIdString]
-                                )
-                            }
+                    }
+                    // See the v0.4.0 path: posted on `newRows`, not on
+                    // `hasChanges`, because the enqueue above already committed.
+                    if newRows > 0 {
+                        let sessionIdString = payload.sessionId
+                        DispatchQueue.main.async {
+                            NotificationCenter.default.post(
+                                name: .sessionHistoryDidUpdate,
+                                object: nil,
+                                userInfo: ["sessionId": sessionIdString]
+                            )
                         }
                     }
                 } catch {
@@ -1746,18 +1805,19 @@ class SessionSyncManager {
                 session.preview = String(text.prefix(100))
             }
 
-            // Auto-add to priority queue if enabled and we received assistant messages
-            // This uses session_updated (broadcast to all clients) instead of turn_complete
-            // (channel-specific) for reliable delivery even after reconnection
-            // Note: Check setting and modify session BEFORE saving to batch the changes
-            if !assistantMessagesToSpeak.isEmpty {
-                // Read priorityQueueEnabled from UserDefaults (thread-safe for reads)
-                let priorityQueueEnabled = UserDefaults.standard.bool(forKey: "priorityQueueEnabled")
-                if priorityQueueEnabled {
-                    // Use the session object we already have in this background context
-                    CDBackendSession.addToPriorityQueue(session, context: backgroundContext)
-                    LogManager.shared.log("📌 Auto-added session to priority queue after assistant response: \(sessionId)", category: "SessionSync")
-                }
+            // Enqueue only when this reply answers a prompt the user sent from
+            // this device — see `PriorityQueueAdmission`. This path uses
+            // session_updated (broadcast to all clients) instead of turn_complete
+            // (channel-specific) for reliable delivery even after reconnection.
+            // Check the policy and modify the session BEFORE saving so the
+            // mutation batches into the same context commit.
+            if PriorityQueueAdmission.shouldEnqueue(
+                featureEnabled: UserDefaults.standard.bool(forKey: "priorityQueueEnabled"),
+                hasLiveAssistantMessages: !assistantMessagesToSpeak.isEmpty,
+                claimAwaitedReply: { self.pendingReplies.claim(sessionId: sessionId) }) {
+                // Use the session object we already have in this background context
+                CDBackendSession.addToPriorityQueue(session, context: backgroundContext)
+                LogManager.shared.log("📌 Enqueued session — reply to a prompt from this device: \(sessionId)", category: "SessionSync")
             }
 
             do {

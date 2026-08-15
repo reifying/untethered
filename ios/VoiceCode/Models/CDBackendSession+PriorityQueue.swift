@@ -51,7 +51,16 @@ extension CDBackendSession {
     }
 
     /// Remove session from priority queue and reset properties
-    static func removeFromPriorityQueue(_ session: CDBackendSession, context: NSManagedObjectContext) {
+    ///
+    /// - Parameter resetPriority: `true` (default) restores the default priority —
+    ///   the right behavior for a manual removal, which is the user saying "I'm
+    ///   done with this". Pass `false` for the automatic dequeue that fires when
+    ///   the user sends the next prompt: that session is expected back as soon as
+    ///   the agent answers, and resetting would silently demote a P1 session to
+    ///   P10 on every round trip.
+    static func removeFromPriorityQueue(_ session: CDBackendSession,
+                                        context: NSManagedObjectContext,
+                                        resetPriority: Bool = true) {
         guard session.isInPriorityQueue else {
             LogManager.shared.log("⚠️ [PriorityQueue] Session not in queue: \(session.id.uuidString.lowercased())", category: "PriorityQueue")
             return
@@ -64,7 +73,9 @@ extension CDBackendSession {
         let oldQueuedAt = session.priorityQueuedAt
 
         session.isInPriorityQueue = false
-        session.priority = 10  // Reset to default
+        if resetPriority {
+            session.priority = 10  // Reset to default
+        }
         session.priorityOrder = 0.0
         session.priorityQueuedAt = nil
 

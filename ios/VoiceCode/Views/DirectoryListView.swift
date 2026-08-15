@@ -612,12 +612,6 @@ struct DirectoryListView: View {
         }
     }
 
-    /// Add session to priority queue
-    private func addToPriorityQueue(_ session: CDBackendSession) {
-        CDBackendSession.addToPriorityQueue(session, context: viewContext)
-        updateCachedPriorityQueueSessions()
-    }
-
     /// Remove session from priority queue
     private func removeFromPriorityQueue(_ session: CDBackendSession) {
         CDBackendSession.removeFromPriorityQueue(session, context: viewContext)
@@ -723,11 +717,10 @@ struct DirectoryListView: View {
             try viewContext.save()
             LogManager.shared.log("📝 Created new session: \(sessionId.uuidString.lowercased())", category: "DirectoryList")
 
-            // Auto-add to priority queue if enabled
-            if settings.priorityQueueEnabled {
-                addToPriorityQueue(session)
-                LogManager.shared.log("📌 Auto-added new session to priority queue: \(sessionId.uuidString.lowercased())", category: "DirectoryList")
-            }
+            // No priority-queue entry on creation: the queue holds sessions
+            // waiting on the user, and a session he just made and is about to
+            // type into is not one. It enters like every other session — when
+            // the reply to his first prompt lands (PriorityQueueAdmission).
 
             // Navigate to the new session
             navigationPath.append(sessionId)
