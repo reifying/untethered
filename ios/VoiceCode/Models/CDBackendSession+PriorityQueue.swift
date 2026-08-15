@@ -10,7 +10,13 @@ extension CDBackendSession {
 
     /// Add session to priority queue, or move to end of priority level if already in queue
     /// This implements queue semantics: newly active sessions go to the back of the line
-    static func addToPriorityQueue(_ session: CDBackendSession, context: NSManagedObjectContext) {
+    ///
+    /// - Returns: `true` if the session is in the queue when this returns (including
+    ///   the already-at-end no-op), `false` if the save failed. Callers that consumed
+    ///   a one-shot signal to get here MUST check this — a dropped save with a burned
+    ///   claim loses the entry permanently, with nothing left to retry from.
+    @discardableResult
+    static func addToPriorityQueue(_ session: CDBackendSession, context: NSManagedObjectContext) -> Bool {
         let wasAlreadyInQueue = session.isInPriorityQueue
 
         // Calculate new order - always move to end of priority level
@@ -20,7 +26,7 @@ extension CDBackendSession {
         // Skip if already at end (no change needed)
         if wasAlreadyInQueue && session.priorityOrder == newOrder {
             LogManager.shared.log("⏭️ [PriorityQueue] Session already at end of priority level: \(session.id.uuidString.lowercased())", category: "PriorityQueue")
-            return
+            return true
         }
 
         session.isInPriorityQueue = true
@@ -45,8 +51,13 @@ extension CDBackendSession {
                 object: nil,
                 userInfo: ["sessionId": session.id.uuidString.lowercased()]
             )
+            return true
         } catch {
-            LogManager.shared.log("❌ [PriorityQueue] Failed to add/move session in queue: \(error.localizedDescription)", category: "PriorityQueue")
+            // Roll the in-memory mutation back so the caller isn't left holding a
+            // managed object that claims to be queued when the store disagrees.
+            session.isInPriorityQueue = wasAlreadyInQueue
+            LogManager.shared.log("❌ [PriorityQueue] Failed to add/move session in queue: \(error.localizedDescription), session=\(session.id.uuidString.lowercased()), priority=\(session.priority), order=\(newOrder)", category: "PriorityQueue")
+            return false
         }
     }
 
@@ -58,12 +69,15 @@ extension CDBackendSession {
     ///   the user sends the next prompt: that session is expected back as soon as
     ///   the agent answers, and resetting would silently demote a P1 session to
     ///   P10 on every round trip.
+    /// - Returns: `true` if the session is out of the queue when this returns
+    ///   (including the not-in-queue no-op), `false` if the save failed.
+    @discardableResult
     static func removeFromPriorityQueue(_ session: CDBackendSession,
                                         context: NSManagedObjectContext,
-                                        resetPriority: Bool = true) {
+                                        resetPriority: Bool = true) -> Bool {
         guard session.isInPriorityQueue else {
             LogManager.shared.log("⚠️ [PriorityQueue] Session not in queue: \(session.id.uuidString.lowercased())", category: "PriorityQueue")
-            return
+            return true
         }
 
         // Save old values for rollback
@@ -89,13 +103,15 @@ extension CDBackendSession {
                 object: nil,
                 userInfo: ["sessionId": session.id.uuidString.lowercased()]
             )
+            return true
         } catch {
             // Rollback on failure
             session.isInPriorityQueue = oldIsInQueue
             session.priority = oldPriority
             session.priorityOrder = oldOrder
             session.priorityQueuedAt = oldQueuedAt
-            LogManager.shared.log("❌ [PriorityQueue] Failed to remove session from queue: \(error.localizedDescription)", category: "PriorityQueue")
+            LogManager.shared.log("❌ [PriorityQueue] Failed to remove session from queue: \(error.localizedDescription), session=\(session.id.uuidString.lowercased())", category: "PriorityQueue")
+            return false
         }
     }
 

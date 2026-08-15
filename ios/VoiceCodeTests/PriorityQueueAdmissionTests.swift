@@ -161,6 +161,59 @@ final class PriorityQueueAdmissionTests: XCTestCase {
         XCTAssertFalse(session.isInPriorityQueue)
         XCTAssertEqual(session.priority, 10)
     }
+
+    /// The queue mutators must report whether the write actually landed. A caller
+    /// that consumed a one-shot claim to get there has nothing to retry from if a
+    /// failed save reads as success — the device logs of 2026-08-15 showed exactly
+    /// that: "Failed to add/move session in queue: Could not merge changes" on one
+    /// line, "Enqueued (your turn)" on the next, and an empty queue.
+    func test_mutatorsReportSuccess() throws {
+        let persistence = PersistenceController(inMemory: true)
+        let context = persistence.container.viewContext
+
+        let session = CDBackendSession(context: context)
+        session.id = UUID()
+        session.backendName = "reports"
+        session.workingDirectory = "/tmp"
+        session.lastModified = Date()
+        session.messageCount = 0
+        session.preview = ""
+        session.provider = "claude"
+        try context.save()
+
+        XCTAssertTrue(CDBackendSession.addToPriorityQueue(session, context: context))
+        XCTAssertTrue(CDBackendSession.addToPriorityQueue(session, context: context),
+                      "Re-adding an already-at-end session is a successful no-op, not a failure")
+        XCTAssertTrue(CDBackendSession.removeFromPriorityQueue(session, context: context))
+        XCTAssertTrue(CDBackendSession.removeFromPriorityQueue(session, context: context),
+                      "Removing a session that isn't queued is a successful no-op")
+    }
+
+    /// A save that fails must leave `isInPriorityQueue` false rather than stranding
+    /// the caller with an object claiming to be queued while the store disagrees.
+    func test_failedAddRollsBackInMemoryState() throws {
+        let persistence = PersistenceController(inMemory: true)
+        let context = persistence.container.viewContext
+
+        let session = CDBackendSession(context: context)
+        session.id = UUID()
+        session.backendName = "rollback"
+        session.workingDirectory = "/tmp"
+        session.lastModified = Date()
+        session.messageCount = 0
+        session.preview = ""
+        session.provider = "claude"
+        try context.save()
+
+        // Force the save to fail: a required attribute left invalid makes
+        // context.save() throw inside addToPriorityQueue.
+        session.setValue(nil, forKey: "backendName")
+
+        XCTAssertFalse(CDBackendSession.addToPriorityQueue(session, context: context),
+                       "A failed save must be reported as a failure")
+        XCTAssertFalse(session.isInPriorityQueue,
+                       "In-memory state must not claim membership the store never accepted")
+    }
 }
 
 // MARK: - Ledger

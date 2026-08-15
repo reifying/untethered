@@ -221,6 +221,13 @@ class SessionSyncManager {
         }
 
         let backgroundContext = persistenceController.container.newBackgroundContext()
+        // The session_history handlers write the same CDBackendSession row
+        // (messageCount, preview, unreadCount) concurrently. Without this the
+        // default NSErrorMergePolicy turns any overlap into a failed save; the
+        // attributes touched here are disjoint from theirs, so last-write-wins
+        // per property is exactly right. Matches every other background context
+        // in this file and in PersistenceController.
+        backgroundContext.mergePolicy = NSMergeByPropertyObjectTrumpMergePolicy
         backgroundContext.perform {
             guard let session = try? backgroundContext
                     .fetch(CDBackendSession.fetchBackendSession(id: sessionUUID)).first,
@@ -229,10 +236,13 @@ class SessionSyncManager {
             }
             // resetPriority: false — the user's chosen priority must survive the
             // round trip, or a P1 session returns as P10 after every reply.
-            CDBackendSession.removeFromPriorityQueue(session,
-                                                     context: backgroundContext,
-                                                     resetPriority: false)
-            LogManager.shared.log("📤 [PriorityQueue] Dequeued on outbound prompt (ball back with agent): \(key)", category: "PriorityQueue")
+            if CDBackendSession.removeFromPriorityQueue(session,
+                                                        context: backgroundContext,
+                                                        resetPriority: false) {
+                LogManager.shared.log("📤 [PriorityQueue] Dequeued on outbound prompt (ball back with agent): \(key)", category: "PriorityQueue")
+            } else {
+                LogManager.shared.log("⚠️ [PriorityQueue] Dequeue on outbound prompt did not commit; session stays queued: \(key)", category: "PriorityQueue")
+            }
         }
     }
 
@@ -262,6 +272,11 @@ class SessionSyncManager {
         guard pendingReplies.claim(sessionId: key) else { return }
 
         let backgroundContext = persistenceController.container.newBackgroundContext()
+        // agent_replied lands within milliseconds of the session_history push for
+        // the same turn (they are the same transcript write), so this context and
+        // the payload handler's routinely commit the same row at once. See the
+        // note in recordOutboundPrompt.
+        backgroundContext.mergePolicy = NSMergeByPropertyObjectTrumpMergePolicy
         backgroundContext.perform {
             guard let session = try? backgroundContext
                     .fetch(CDBackendSession.fetchBackendSession(id: sessionUUID)).first else {
@@ -272,8 +287,15 @@ class SessionSyncManager {
                 LogManager.shared.log("⏭️ [PriorityQueue] agent_replied for unknown session, re-arming: \(key)", category: "PriorityQueue")
                 return
             }
-            CDBackendSession.addToPriorityQueue(session, context: backgroundContext)
-            LogManager.shared.log("📌 [PriorityQueue] Enqueued on agent_replied (your turn): \(key)", category: "PriorityQueue")
+            if CDBackendSession.addToPriorityQueue(session, context: backgroundContext) {
+                LogManager.shared.log("📌 [PriorityQueue] Enqueued on agent_replied (your turn): \(key)", category: "PriorityQueue")
+            } else {
+                // The claim is already spent, so without re-arming this entry is
+                // lost with nothing left to retry from — the queue silently drops
+                // a session the user is waiting on.
+                self.pendingReplies.arm(sessionId: key)
+                LogManager.shared.log("⚠️ [PriorityQueue] Enqueue on agent_replied did not commit; re-arming for the next signal: \(key)", category: "PriorityQueue")
+            }
         }
     }
     
@@ -661,8 +683,13 @@ class SessionSyncManager {
                 featureEnabled: UserDefaults.standard.bool(forKey: "priorityQueueEnabled"),
                 hasLiveAssistantMessages: !newAssistantTexts.isEmpty,
                 claimAwaitedReply: { self.pendingReplies.claim(sessionId: payload.sessionId) }) {
-                CDBackendSession.addToPriorityQueue(session, context: backgroundContext)
-                LogManager.shared.log("📌 Enqueued session — reply to a prompt from this device: \(payload.sessionId)", category: "SessionSync")
+                if CDBackendSession.addToPriorityQueue(session, context: backgroundContext) {
+                    LogManager.shared.log("📌 Enqueued session — reply to a prompt from this device: \(payload.sessionId)", category: "SessionSync")
+                } else {
+                    // Claim already spent — re-arm or the entry is lost outright.
+                    self.pendingReplies.arm(sessionId: payload.sessionId)
+                    LogManager.shared.log("⚠️ Enqueue did not commit; re-arming for the next signal: \(payload.sessionId)", category: "SessionSync")
+                }
             }
 
             // Keep messageCount in sync with actual row count to avoid
@@ -1008,8 +1035,12 @@ class SessionSyncManager {
                     featureEnabled: UserDefaults.standard.bool(forKey: "priorityQueueEnabled"),
                     hasLiveAssistantMessages: !newAssistantTexts.isEmpty,
                     claimAwaitedReply: { self.pendingReplies.claim(sessionId: payload.sessionId) }) {
-                    CDBackendSession.addToPriorityQueue(session, context: ctx)
-                    LogManager.shared.log("📌 Enqueued session — reply to a prompt from this device: \(payload.sessionId)", category: "SessionSync")
+                    if CDBackendSession.addToPriorityQueue(session, context: ctx) {
+                        LogManager.shared.log("📌 Enqueued session — reply to a prompt from this device: \(payload.sessionId)", category: "SessionSync")
+                    } else {
+                        self.pendingReplies.arm(sessionId: payload.sessionId)
+                        LogManager.shared.log("⚠️ Enqueue did not commit; re-arming for the next signal: \(payload.sessionId)", category: "SessionSync")
+                    }
                 }
 
                 do {
@@ -1857,8 +1888,12 @@ class SessionSyncManager {
                 hasLiveAssistantMessages: !assistantMessagesToSpeak.isEmpty,
                 claimAwaitedReply: { self.pendingReplies.claim(sessionId: sessionId) }) {
                 // Use the session object we already have in this background context
-                CDBackendSession.addToPriorityQueue(session, context: backgroundContext)
-                LogManager.shared.log("📌 Enqueued session — reply to a prompt from this device: \(sessionId)", category: "SessionSync")
+                if CDBackendSession.addToPriorityQueue(session, context: backgroundContext) {
+                    LogManager.shared.log("📌 Enqueued session — reply to a prompt from this device: \(sessionId)", category: "SessionSync")
+                } else {
+                    self.pendingReplies.arm(sessionId: sessionId)
+                    LogManager.shared.log("⚠️ Enqueue did not commit; re-arming for the next signal: \(sessionId)", category: "SessionSync")
+                }
             }
 
             do {
