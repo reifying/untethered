@@ -105,9 +105,10 @@ Two additive changes in `HeadsetSessionReducer.swift` — a new `Earcon` type an
 /// `SessionEffect` Equatable synthesis below still holds.
 enum Earcon: Hashable {
     case listening   // recording began — "mic is live, talk now"
+    case stopped     // recording ended — "mic is closed, working on it"
     case sent        // prompt dispatched — "got it"
     case error       // nothing recognized / no response / not connected — "that didn't work"
-    case cancelled   // TTS dismissed without recording (optional; §3 Component Interactions)
+    case cancelled   // TTS dismissed / pending response dismissed, without recording
 }
 
 enum SessionEffect: Equatable {
@@ -149,7 +150,7 @@ final class HeadsetEarconPlayer: EarconPlaying {
     private var players: [Earcon: AVAudioPlayer] = [:]
 
     init() {
-        for earcon in [Earcon.listening, .sent, .error, .cancelled] {
+        for earcon in [Earcon.listening, .stopped, .sent, .error, .cancelled] {
             players[earcon] = try? Self.makePlayer(for: earcon)   // sine/blip → temp file → prepareToPlay
         }
     }
@@ -186,10 +187,30 @@ failures, not status codes:
 
 | Earcon | Emitted on (reducer transition / executor) |
 |---|---|
-| `.listening` | reducer — every recording-start transition (`beginRecording`): idle-start *and* UI barge-in |
+| `.listening` | reducer — every recording-start transition (`beginRecording`): idle-start *and* barge-in |
+| `.stopped` | reducer — every stop-recording transition: `(.recording, .holdEnded/.tap/.captureEnded)` |
 | `.sent` | **executor** — in `apply(.sendPrompt)`, **only when the send is confirmed** (`sent == true`) |
 | `.error` | reducer — `(.finalizing, .transcription(nil))` (nothing recognized) · `(.awaitingResponse, .awaitTimedOut)` · `(.awaitingResponse, .backendUnavailable)`; **executor** — not-connected guard |
-| `.cancelled` (optional) | reducer — `(.speaking, .tap/.doubleTap)` dismiss, `(.awaitingResponse, .tap/.doubleTap)` dismiss |
+| `.cancelled` | reducer — `(.speaking, .tap/.doubleTap)` dismiss, `(.awaitingResponse, .tap/.doubleTap)` dismiss |
+
+**The three button outcomes must be tellable apart by ear.** The reason `.stopped` and
+`.cancelled` are wired rather than optional: a headset user not looking at the screen has
+exactly three things the button can do, and needs to know which one just happened.
+
+| Outcome | Cue | Tone |
+| --- | --- | --- |
+| Started recording | `.listening` | rising 2-note, E5→A5 |
+| Stopped recording | `.stopped` | falling 2-note, A5→E5 — the exact inverse |
+| Interrupted the assistant | `.cancelled` | single neutral mid blip, no contour |
+
+Rising-vs-falling in the same register is the contrast that survives being heard once, in a
+car. `.error` is also falling but a register lower (G4→C4), so it does not collide with
+`.stopped`.
+
+**A barge-in plays ONE cue, not two.** A hold from `.speaking` interrupts *and* starts a
+recording. It emits `.listening` alone: "recording is starting" is the fact the user needs,
+and two cues back-to-back read as noise rather than as two events. `.cancelled` is therefore
+emitted only on the dismiss transitions, which start no recording.
 
 **Why `.sent` is executor-side, not a reducer effect.** The reducer transitions to
 `.awaitingResponse` and emits `.sendPrompt` **optimistically** — it cannot know whether the

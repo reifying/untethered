@@ -23,18 +23,32 @@ final class HeadsetEarconPlayerTests: XCTestCase {
     func testInit_preparesPlayersForShippedEarcons() {
         let player = HeadsetEarconPlayer()
         XCTAssertTrue(
-            player.preparedEarcons.isSuperset(of: [.listening, .sent, .error]),
+            player.preparedEarcons.isSuperset(of: [.listening, .stopped, .sent, .error]),
             "Expected prepared players for the shipped cues; got \(player.preparedEarcons)"
         )
     }
 
-    /// The init loop also prepares the optional `.cancelled` cue, so all four synthesize.
-    func testInit_preparesAllFourEarcons() {
+    /// Every `Earcon` case synthesizes — including `.cancelled` and `.stopped`, the two
+    /// cues that make the three button outcomes distinguishable eyes-free.
+    func testInit_preparesEveryEarcon() {
         let player = HeadsetEarconPlayer()
         XCTAssertEqual(
-            player.preparedEarcons, [.listening, .sent, .error, .cancelled],
+            player.preparedEarcons, [.listening, .stopped, .sent, .error, .cancelled],
             "Every Earcon case should get a prepared player; got \(player.preparedEarcons)"
         )
+    }
+
+    /// `.stopped` must not synthesize to the same audio as `.listening` — they are the
+    /// inverse of one another, and a copy-paste that left both rising would silently
+    /// destroy the start-vs-stop distinction this cue exists for. Compares the rendered
+    /// temp files rather than the specs, so it catches a synthesis bug too.
+    func testStoppedAndListening_renderDifferentAudio() throws {
+        _ = HeadsetEarconPlayer()   // synthesis writes both temp files
+        let dir = FileManager.default.temporaryDirectory
+        let listening = try Data(contentsOf: dir.appendingPathComponent("headset_earcon_listening.caf"))
+        let stopped = try Data(contentsOf: dir.appendingPathComponent("headset_earcon_stopped.caf"))
+        XCTAssertNotEqual(listening, stopped,
+                          ".stopped must be audibly distinct from .listening, not a copy")
     }
 
     /// `play()` on a prepared player must not crash with no live route (it just starts the
@@ -43,8 +57,9 @@ final class HeadsetEarconPlayerTests: XCTestCase {
     /// (not silently hitting the no-op guard); the test then proves they don't crash.
     func testPlay_doesNotCrashWithoutLiveRoute() {
         let player = HeadsetEarconPlayer()
-        XCTAssertEqual(player.preparedEarcons, [.listening, .sent, .error, .cancelled])
+        XCTAssertEqual(player.preparedEarcons, [.listening, .stopped, .sent, .error, .cancelled])
         player.play(.listening)
+        player.play(.stopped)
         player.play(.sent)
         player.play(.error)
         player.play(.cancelled)

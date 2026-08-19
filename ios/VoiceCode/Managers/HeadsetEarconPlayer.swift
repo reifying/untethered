@@ -54,14 +54,15 @@ final class HeadsetEarconPlayer: EarconPlaying {
     private var players: [Earcon: AVAudioPlayer] = [:]
 
     init() {
-        for earcon in [Earcon.listening, .sent, .error, .cancelled] {
+        let allEarcons: [Earcon] = [.listening, .stopped, .sent, .error, .cancelled]
+        for earcon in allEarcons {
             do {
                 players[earcon] = try Self.makePlayer(for: earcon)
             } catch {
                 eLogError("Earcon: failed to prepare \(earcon): \(error)")
             }
         }
-        eLog("Earcon: player ready — prepared=\(preparedEarcons.count)/4")
+        eLog("Earcon: player ready — prepared=\(preparedEarcons.count)/\(allEarcons.count)")
     }
 
     func play(_ earcon: Earcon) {
@@ -96,10 +97,16 @@ final class HeadsetEarconPlayer: EarconPlaying {
 
     /// One earcon's tone: a sequence of pure-sine notes played back-to-back. Distinct
     /// CONTOUR + REGISTER per earcon keeps them non-confusable eyes-free:
-    ///   • `.listening` — rising 2-note (low→high): "go / talk now"
+    ///   • `.listening` — rising 2-note (E5→A5): "go / talk now"
+    ///   • `.stopped`   — falling 2-note (A5→E5): "mic closed" — the exact inverse of
+    ///     `.listening`, because rising-vs-falling is the contrast that survives being
+    ///     heard once, in a car, while not looking at the screen. Same register as
+    ///     `.listening` so the pair reads as one open/close gesture; `.error` is also
+    ///     falling but sits a register lower (G4→C4), so the two don't collide.
     ///   • `.sent`      — single bright high blip: "got it" (short)
     ///   • `.error`     — falling 2-note in a low register: "that didn't work"
-    ///   • `.cancelled` — single neutral mid blip: "dismissed"
+    ///   • `.cancelled` — single neutral mid blip: "dismissed" — no contour at all, so it
+    ///     can't be mistaken for either end of the recording pair.
     /// Amplitude is modest (Risk 1: keep cue energy low so it doesn't bleed into capture).
     private struct ToneSpec {
         let notes: [(frequency: Double, duration: Double)]
@@ -111,6 +118,8 @@ final class HeadsetEarconPlayer: EarconPlaying {
         switch earcon {
         case .listening:
             return ToneSpec(notes: [(659.25, 0.10), (880.00, 0.13)], amplitude: 0.22, fileLabel: "listening")
+        case .stopped:
+            return ToneSpec(notes: [(880.00, 0.10), (659.25, 0.13)], amplitude: 0.22, fileLabel: "stopped")
         case .sent:
             return ToneSpec(notes: [(1046.50, 0.08)], amplitude: 0.22, fileLabel: "sent")
         case .error:

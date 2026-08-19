@@ -62,7 +62,8 @@ final class HeadsetSessionReducerTests: XCTestCase {
     func testRecording_holdEnded_finalizes() {
         let (state, fx) = SessionReducer.reduce(.recording, .holdEnded, source: .blueParrottBLE)
         XCTAssertEqual(state, .finalizing)
-        XCTAssertEqual(fx, [.stopCapture, .resumeKeepAlive, .cancelTimer(.captureGrace)])
+        XCTAssertEqual(fx, [.stopCapture, .playEarcon(.stopped), .resumeKeepAlive,
+                            .cancelTimer(.captureGrace)])
     }
 
     func testRecording_tap_finalizes() {
@@ -438,17 +439,84 @@ final class HeadsetSessionReducerTests: XCTestCase {
         XCTAssertFalse(containsAnyEarcon(fx))
     }
 
-    /// Negative: a headset tap dismissing TTS (F5) emits no earcon — `.cancelled` is not yet
-    /// emitted by the reducer (it ships only if wanted; see design §3).
-    func testHeadsetDismissSpeaking_emitsNoEarcon() {
+    /// `.cancelled` on a headset tap dismissing TTS (F5) — interrupting the assistant is one
+    /// of the three button outcomes the user must be able to tell apart eyes-free, and it is
+    /// the one that starts NO recording.
+    func testHeadsetDismissSpeaking_emitsCancelledEarcon() {
         let (state, fx) = SessionReducer.reduce(.speaking, .tap, source: .blueParrottBLE)
         XCTAssertEqual(state, .idle)
-        XCTAssertFalse(containsAnyEarcon(fx))
+        XCTAssertTrue(fx.contains(.interruptTTS))
+        XCTAssertTrue(fx.contains(.playEarcon(.cancelled)))
+        XCTAssertFalse(fx.contains(.playEarcon(.listening)),
+                       "a dismiss must not sound like a recording start")
+    }
+
+    /// A double-tap dismiss of TTS cues `.cancelled` on the same terms as the tap.
+    func testHeadsetDoubleTapDismissSpeaking_emitsCancelledEarcon() {
+        let (state, fx) = SessionReducer.reduce(.speaking, .doubleTap, source: .blueParrottBLE)
+        XCTAssertEqual(state, .idle)
+        XCTAssertTrue(fx.contains(.playEarcon(.cancelled)))
+    }
+
+    /// Dismissing a pending response is the same user-facing outcome — button pressed,
+    /// nothing recording — so it gets the same cue rather than silence.
+    func testHeadsetDismissAwaiting_emitsCancelledEarcon() {
+        let (state, fx) = SessionReducer.reduce(.awaitingResponse, .tap, source: .blueParrottBLE)
+        XCTAssertEqual(state, .idle)
+        XCTAssertTrue(fx.contains(.playEarcon(.cancelled)))
+        XCTAssertFalse(fx.contains(.startCapture))
+    }
+
+    // MARK: - Stop-recording cue
+
+    /// `.stopped` ("mic closed") on a PTT release — the counterpart to `.listening`.
+    func testStopRecording_holdEnded_emitsStoppedEarcon() {
+        let (state, fx) = SessionReducer.reduce(.recording, .holdEnded, source: .blueParrottBLE)
+        XCTAssertEqual(state, .finalizing)
+        XCTAssertTrue(fx.contains(.stopCapture))
+        XCTAssertTrue(fx.contains(.playEarcon(.stopped)))
+    }
+
+    /// `.stopped` on the toggle-off tap (the same button press that started the recording).
+    func testStopRecording_tap_emitsStoppedEarcon() {
+        let (state, fx) = SessionReducer.reduce(.recording, .tap, source: .blueParrottBLE)
+        XCTAssertEqual(state, .finalizing)
+        XCTAssertTrue(fx.contains(.playEarcon(.stopped)))
+    }
+
+    /// `.stopped` also on the path the user did NOT ask for — recognizer silence, engine
+    /// failure, or a forced stop on BLE disconnect. This is the case where an eyes-free cue
+    /// matters most: without it, recording ends and nothing tells the user.
+    func testStopRecording_captureEnded_emitsStoppedEarcon() {
+        let (state, fx) = SessionReducer.reduce(.recording, .captureEnded, source: .blueParrottBLE)
+        XCTAssertEqual(state, .finalizing)
+        XCTAssertTrue(fx.contains(.playEarcon(.stopped)))
+    }
+
+    /// The three cues must never collide on one press. A barge-in interrupts AND starts a
+    /// recording; it plays `.listening` ALONE — "recording is starting" is the fact that
+    /// matters, and stacking cues would make the press unreadable by ear.
+    func testBargeIn_playsListeningOnly_notCancelled() {
+        let (state, fx) = SessionReducer.reduce(.speaking, .holdStarted, source: .blueParrottBLE)
+        XCTAssertEqual(state, .recording)
+        XCTAssertTrue(fx.contains(.interruptTTS))
+        XCTAssertTrue(fx.contains(.playEarcon(.listening)))
+        XCTAssertFalse(fx.contains(.playEarcon(.cancelled)),
+                       "a barge-in must sound like a recording start, not a dismiss")
+        XCTAssertEqual(fx.filter { if case .playEarcon = $0 { return true }; return false }.count, 1,
+                       "exactly one cue per press")
+    }
+
+    /// The UI mic button barging in while speaking is also a recording-start, not a dismiss.
+    func testUIBargeIn_playsListeningOnly_notCancelled() {
+        let (_, fx) = SessionReducer.reduce(.speaking, .tap, source: .ui)
+        XCTAssertTrue(fx.contains(.playEarcon(.listening)))
+        XCTAssertFalse(fx.contains(.playEarcon(.cancelled)))
     }
 
     /// `Earcon` is `Hashable` (it keys the player's `[Earcon: AVAudioPlayer]` cache); guard
     /// that the cases stay distinct so the cache can't collide two cues into one player.
     func testEarcon_isHashable_distinctCases() {
-        XCTAssertEqual(Set<Earcon>([.listening, .sent, .error, .cancelled]).count, 4)
+        XCTAssertEqual(Set<Earcon>([.listening, .stopped, .sent, .error, .cancelled]).count, 5)
     }
 }

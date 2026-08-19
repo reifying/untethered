@@ -65,10 +65,20 @@ enum SessionEvent: Equatable {
 /// See @docs/design/macos-headset-audible-feedback.md §3.
 enum Earcon: Hashable {
     case listening   // recording began — "mic is live, talk now"
+    case stopped     // recording ended — "mic is closed, working on it"
     case sent        // prompt dispatched — "got it" (executor-only; never a reducer effect)
     case error       // nothing recognized / no response / not connected — "that didn't work"
-    case cancelled   // TTS dismissed without recording (optional; not emitted yet)
+    case cancelled   // TTS dismissed / pending response dismissed, without recording
 }
+
+// The three button outcomes a headset user must be able to tell apart WITHOUT looking at
+// the screen — the reason `.stopped` and `.cancelled` are wired at all:
+//   • started recording  → `.listening` (rising)
+//   • stopped recording  → `.stopped`   (falling, same register — the exact inverse)
+//   • interrupted speech → `.cancelled` (single neutral mid blip, no contour)
+// A barge-in does two of those at once (interrupt + start); it plays `.listening` ALONE,
+// because "recording is starting" is the fact the user needs and two cues back-to-back
+// read as noise rather than as two events.
 
 enum SessionEffect: Equatable {
     case startCapture
@@ -135,8 +145,12 @@ enum SessionReducer {
         // Stop: hold release (PTT), a second tap (toggle), or capture ending on its own
         // (recognizer silence auto-finalize / engine failure / forced on disconnect —
         // the safety net that keeps `.recording` from stranding) → finalize.
+        // `.stopped` fires on ALL THREE stop paths, including `captureEnded` — the path the
+        // user did not ask for (recognizer silence / engine failure / BLE drop) is exactly
+        // where an eyes-free "the mic just closed" cue matters most.
         case (.recording, .holdEnded), (.recording, .tap), (.recording, .captureEnded):
-            return (.finalizing, [.stopCapture, .resumeKeepAlive, .cancelTimer(.captureGrace)])
+            return (.finalizing, [.stopCapture, .playEarcon(.stopped), .resumeKeepAlive,
+                                  .cancelTimer(.captureGrace)])
 
         case (.finalizing, .transcription(let text)):
             if let text, !text.trimmed.isEmpty {
@@ -156,11 +170,13 @@ enum SessionReducer {
         case (.awaitingResponse, .ttsStarted):
             return (.speaking, [.cancelTimer(.awaitResponse), .updateNowPlaying])
 
-        // Dismiss a busy state with a tap or double-tap (no new recording).
+        // Dismiss a busy state with a tap or double-tap (no new recording). Cues
+        // `.cancelled` — the user pressed the button and nothing is recording, which
+        // is silence-indistinguishable from a dropped press without a tone.
         case (.awaitingResponse, .tap), (.awaitingResponse, .doubleTap):
-            return (.idle, [.cancelTimer(.awaitResponse), .updateNowPlaying])
+            return (.idle, [.cancelTimer(.awaitResponse), .playEarcon(.cancelled), .updateNowPlaying])
         case (.speaking, .tap), (.speaking, .doubleTap):
-            return (.idle, [.interruptTTS, .updateNowPlaying])
+            return (.idle, [.interruptTTS, .playEarcon(.cancelled), .updateNowPlaying])
 
         // A late response after a timeout still speaks (idle → speaking).
         case (.idle, .ttsStarted):

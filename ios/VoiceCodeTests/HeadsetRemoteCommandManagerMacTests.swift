@@ -560,11 +560,12 @@ final class HeadsetRemoteCommandManagerMacTests: XCTestCase {
         XCTAssertNil(msg["new_session_id"], "existing session must not mint a new one")
     }
 
-    // MARK: - Earcons (executor cues: .listening on record, .sent on confirmed send, .error)
+    // MARK: - Earcons (executor cues: .listening/.stopped on record, .sent on confirmed send, .error)
 
-    /// A confirmed record→send loop cues `[.listening, .sent]` in order: `.listening` from the
-    /// reducer at recording-start, `.sent` from the executor on the confirmed send.
-    func testConfirmedSend_playsListeningThenSent_inOrder() {
+    /// A confirmed record→send loop cues `[.listening, .stopped, .sent]` in order:
+    /// `.listening` and `.stopped` from the reducer at the two ends of the recording,
+    /// `.sent` from the executor on the confirmed send.
+    func testConfirmedSend_playsListeningStoppedThenSent_inOrder() {
         let f = makeFixture()                                        // engaged, connected
         f.settings.headsetAudibleCuesEnabled = true
         f.input.transcribedText = "do the thing"                     // non-empty → buildAndSend succeeds
@@ -572,12 +573,13 @@ final class HeadsetRemoteCommandManagerMacTests: XCTestCase {
         f.manager.handleButtonEvent(.tap, source: .blueParrottBLE)   // recording → finalizing → send
         drainMainQueue()                                             // transcription read + send settle
         XCTAssertEqual(f.manager.testSessionState, .awaitingResponse)
-        XCTAssertEqual(f.earconSpy.played, [.listening, .sent])
+        XCTAssertEqual(f.earconSpy.played, [.listening, .stopped, .sent])
     }
 
-    /// A FAILED send cues `[.listening, .error]` — never a misleading `.sent`. The reducer
-    /// turns the executor's `.backendUnavailable` (no active session) into `.error`.
-    func testFailedSend_playsListeningThenError_neverSent() {
+    /// A FAILED send cues `[.listening, .stopped, .error]` — never a misleading `.sent`. The
+    /// reducer turns the executor's `.backendUnavailable` (no active session) into `.error`.
+    /// `.stopped` still fires: the mic really did close, whatever happened to the send.
+    func testFailedSend_playsListeningStoppedThenError_neverSent() {
         let f = makeFixture(resolveSession: { nil })                 // connected, but no active session
         f.settings.headsetAudibleCuesEnabled = true
         f.input.transcribedText = "do the thing"
@@ -585,7 +587,8 @@ final class HeadsetRemoteCommandManagerMacTests: XCTestCase {
         f.manager.handleButtonEvent(.tap, source: .blueParrottBLE)
         drainMainQueue()
         XCTAssertEqual(f.manager.testSessionState, .idle, "backendUnavailable unstrands (F4)")
-        XCTAssertEqual(f.earconSpy.played, [.listening, .error], "no contradictory .sent on a failed send")
+        XCTAssertEqual(f.earconSpy.played, [.listening, .stopped, .error],
+                       "no contradictory .sent on a failed send")
     }
 
     /// The not-connected guard cues `.error` (it returns before the reducer runs, so the
@@ -605,6 +608,30 @@ final class HeadsetRemoteCommandManagerMacTests: XCTestCase {
         f.manager.handleButtonEvent(.tap, source: .blueParrottBLE)   // would emit .listening
         XCTAssertEqual(f.manager.testSessionState, .recording)
         XCTAssertEqual(f.earconSpy.played, [])
+    }
+
+    /// Interrupting the assistant with a headset tap reaches the player as `.cancelled` —
+    /// the third of the three button outcomes, and the one that starts no recording.
+    func testDismissSpeaking_playsCancelled_throughTheGate() {
+        let f = makeFixture()
+        f.settings.headsetAudibleCuesEnabled = true
+        f.manager.handleSystemEvent(.ttsStarted)                     // idle → speaking
+        XCTAssertEqual(f.manager.testSessionState, .speaking)
+        f.manager.handleButtonEvent(.tap, source: .blueParrottBLE)   // dismiss
+        XCTAssertEqual(f.manager.testSessionState, .idle)
+        XCTAssertEqual(f.earconSpy.played, [.cancelled])
+    }
+
+    /// The three outcomes are audibly distinct end-to-end: a barge-in (interrupt + record)
+    /// plays the RECORDING-START cue alone, not the dismiss cue — the user hears that the
+    /// mic opened, which is the whole point of telling these presses apart eyes-free.
+    func testBargeIn_playsListeningOnly_throughTheGate() {
+        let f = makeFixture()
+        f.settings.headsetAudibleCuesEnabled = true
+        f.manager.handleSystemEvent(.ttsStarted)                     // idle → speaking
+        f.manager.handleButtonEvent(.holdStarted, source: .blueParrottBLE)
+        XCTAssertEqual(f.manager.testSessionState, .recording)
+        XCTAssertEqual(f.earconSpy.played, [.listening])
     }
 }
 #endif
