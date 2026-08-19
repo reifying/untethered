@@ -7,16 +7,27 @@
 //
 // Routing note: macOS has NO `AVAudioSession`, so there is no `.playAndRecord` /
 // `.allowBluetoothA2DP` to set (those are the iOS precedent named in the design doc).
-// On macOS `AVAudioPlayer` follows the system default output device — the same device the
-// keep-alive player already relies on — which is the Bluetooth (HFP) headset when one is
-// connected. To catch mis-routing (cue on the Mac speaker instead of the headset, Risk 2),
-// `play()` logs the resolved CoreAudio default output device, mirroring `setupKeepAlive`'s
-// `outputs=[…]` logging.
+// On macOS `AVAudioPlayer` plays to the system default OUTPUT device, whatever that is at
+// the moment `play()` is called — this class never chooses a route.
+//
+// On macOS that route is usually the BUILT-IN SPEAKERS, not the headset, and that is
+// deliberate. The BlueParrott cannot do A2DP output and HFP mic at once, so
+// `MacAudioOutputRouter` parks the system output on the built-in device before capture and
+// LEAVES it there; output returns to the headset only while TTS is actually speaking. See
+// `HeadsetRemoteCommandManager.rerouteOutputForCaptureIfNeeded` and
+// @docs/design/macos-headset-loop-findings.md. Consequences for the cues:
+//   • `.listening` / `.stopped` — the reducer emits `.startCapture` before the cue, and
+//     output stays parked after capture, so both play through the Mac speakers.
+//   • `.cancelled` — fires while TTS still owns the route (the park-back runs on a later
+//     main-queue hop), so the interrupt cue plays in-ear.
+//   • `.sent` / `.error` — follow whatever the route is when they land.
+// `play()` logs the resolved CoreAudio default output device so the actual destination is
+// always in the log, mirroring `setupKeepAlive`'s `outputs=[…]` logging.
 //
 // Cross-platform: the tone synthesis is pure AVFoundation. macOS plays cues through the
 // system default output (CoreAudio); iOS plays through the active AVAudioSession route —
-// the Bluetooth HFP headset while a recording session is up — so the user hears the cue in
-// the headset, eyes-free. See @docs/design/macos-headset-audible-feedback.md §3, §6.
+// the Bluetooth HFP headset while a recording session is up.
+// See @docs/design/macos-headset-audible-feedback.md §3, §6.
 
 import Foundation
 import AVFoundation
@@ -75,9 +86,12 @@ final class HeadsetEarconPlayer: EarconPlaying {
         eLog("Earcon: played \(earcon) — started=\(started), output=[\(Self.outputRouteDescription())]")
     }
 
-    /// Resolved output route at play time, to catch a cue going somewhere other than the
-    /// headset (Risk 2). macOS reads the CoreAudio default-output device; iOS reads the
-    /// active AVAudioSession route (the HFP headset while recording).
+    /// Resolved output route at play time, logged so the cue's actual destination is always
+    /// recoverable from the log. On macOS the expected destination is the BUILT-IN device
+    /// for the recording cues (output is parked off the headset to free the HFP mic — see
+    /// the routing note above), so "Mac speakers" here is correct, not a mis-route. macOS
+    /// reads the CoreAudio default-output device; iOS reads the active AVAudioSession route
+    /// (the HFP headset while recording).
     static func outputRouteDescription() -> String {
         #if os(macOS)
         return defaultOutputDeviceDescription()
@@ -180,8 +194,9 @@ final class HeadsetEarconPlayer: EarconPlaying {
 
     #if os(macOS)
     /// Name + UID of the system default OUTPUT device (CoreAudio). On macOS `AVAudioPlayer`
-    /// plays to this device, so logging it at play time catches the cue going to the Mac
-    /// speaker instead of the headset (Risk 2). Mirrors
+    /// plays to this device, so logging it at play time records where each cue actually
+    /// went — the built-in device for the recording cues, the headset while TTS holds the
+    /// route (see the routing note at the top). Mirrors
     /// `VoiceInputManager.defaultInputDeviceDescription()` for the input side.
     static func defaultOutputDeviceDescription() -> String {
         var deviceID = AudioDeviceID(0)
