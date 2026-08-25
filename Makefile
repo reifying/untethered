@@ -187,12 +187,16 @@ test-integration: setup-simulator
 	$(WRAP) bash -c "cd $(IOS_DIR) && xcodebuild test -scheme $(SCHEME) -destination $(DESTINATION) -only-testing:VoiceCodeUITests/CrashReproductionTest"
 
 # Build and install to connected iPhone (mimics Xcode's Run button)
+# Override DEVICE_ID=<udid> to target a specific device when more than one is
+# connected/paired (auto-picking the first match is ambiguous, and a device
+# new to this Apple ID's provisioning profile must be built for by ID so
+# xcodebuild registers it -allowProvisioningUpdates).
 deploy-device:
 	@echo "Building and deploying to connected iPhone..."
 	@echo "Make sure your iPhone is connected via USB and unlocked"
-	$(WRAP) bash -c "cd $(IOS_DIR) && xcodebuild build -scheme $(SCHEME) -destination 'generic/platform=iOS' -allowProvisioningUpdates -derivedDataPath build CODE_SIGN_STYLE=Automatic DEVELOPMENT_TEAM=$(DEVELOPMENT_TEAM)"
+	$(WRAP) bash -c "cd $(IOS_DIR) && xcodebuild build -scheme $(SCHEME) -destination '$(if $(DEVICE_ID),id=$(DEVICE_ID),generic/platform=iOS)' -allowProvisioningUpdates -allowProvisioningDeviceRegistration -derivedDataPath build CODE_SIGN_STYLE=Automatic DEVELOPMENT_TEAM=$(DEVELOPMENT_TEAM)"
 	@echo "Installing to device..."
-	cd $(IOS_DIR) && xcrun devicectl device install app --device $$(xcrun devicectl list devices | grep -i "iphone" | grep -E "(connected|available)" | grep -o '[0-9A-F]\{8\}-[0-9A-F]\{4\}-[0-9A-F]\{4\}-[0-9A-F]\{4\}-[0-9A-F]\{12\}' | head -1) build/Build/Products/Debug-iphoneos/VoiceCode.app
+	cd $(IOS_DIR) && xcrun devicectl device install app --device $(if $(DEVICE_ID),$(DEVICE_ID),$$(xcrun devicectl list devices | grep -i "iphone" | grep -E "(connected|available)" | grep -o '[0-9A-F]\{8\}-[0-9A-F]\{4\}-[0-9A-F]\{4\}-[0-9A-F]\{4\}-[0-9A-F]\{12\}' | head -1)) build/Build/Products/Debug-iphoneos/VoiceCode.app
 	@echo "✅ Deployed to iPhone! Launch the app manually."
 
 # Backend targets
