@@ -225,6 +225,31 @@
         (System/exit 1)))
   (shutdown-agents))
 
+(defn wait
+  "Block until the agent's turn completes, it stalls on a permission prompt,
+   or its pane disappears; print one JSON result line. Exit codes: 0 for a
+   definitive outcome (turn_ended / stuck_permission_prompt / pane_gone),
+   2 for timeout, 1 for no-such-agent or unsupported provider. Supervisors
+   run this under their own background monitor instead of hand-rolling
+   pane-scraping loops."
+  [{:keys [id timeout poll idle-polls]}]
+  (init!)
+  (if-let [[uuid {:keys [tmux-session tmux-window provider]}] (tmux/resolve-agent id)]
+    (let [r (tmux/wait-for-turn provider tmux-session tmux-window uuid
+                                :timeout-ms (* 1000 (or timeout 3600))
+                                :poll-ms (* 1000 (or poll 15))
+                                :idle-polls (or idle-polls 4))]
+      (print-json (assoc r :session-id uuid :name tmux-window))
+      (flush)
+      (shutdown-agents)
+      (System/exit (case (:event r)
+                     "timeout" 2
+                     "unsupported_provider" 1
+                     0)))
+    (do (println (str "No agent matching: " id))
+        (shutdown-agents)
+        (System/exit 1))))
+
 (defn resume
   [{:keys [id workdir provider]}]
   (init!)

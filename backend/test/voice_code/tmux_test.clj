@@ -1814,3 +1814,132 @@
                                                        :model "claude-sonnet-4-5"})]
         (is (clojure.string/includes? cmd "--resume abc123"))
         (is (clojure.string/includes? cmd "--model claude-sonnet-4-5"))))))
+
+;; ============================================================================
+;; turn-state / wait-for-turn (tmux-agent wait)
+;; ============================================================================
+
+(defn- pane-invoker
+  "Invoker whose capture-pane output is (content-fn) each call; other tmux
+   commands succeed silently. content-fn returning nil simulates a dead pane."
+  [content-fn]
+  (fn [& args]
+    (if (some #{"capture-pane"} args)
+      (if-let [c (content-fn)]
+        {:exit 0 :out c :err ""}
+        {:exit 1 :out "" :err "can't find window"})
+      {:exit 0 :out "" :err ""})))
+
+(def ^:private working-pane "❯ thinking\n  esc to interrupt · ← for agents")
+(def ^:private shell-pane "✻ done 5:04 PM\n  bypass permissions on · 1 shell · ↓ to manage")
+(def ^:private bg-agent-pane "✻ Waiting for 1 background agent to finish\n❯")
+(def ^:private perm-pane "Dangerous rm operation\n Do you want to proceed?\n ❯ 1. Yes\n   2. No")
+(def ^:private idle-pane "✻ Baked for 10m · done 6:41 PM\n❯\n  bypass permissions on (shift+tab to cycle)")
+
+(deftest turn-state-test
+  (testing "each hardened needle classifies as :working"
+    (doseq [pane [working-pane shell-pane bg-agent-pane]]
+      (binding [tmux/*tmux-invoker* (pane-invoker (constantly pane))]
+        (is (= :working (tmux/turn-state :claude "s" "w")) pane))))
+  (testing "permission dialog wins over everything"
+    (binding [tmux/*tmux-invoker* (pane-invoker (constantly perm-pane))]
+      (is (= :permission-prompt (tmux/turn-state :claude "s" "w")))))
+  (testing "idle pane"
+    (binding [tmux/*tmux-invoker* (pane-invoker (constantly idle-pane))]
+      (is (= :idle (tmux/turn-state :claude "s" "w")))))
+  (testing "dead pane"
+    (binding [tmux/*tmux-invoker* (pane-invoker (constantly nil))]
+      (is (= :gone (tmux/turn-state :claude "s" "w")))))
+  (testing "non-claude providers are refused, not guessed"
+    (is (= :unsupported (tmux/turn-state :copilot "s" "w")))))
+
+(defn- temp-events-dir []
+  (let [d (java.io.File/createTempFile "vc-events" "")]
+    (.delete d) (.mkdirs d) (.getPath d)))
+
+(deftest wait-for-turn-pane-path-test
+  (testing "working then idle: completes only after idle-polls consecutive idles"
+    (let [states (atom [working-pane working-pane idle-pane idle-pane idle-pane idle-pane])
+          next-pane #(let [[h & t] @states] (when h (reset! states (vec (or t [idle-pane])))) (or h idle-pane))]
+      (binding [tmux/*tmux-invoker* (pane-invoker next-pane)]
+        (with-redefs [tmux/hooks-events-dir (temp-events-dir)]
+          (let [r (tmux/wait-for-turn :claude "s" "w" "uuid-1"
+                                      :timeout-ms 5000 :poll-ms 1 :idle-polls 4)]
+            (is (= "turn_ended" (:event r)))
+            (is (= "pane" (:signal r))))))))
+  (testing "permission dialog reports immediately"
+    (binding [tmux/*tmux-invoker* (pane-invoker (constantly perm-pane))]
+      (with-redefs [tmux/hooks-events-dir (temp-events-dir)]
+        (is (= "stuck_permission_prompt"
+               (:event (tmux/wait-for-turn :claude "s" "w" "uuid-2"
+                                           :timeout-ms 5000 :poll-ms 1)))))))
+  (testing "dead pane reports pane_gone"
+    (binding [tmux/*tmux-invoker* (pane-invoker (constantly nil))]
+      (with-redefs [tmux/hooks-events-dir (temp-events-dir)]
+        (is (= "pane_gone"
+               (:event (tmux/wait-for-turn :claude "s" "w" "uuid-3"
+                                           :timeout-ms 5000 :poll-ms 1)))))))
+  (testing "timeout when the pane never goes idle"
+    (binding [tmux/*tmux-invoker* (pane-invoker (constantly working-pane))]
+      (with-redefs [tmux/hooks-events-dir (temp-events-dir)]
+        (is (= "timeout"
+               (:event (tmux/wait-for-turn :claude "s" "w" "uuid-4"
+                                           :timeout-ms 30 :poll-ms 1))))))))
+
+(deftest wait-for-turn-hook-path-test
+  (testing "a new Stop event skips the idle debounce — but only once the pane agrees"
+    (let [dir (temp-events-dir)
+          uuid "uuid-hook-1"
+          f (java.io.File. dir (str uuid ".jsonl"))
+          ;; baseline: one old Stop line that must NOT count
+          _ (spit f "{\"ts\":1,\"event\":\"Stop\",\"message\":\"\"}\n")
+          calls (atom 0)
+          ;; pane stays :working (background shell) for 3 polls AFTER the new
+          ;; Stop arrives, then goes idle; hook path must wait for the pane.
+          next-pane (fn []
+                      (let [n (swap! calls inc)]
+                        (when (= n 1)
+                          (spit f "{\"ts\":2,\"event\":\"Stop\",\"message\":\"\"}\n" :append true))
+                        (if (<= n 3) shell-pane idle-pane)))]
+      (binding [tmux/*tmux-invoker* (pane-invoker next-pane)]
+        (with-redefs [tmux/hooks-events-dir dir]
+          (let [r (tmux/wait-for-turn :claude "s" "w" uuid
+                                      :timeout-ms 5000 :poll-ms 1 :idle-polls 10)]
+            (is (= "turn_ended" (:event r)))
+            (is (= "hook" (:signal r)) "stop event + idle pane should report via hook, not wait 10 idle polls"))))))
+  (testing "a permission Notification event reports the stall"
+    (let [dir (temp-events-dir)
+          uuid "uuid-hook-2"
+          f (java.io.File. dir (str uuid ".jsonl"))
+          calls (atom 0)
+          next-pane (fn []
+                      (when (= 1 (swap! calls inc))
+                        (spit f "{\"ts\":2,\"event\":\"Notification\",\"message\":\"Claude needs your permission to use Bash\"}\n"))
+                      idle-pane)]
+      (binding [tmux/*tmux-invoker* (pane-invoker next-pane)]
+        (with-redefs [tmux/hooks-events-dir dir]
+          (let [r (tmux/wait-for-turn :claude "s" "w" uuid
+                                      :timeout-ms 5000 :poll-ms 1 :idle-polls 50)]
+            (is (= "stuck_permission_prompt" (:event r)))
+            (is (= "hook" (:signal r)))))))))
+
+(deftest claude-hooks-settings-test
+  (testing "build-provider-command injects --settings for claude"
+    (with-redefs [voice-code.providers/cli-path (constantly "/usr/local/bin/claude")]
+      (let [cmd (tmux/build-provider-command :claude {:session-uuid "abc" :resume? false})]
+        (is (str/includes? cmd (str "--settings " tmux/hooks-settings-file))))))
+  (testing "copilot command is untouched"
+    (with-redefs [voice-code.providers/cli-path (constantly "/usr/local/bin/copilot")]
+      (is (not (str/includes? (tmux/build-provider-command :copilot {:session-uuid "abc" :resume? false})
+                              "--settings")))))
+  (testing "ensure-claude-hooks-settings! writes parseable settings with both hooks"
+    (let [dir (temp-events-dir)
+          settings-file (str dir "/claude-hooks-settings.json")]
+      (with-redefs [tmux/hooks-settings-file settings-file
+                    tmux/hooks-events-dir (str dir "/events")]
+        (tmux/ensure-claude-hooks-settings!)
+        (let [parsed (cheshire.core/parse-string (slurp settings-file) true)]
+          (is (some? (get-in parsed [:hooks :Stop 0 :hooks 0 :command])))
+          (is (some? (get-in parsed [:hooks :Notification 0 :hooks 0 :command])))
+          (is (str/includes? (get-in parsed [:hooks :Stop 0 :hooks 0 :command]) "session_id")))
+        (is (.isDirectory (java.io.File. (str dir "/events"))))))))

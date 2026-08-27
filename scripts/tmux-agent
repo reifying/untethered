@@ -72,6 +72,7 @@ Commands:
   resume <name-or-uuid> [-d workdir] [--provider P]
   list
   status <name>
+  wait <name> [--timeout SECS] [--poll SECS] [--idle-polls N]
   capture <name> [lines]
   session-id <name>
   attach <name>
@@ -174,6 +175,27 @@ cmd_status() {
   _clj_x voice-code.agent-cli/status :id "\"$(_escape_str "$id")\""
 }
 
+# Block until the agent's turn completes, it stalls on a permission prompt,
+# or its pane disappears. Prints one JSON line; exit 0 on a definitive
+# outcome, 2 on timeout, 1 on no-such-agent.
+cmd_wait() {
+  local id="${1:?'name or uuid required'}"; shift || true
+  local timeout="" poll="" idle_polls=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --timeout)    timeout="$2"; shift 2 ;;
+      --poll)       poll="$2"; shift 2 ;;
+      --idle-polls) idle_polls="$2"; shift 2 ;;
+      *)            shift ;;
+    esac
+  done
+  local args=(voice-code.agent-cli/wait :id "\"$(_escape_str "$id")\"")
+  [[ -n "$timeout" ]] && args+=(:timeout "$timeout")
+  [[ -n "$poll" ]] && args+=(:poll "$poll")
+  [[ -n "$idle_polls" ]] && args+=(:idle-polls "$idle_polls")
+  _clj_x "${args[@]}"
+}
+
 cmd_capture() {
   local id="${1:?'name or uuid required'}"
   local lines="${2:-}"
@@ -267,6 +289,7 @@ main() {
     resume)     cmd_resume "$@" ;;
     list)       cmd_list ;;
     status)     cmd_status "$@" ;;
+    wait)       cmd_wait "$@" ;;
     capture)    cmd_capture "$@" ;;
     session-id) cmd_session_id "$@" ;;
     attach)     cmd_attach "$@" ;;

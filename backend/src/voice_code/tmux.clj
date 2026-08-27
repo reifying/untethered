@@ -4,7 +4,8 @@
    Every provider runs inside a tmux window. iOS prompts are delivered as
    'nudges' — literal send-keys into the pane. Turn completion is detected
    via provider session files, not tmux output."
-  (:require [clojure.java.shell :as shell]
+  (:require [cheshire.core :as json]
+            [clojure.java.shell :as shell]
             [clojure.string :as str]
             [clojure.tools.logging :as log]
             [voice-code.prompt-origin :as origin]
@@ -13,7 +14,7 @@
 ;; Declared up front so start-window! can reference evict-if-needed! and
 ;; deliver! can reference respawn-and-deliver! in the order that reads best.
 (declare evict-if-needed! respawn-and-deliver! list-agent-windows kill-window!
-         parse-show-environment scan-window-for-uuid!)
+         parse-show-environment scan-window-for-uuid! hooks-settings-file)
 
 (def ^:private window-cap 4)
 (def ^:private processing-window-minutes 15)
@@ -181,6 +182,10 @@
       (str "unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT && "
            (providers/cli-path :claude) " "
            "--dangerously-skip-permissions "
+           ;; Turn-completion hooks (see the wait section below). --settings
+           ;; merges with the user's own settings; hooks from both run. The
+           ;; file is (re)written by start-window! before this command runs.
+           "--settings " hooks-settings-file " "
            (cond
              fork? (str "--resume " session-uuid " --fork-session")
              resume? (str "--resume " session-uuid)
@@ -399,6 +404,148 @@
       :idle)
     :dead))
 
+;; ============================================================================
+;; Turn-completion detection (tmux-agent wait)
+;;
+;; Two signal sources, layered:
+;;   1. Hook events (claude only): start-window! injects --settings with Stop
+;;      and Notification hooks that append JSON lines to
+;;      ~/.tmux-agent/events/<session-uuid>.jsonl. Structured, immune to TUI
+;;      wording drift.
+;;   2. Pane scraping (all providers, and the arbiter even when hooks fire):
+;;      classify the visible pane. A Stop hook fires when the main agent's
+;;      turn ends even though a background shell or subagent it launched is
+;;      still working, so a Stop event alone must not report completion —
+;;      the pane is consulted and :working wins.
+;;
+;; The scrape needles were hardened across a real overnight supervision run:
+;; a permission dialog, a live background shell, and a live background
+;; subagent all look like "turn ended" to a naive esc-to-interrupt check.
+;; ============================================================================
+
+(def hooks-dir
+  "Root for tmux-agent hook artifacts: the injected settings file and the
+   per-session event logs the hooks append to."
+  (str (System/getProperty "user.home") "/.tmux-agent"))
+
+(def hooks-events-dir (str hooks-dir "/events"))
+
+(def hooks-settings-file (str hooks-dir "/claude-hooks-settings.json"))
+
+(def ^:private hook-command
+  "Shell command run by the injected Stop/Notification hooks. Reads the hook
+   payload from stdin, appends {ts, event, message} as one JSON line to
+   ~/.tmux-agent/events/<session_id>.jsonl. Only those three fields are kept:
+   full payloads can be large and nothing downstream reads more."
+  (str "python3 -c '"
+       "import json,sys,os,time; "
+       "d=json.load(sys.stdin); "
+       "p=os.path.join(os.path.expanduser(\"~\"),\".tmux-agent\",\"events\"); "
+       "os.makedirs(p,exist_ok=True); "
+       "open(os.path.join(p,str(d.get(\"session_id\",\"unknown\"))+\".jsonl\"),\"a\")"
+       ".write(json.dumps({\"ts\":int(time.time()),"
+       "\"event\":d.get(\"hook_event_name\"),"
+       "\"message\":d.get(\"message\",\"\")})+\"\\n\")"
+       "'"))
+
+(defn ensure-claude-hooks-settings!
+  "Write the settings file injected into every claude worker via --settings.
+   Overwritten on every start so the hooks always match the current code.
+   Hook settings from --settings merge with the user's own settings; hooks
+   from both sources run."
+  []
+  (let [f (java.io.File. hooks-settings-file)
+        hook-entry [{:hooks [{:type "command" :command hook-command}]}]]
+    (.mkdirs (.getParentFile f))
+    (.mkdirs (java.io.File. hooks-events-dir))
+    (spit f (json/generate-string {:hooks {:Stop hook-entry
+                                           :Notification hook-entry}}))))
+
+(defn turn-state
+  "Classify a worker pane right now: :working, :permission-prompt, :idle, or
+   :gone. Claude-specific needles; other providers return :unsupported so
+   callers can fail loudly instead of mis-reporting.
+
+   :working needles, each learned from a real false 'turn ended':
+   - \"esc to interrupt\"  — the normal mid-turn indicator
+   - \"shell still running\" / \"N shell\" — turn ended but a background shell
+     the worker launched is still doing its work
+   - \"background agent\" / \"Waiting for N background agent\" — worker idles
+     while a subagent it spawned finishes"
+  [provider tmux-session window]
+  (if (not= provider :claude)
+    :unsupported
+    (if-let [content (capture-pane tmux-session window :lines 60)]
+      (cond
+        (str/includes? content "Do you want to proceed?") :permission-prompt
+        (or (str/includes? content "esc to interrupt")
+            (str/includes? content "shell still running")
+            (re-find #"\d+ shell" content)
+            (str/includes? content "background agent")) :working
+        :else :idle)
+      :gone)))
+
+(defn- read-event-lines
+  "Parse the session's hook-event log. Returns a vector of maps (possibly
+   empty). Unparseable lines are dropped."
+  [session-uuid]
+  (let [f (java.io.File. hooks-events-dir (str session-uuid ".jsonl"))]
+    (if (.exists f)
+      (->> (str/split-lines (slurp f))
+           (remove str/blank?)
+           (keep #(try (json/parse-string % true)
+                       (catch Exception _ nil)))
+           vec)
+      [])))
+
+(defn wait-for-turn
+  "Block until the worker's turn completes, it stalls on a permission prompt,
+   or its pane disappears. Returns {:event <\"turn_ended\"|
+   \"stuck_permission_prompt\"|\"pane_gone\"|\"timeout\">, :waited-s N,
+   :signal <\"hook\"|\"pane\">}.
+
+   Hook events are the fast path: a new Stop line ends the debounce wait —
+   but only if the pane agrees there is no live background shell/subagent,
+   because Stop fires when the main turn ends regardless. A new Notification
+   line whose message mentions permission reports the stall immediately, as
+   does seeing the permission dialog in the pane. Without hook events (or
+   while none arrive), completion is 'idle-polls' consecutive idle pane
+   samples — the debounce absorbs the indicator flickering between a
+   worker's internal steps."
+  [provider tmux-session window session-uuid
+   & {:keys [timeout-ms poll-ms idle-polls]
+      :or {timeout-ms 3600000 poll-ms 15000 idle-polls 4}}]
+  (let [start-ms (System/currentTimeMillis)
+        baseline-events (count (read-event-lines session-uuid))
+        result (fn [event signal]
+                 {:event event
+                  :signal signal
+                  :waited-s (quot (- (System/currentTimeMillis) start-ms) 1000)})]
+    (loop [idle-count 0]
+      (let [state (turn-state provider tmux-session window)
+            new-events (drop baseline-events (read-event-lines session-uuid))
+            stop? (some #(= "Stop" (:event %)) new-events)
+            perm? (some #(and (= "Notification" (:event %))
+                              (re-find #"(?i)permission" (str (:message %))))
+                        new-events)]
+        (cond
+          (= state :unsupported)
+          {:event "unsupported_provider" :signal "none" :waited-s 0}
+
+          (= state :gone) (result "pane_gone" "pane")
+          (= state :permission-prompt) (result "stuck_permission_prompt" "pane")
+          (and perm? (not= state :working)) (result "stuck_permission_prompt" "hook")
+          (and stop? (= state :idle)) (result "turn_ended" "hook")
+          (and (= state :idle) (>= (inc idle-count) idle-polls))
+          (result "turn_ended" "pane")
+
+          (>= (- (System/currentTimeMillis) start-ms) timeout-ms)
+          (result "timeout" (if (seq new-events) "hook" "pane"))
+
+          :else
+          (do (Thread/sleep (long poll-ms))
+              (recur (if (= state :idle) (inc idle-count) 0))))))))
+
 (defn resolve-agent
   "Look up an agent in live-windows by exact session-uuid, UUID prefix,
    exact window name, or window-name prefix. Returns [session-uuid descriptor] or nil.
@@ -554,6 +701,8 @@
    try/catch so this surfaces as an {type: error, session_id} envelope to
    the client rather than a silent hang (tmux-untethered-8vb)."
   [{:keys [session-uuid session-name provider workdir initial-prompt resume? system-prompt model]}]
+  (when (= provider :claude)
+    (ensure-claude-hooks-settings!))
   (let [window (window-name session-name session-uuid)
         cmd (build-provider-command provider
                                     {:session-uuid session-uuid
