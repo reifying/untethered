@@ -260,6 +260,106 @@
         ;; Resume dismissal sends "-l 3" then a bare Enter; trust dismissal sends one bare Enter
         (is (= 2 (count enters)) "both dialogs each contribute one bare Enter")))))
 
+(def ^:private copilot-session-in-use-pane
+  "Exact 'Session in use' modal Copilot v1.0.81 raises for
+   `copilot --resume <id>` when another process still holds the session's
+   inuse.<pid>.lock. Captured from a live pane. Note the modal replaces the
+   footer, so the readiness needles are absent while it is up — an unanswered
+   dialog is a guaranteed wait-for-ready timeout."
+  (str " [Current]  Sessions   Issues   Pull requests   Gists\n\n"
+       " \u25cf IDE auto-connect skipped: session is already in use by another client\n\n"
+       "\u256d\u2500\u2500\u2500\u2500\u2500\u2500\u256e\n"
+       "\u2502 Session in use                                     \u2502\n"
+       "\u2502 This session was last active just now and appears to be in use by another\n"
+       "\u2502 CLI or application. Resuming it here may cause conflicts.\n"
+       "\u2502\n"
+       "\u2502 \u276f 1. Resume anyway                                 \u2502\n"
+       "\u2502   2. Go back (Esc)                                \u2502\n"
+       "\u2502\n"
+       "\u2502 \u2191/\u2193 to navigate \u00b7 enter to select \u00b7 esc to cancel   \u2502\n"
+       "\u2570\u2500\u2500\u2500\u2500\u2500\u2500\u256f"))
+
+(def ^:private copilot-ready-pane
+  "Copilot v1.0.81 ready state, including the inline banner it leaves behind
+   AFTER the 'Session in use' modal is answered. The banner must NOT re-trigger
+   dialog detection — hence the needle is the option label, not the banner."
+  (str " \u25cf 6\n"
+       " ! This session may already be in use by another CLI or application. Changes\n"
+       "   made here could conflict with the other instance.\n\n"
+       " ~/code/x [\u2387 main]                            Session: 2.49 AIC used\n"
+       "\u2500\u2500\u2500\u2500\u2500\u2500\n\u276f\n\u2500\u2500\u2500\u2500\u2500\u2500\n"
+       " \u2190 open sidebar \u00b7 / commands \u00b7 ? help \u00b7 tab next tab       Claude Haiku 4.5"))
+
+(deftest wait-for-ready-answers-copilot-session-in-use-dialog
+  (testing "answers the 'Session in use' modal with Enter, then reaches ready"
+    (let [call-log (atom [])
+          state (atom :dialog)
+          invoker (fn [& args]
+                    (swap! call-log conj (vec args))
+                    (cond
+                      (some #{"capture-pane"} args)
+                      (case @state
+                        :dialog {:exit 0 :out copilot-session-in-use-pane :err ""}
+                        :ready {:exit 0 :out copilot-ready-pane :err ""})
+                      (and (some #{"send-keys"} args) (some #{"Enter"} args))
+                      (do (reset! state :ready) {:exit 0 :out "" :err ""})
+                      :else {:exit 0 :out "" :err ""}))]
+      (binding [tmux/*tmux-invoker* invoker]
+        (is (= :ready (tmux/wait-for-ready "sess" "win" :copilot
+                                           :timeout-ms 3000 :poll-ms 1))))
+      (let [send-keys-calls (filter #(some #{"send-keys"} %) @call-log)
+            enters (filter #(some #{"Enter"} %) send-keys-calls)
+            literals (filter #(some #{"-l"} %) send-keys-calls)]
+        (is (= 1 (count enters)) "exactly one Enter answers 'Resume anyway'")
+        (is (empty? literals)
+            "must not type anything into a modal — copilot's dialog eats literal text"))))
+
+  (testing "the post-dismissal 'may already be in use' banner is not a dialog"
+    ;; The banner persists for the life of the session. If it were the needle,
+    ;; wait-for-ready would answer a dialog that is no longer on screen and
+    ;; submit a stray empty prompt on every readiness check.
+    (let [enters (atom 0)
+          invoker (fn [& args]
+                    (cond
+                      (some #{"capture-pane"} args)
+                      {:exit 0 :out copilot-ready-pane :err ""}
+                      (and (some #{"send-keys"} args) (some #{"Enter"} args))
+                      (do (swap! enters inc) {:exit 0 :out "" :err ""})
+                      :else {:exit 0 :out "" :err ""}))]
+      (binding [tmux/*tmux-invoker* invoker]
+        (is (= :ready (tmux/wait-for-ready "sess" "win" :copilot
+                                           :timeout-ms 3000 :poll-ms 1))))
+      (is (zero? @enters) "a ready pane must never be sent keys")))
+
+  (testing "does NOT answer copilot's dialog for other providers"
+    (let [enters (atom 0)
+          invoker (fn [& args]
+                    (cond
+                      (some #{"capture-pane"} args)
+                      {:exit 0 :out copilot-session-in-use-pane :err ""}
+                      (and (some #{"send-keys"} args) (some #{"Enter"} args))
+                      (do (swap! enters inc) {:exit 0 :out "" :err ""})
+                      :else {:exit 0 :out "" :err ""}))]
+      (binding [tmux/*tmux-invoker* invoker]
+        (is (= :timeout (tmux/wait-for-ready "sess" "win" :claude
+                                             :timeout-ms 50 :poll-ms 1))))
+      (is (zero? @enters)
+          "claude must never answer copilot's dialog text")))
+
+  (testing "dialog is answered at most once even if it persists"
+    (let [enters (atom 0)
+          invoker (fn [& args]
+                    (cond
+                      (some #{"capture-pane"} args)
+                      {:exit 0 :out copilot-session-in-use-pane :err ""}
+                      (and (some #{"send-keys"} args) (some #{"Enter"} args))
+                      (do (swap! enters inc) {:exit 0 :out "" :err ""})
+                      :else {:exit 0 :out "" :err ""}))]
+      (binding [tmux/*tmux-invoker* invoker]
+        (is (= :timeout (tmux/wait-for-ready "sess" "win" :copilot
+                                             :timeout-ms 50 :poll-ms 1))))
+      (is (= 1 @enters) "a modal that never clears must not be re-answered forever"))))
+
 (deftest wait-for-ready-dismisses-claude-resume-dialog
   (testing "dismisses the --resume dialog with 3+Enter, then reaches ready"
     (let [call-log (atom [])
@@ -706,7 +806,75 @@
       (binding [tmux/*tmux-invoker* invoker]
         (tmux/nudge! "proj-session" "work-window" "test"))
       (is (seq @targets) "expected at least one -t argument to be recorded")
-      (is (every? #(= "=proj-session:=work-window.0" %) @targets)))))
+      (is (every? #(= "=proj-session:=work-window.0" %) @targets))))
+
+  (testing "without :provider the pane is not inspected (back-compat)"
+    (let [captures (atom 0)
+          invoker (fn [& args]
+                    (when (some #{"capture-pane"} args) (swap! captures inc))
+                    {:exit 0 :out "" :err ""})]
+      (binding [tmux/*tmux-invoker* invoker]
+        (is (= :ok (tmux/nudge! "s" "w" "hello"))))
+      (is (zero? @captures)
+          "provider-less callers keep the original send-only behavior"))))
+
+;; ============================================================================
+;; nudge! — blocking-dialog guard
+;;
+;; A modal on the pane steals the whole delivery: the literal text is eaten by
+;; the dialog's key handler and the Enter that follows answers the DIALOG
+;; instead of submitting the prompt. The prompt is gone and nudge! still
+;; reports :ok, so nothing anywhere records a failure. Observed live: a copilot
+;; window left sitting on 'Session in use' silently swallowed every follow-up
+;; reply from iOS.
+;; ============================================================================
+
+(deftest nudge-answers-blocking-dialog-before-delivering-test
+  (testing "copilot 'Session in use' modal is answered before the prompt is typed"
+    (let [call-log (atom [])
+          state (atom :dialog)
+          invoker (fn [& args]
+                    (swap! call-log conj (vec args))
+                    (cond
+                      (some #{"capture-pane"} args)
+                      (case @state
+                        :dialog {:exit 0 :out copilot-session-in-use-pane :err ""}
+                        :ready {:exit 0 :out copilot-ready-pane :err ""})
+                      ;; The bare Enter that answers the modal flips it to ready.
+                      ;; The prompt's own Enter (sent after the literal text)
+                      ;; leaves the state alone.
+                      (and (some #{"send-keys"} args) (some #{"Enter"} args))
+                      (do (when (= @state :dialog) (reset! state :ready))
+                          {:exit 0 :out "" :err ""})
+                      :else {:exit 0 :out "" :err ""}))]
+      (binding [tmux/*tmux-invoker* invoker]
+        (is (= :ok (tmux/nudge! "sess" "win" "the reply that used to vanish"
+                                :provider :copilot))))
+      (let [send-keys-calls (filter #(some #{"send-keys"} %) @call-log)
+            literal-idx (.indexOf (mapv #(boolean (some #{"the reply that used to vanish"} %))
+                                        send-keys-calls)
+                                  true)
+            first-enter-idx (.indexOf (mapv #(boolean (some #{"Enter"} %)) send-keys-calls)
+                                      true)]
+        (is (pos? literal-idx)
+            "the prompt text must be typed AFTER the dialog has been answered")
+        (is (< first-enter-idx literal-idx)
+            "the dialog's Enter must land before the prompt text, not after it"))))
+
+  (testing "a ready pane is nudged directly — no stray keys"
+    (let [call-log (atom [])
+          invoker (fn [& args]
+                    (swap! call-log conj (vec args))
+                    (cond
+                      (some #{"capture-pane"} args)
+                      {:exit 0 :out copilot-ready-pane :err ""}
+                      :else {:exit 0 :out "" :err ""}))]
+      (binding [tmux/*tmux-invoker* invoker]
+        (is (= :ok (tmux/nudge! "sess" "win" "hello" :provider :copilot))))
+      (let [send-keys-calls (filter #(some #{"send-keys"} %) @call-log)]
+        (is (= 2 (count send-keys-calls))
+            "exactly the literal text and its Enter — nothing extra")
+        (is (some #(some #{"hello"} %) send-keys-calls))))))
 
 ;; ============================================================================
 ;; processing? (via window-last-activity-ms)

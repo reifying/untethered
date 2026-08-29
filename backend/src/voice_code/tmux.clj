@@ -133,18 +133,49 @@
     (fn [content]
       (boolean (some #(str/includes? (or content "") %) needles)))))
 
-(def ^:private claude-resume-dialog-needle
-  "Substring present in the `claude --resume` confirmation dialog shown for
-   old/large sessions. Dialog lists: 'Resume from summary', 'Resume full
-   session as-is', 'Don't ask me again'."
-  "Resume from summary")
+(def ^:private blocking-dialogs
+  "Modal dialogs a provider TUI can raise INSTEAD of its ready input box, keyed
+   by provider, with the keystrokes that answer each one.
 
-(def ^:private claude-trust-dialog-needle
-  "Substring present in the Claude Code 'trust this folder?' safety prompt
-   shown when opening a working directory that has not been previously trusted.
-   Dialog lists: 'Yes, I trust this folder' / 'No, exit'. Dismissed by
-   sending Enter (confirms the pre-selected option 1)."
-  "Yes, I trust this folder")
+   `:needle` is a substring unique to the dialog while it is on screen; `:keys`
+   are send-keys argument vectors sent in order, 100 ms apart. Each dialog is
+   answered at most once per wait-for-ready call, so a pane whose ordinary text
+   merely resembles a dialog cannot spin forever.
+
+   Order within a provider's vector is the order they are matched in — put the
+   dialog that appears first in a launch sequence first.
+
+   :claude/:trust-folder — the 'trust this folder?' safety prompt shown when
+   opening a working directory that has not been trusted before. Options:
+   'Yes, I trust this folder' / 'No, exit'. Enter confirms the pre-selected 1.
+
+   :claude/:resume-summary — the `claude --resume` confirmation for old/large
+   sessions: 'Resume from summary' / 'Resume full session as-is' /
+   \"Don't ask me again\". We pick 3 so it stops asking.
+
+   :copilot/:session-in-use — `copilot --resume <id>` puts this up when another
+   process still holds the session's ~/.copilot/session-state/<id>/inuse.<pid>.lock:
+   'This session was last active just now and appears to be in use by another CLI
+   or application.' with '1. Resume anyway' / '2. Go back (Esc)'. Copilot before
+   this dialog existed simply resumed, so answering 'Resume anyway' (Enter, on the
+   pre-selected option 1) restores the old behavior rather than inventing one.
+   Left unanswered it is fatal to a reply: wait-for-ready times out and the
+   respawn drops the prompt, and any later nudge into the same pane is swallowed
+   by the dialog (see nudge!). The needle is the option label, not the banner
+   text — copilot leaves a permanent inline warning reading 'This session may
+   already be in use by another CLI or application' AFTER the dialog is
+   dismissed, and matching that would re-detect a dialog that is already gone."
+  {:claude
+   [{:id :trust-folder
+     :needle "Yes, I trust this folder"
+     :keys [["Enter"]]}
+    {:id :resume-summary
+     :needle "Resume from summary"
+     :keys [["-l" "3"] ["Enter"]]}]
+   :copilot
+   [{:id :session-in-use
+     :needle "Resume anyway"
+     :keys [["Enter"]]}]})
 
 (defn- shell-single-quote
   "Wrap s in single quotes, escaping embedded single quotes. Safe for arbitrary
@@ -277,13 +308,28 @@
    drops the initial prompt and the session hangs. See tmux-untethered-8vb."
   20000)
 
+(defn- visible-dialog
+  "First entry of `blocking-dialogs` for `provider` whose needle appears in
+   `pane` and whose id is not already in `answered`. nil when the pane shows no
+   (unanswered) dialog."
+  [provider pane answered]
+  (first (remove #(contains? answered (:id %))
+                 (filter #(str/includes? (or pane "") (:needle %))
+                         (get blocking-dialogs provider)))))
+
+(defn- answer-dialog!
+  "Send a dialog's keystroke sequence to `target`, 100 ms apart."
+  [target dialog]
+  (doseq [[i send-keys-args] (map-indexed vector (:keys dialog))]
+    (when (pos? i) (Thread/sleep 100))
+    (apply sh "tmux" "send-keys" "-t" target send-keys-args)))
+
 (defn wait-for-ready
   "Poll capture-pane until the provider-specific readiness string appears.
-   For :claude, two blocking dialogs are dismissed automatically:
-   - 'trust this folder?' prompt: sent Enter (accepts pre-selected option 1).
-   - '--resume' confirmation dialog: sent '3' + Enter ('Don't ask me again').
-   Each dialog is dismissed at most once; the deadline is reset after a
-   dismissal so the CLI has a fresh budget to reach the TUI.
+   Blocking modal dialogs listed in `blocking-dialogs` are answered on sight —
+   claude's 'trust this folder?' and '--resume' confirmations, copilot's
+   'Session in use' — each at most once, with the deadline reset after an answer
+   so the CLI has a fresh budget to reach the TUI.
    Returns :ready on success, :timeout on deadline.
 
    Default timeout is 20s: Claude cold-starts (MCP config resolution, first
@@ -295,47 +341,49 @@
   (let [ready? (readiness-predicate provider)
         target (format "=%s:=%s.0" tmux-session window)]
     (loop [deadline (+ (System/currentTimeMillis) timeout-ms)
-           dismissed-resume? false
-           dismissed-trust? false]
-      (let [{:keys [out exit]} (sh "tmux" "capture-pane" "-t" target "-p")]
+           answered #{}]
+      (let [{:keys [out exit]} (sh "tmux" "capture-pane" "-t" target "-p")
+            dialog (when (zero? exit) (visible-dialog provider out answered))]
         (cond
           (and (zero? exit) (ready? out)) :ready
 
-          (and (zero? exit)
-               (= provider :claude)
-               (not dismissed-trust?)
-               (str/includes? (or out "") claude-trust-dialog-needle))
-          (do (log/info "Dismissing claude trust-folder dialog"
-                        {:tmux-session tmux-session :window window})
-              (sh "tmux" "send-keys" "-t" target "Enter")
+          dialog
+          (do (log/info "Answering provider dialog"
+                        {:tmux-session tmux-session :window window
+                         :provider provider :dialog (:id dialog)})
+              (answer-dialog! target dialog)
               (Thread/sleep poll-ms)
-              (recur (+ (System/currentTimeMillis) timeout-ms) dismissed-resume? true))
-
-          (and (zero? exit)
-               (= provider :claude)
-               (not dismissed-resume?)
-               (str/includes? (or out "") claude-resume-dialog-needle))
-          (do (log/info "Dismissing claude --resume confirmation dialog"
-                        {:tmux-session tmux-session :window window})
-              (sh "tmux" "send-keys" "-t" target "-l" "3")
-              (Thread/sleep 100)
-              (sh "tmux" "send-keys" "-t" target "Enter")
-              (Thread/sleep poll-ms)
-              (recur (+ (System/currentTimeMillis) timeout-ms) true dismissed-trust?))
+              (recur (+ (System/currentTimeMillis) timeout-ms) (conj answered (:id dialog))))
 
           (>= (System/currentTimeMillis) deadline)
           (do (log/warn "wait-for-ready timed out; pane contents follow"
                         {:tmux-session tmux-session :window window :provider provider
                          :pane-contents (or out "")})
               :timeout)
-          :else (do (Thread/sleep poll-ms) (recur deadline dismissed-resume? dismissed-trust?)))))))
+          :else (do (Thread/sleep poll-ms) (recur deadline answered)))))))
 
 (defn nudge!
   "Deliver a message to a running tmux window: literal send-keys, 500 ms
    debounce, then Enter with 3 retries. Returns :ok on success, :failed on
-   exhaustion (logged at WARN)."
-  [tmux-session window message]
+   exhaustion (logged at WARN).
+
+   When `:provider` is supplied the pane is checked for a blocking dialog
+   first. A dialog steals the whole delivery: the literal text is eaten by the
+   dialog's key handler and the Enter that follows answers the DIALOG instead of
+   submitting the prompt, so the prompt vanishes and nudge! still reports :ok —
+   nothing anywhere records a failure. That is exactly how copilot's
+   'Session in use' dialog swallowed follow-up prompts to a live window.
+   wait-for-ready answers the dialog and waits for the input box to come back
+   before we type into it. Callers without a provider in hand keep the old
+   two-arg behavior."
+  [tmux-session window message & {:keys [provider]}]
   (let [target (format "=%s:=%s.0" tmux-session window)]
+    (when provider
+      (let [{:keys [out exit]} (sh "tmux" "capture-pane" "-t" target "-p")]
+        (when (and (zero? exit) (visible-dialog provider out #{}))
+          (log/warn "Pane is showing a blocking dialog; answering it before delivering the prompt"
+                    {:tmux-session tmux-session :window window :provider provider})
+          (wait-for-ready tmux-session window provider))))
     (sh "tmux" "send-keys" "-t" target "-l" message)
     (Thread/sleep 500)
     (loop [attempts 3]
@@ -750,7 +798,8 @@
             ;; Record before the pane sees it so the transcript line can never
             ;; race ahead of its own attribution (see voice-code.prompt-origin).
             (origin/record-injected! session-uuid initial-prompt)
-            (nudge! tmux-session (:tmux-window descriptor) initial-prompt))
+            (nudge! tmux-session (:tmux-window descriptor) initial-prompt
+                    :provider provider))
           descriptor)
         (let [ready-result (wait-for-ready tmux-session window provider)]
           (if (= :ready ready-result)
@@ -891,7 +940,7 @@
   [session-uuid prompt-text]
   (let [desc (or (get @live-windows session-uuid)
                  (scan-window-for-uuid! session-uuid))]
-    (if-let [{:keys [tmux-session tmux-window]} desc]
+    (if-let [{:keys [tmux-session tmux-window provider]} desc]
       (do
         ;; Recorded here rather than at the top of deliver! so the respawn
         ;; fallback (which reaches start-window!, itself a recording site)
@@ -899,7 +948,8 @@
         ;; so the transcript line can never race ahead of its own attribution.
         ;; See voice-code.prompt-origin.
         (origin/record-injected! session-uuid prompt-text)
-        (let [result (nudge! tmux-session tmux-window prompt-text)]
+        (let [result (nudge! tmux-session tmux-window prompt-text
+                             :provider provider)]
           (when (= :failed result)
             ;; The prompt never reached the pane. Withdraw our record (claiming
             ;; it back consumes exactly the one we just wrote) so the respawn
