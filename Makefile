@@ -10,7 +10,7 @@ IOS_DIR := ios
 BACKEND_DIR := backend
 WRAP := ./scripts/wrap-command
 
-.PHONY: help test test-verbose test-quiet test-class test-method test-ui test-ui-crash test-ui-autoscroll build clean setup-simulator deploy-device deploy-device-old generate-project show-destinations check-sdk xcode-add-files list-simulators
+.PHONY: help test test-verbose test-quiet test-class test-method test-ui test-ui-crash test-ui-autoscroll build clean setup-simulator deploy-device deploy-iphone15 deploy-iphone14 deploy-device-old generate-project show-destinations check-sdk xcode-add-files list-simulators
 .PHONY: backend-test backend-test-manual-startup backend-test-manual-protocol backend-test-manual-watcher-new backend-test-manual-prompt-new backend-test-manual-prompt-resume backend-test-manual-broadcast backend-test-manual-errors backend-test-manual-real-data backend-test-manual-resources backend-test-manual-free backend-test-manual-all backend-clean backend-run backend-stop backend-stop-all backend-restart backend-nrepl backend-nrepl-stop recipe-sync tmux-clean
 .PHONY: bump-build bump-build-simple archive export-ipa upload-testflight deploy-testflight
 .PHONY: build-mac test-mac test-mac-class test-mac-method test-mac-ui test-mac-ui-settings run-mac clean-mac list-schemes
@@ -35,7 +35,9 @@ help:
 	@echo "  clean             - Clean iOS build artifacts"
 	@echo "  setup-simulator   - Create and boot simulator: $(SIMULATOR_NAME)"
 	@echo "  deploy-device     - Build and install to connected iPhone (fast deployment)"
-	@echo "  deploy-device-old - Build and install to Travis's older iPhone 14"
+	@echo "  deploy-iphone15   - Build and install to Travis's iPhone 15 Pro (hardcoded UDID)"
+	@echo "  deploy-iphone14   - Build and install to Travis's older iPhone 14 (hardcoded UDID)"
+	@echo "  deploy-device-old - Alias for deploy-iphone14"
 	@echo ""
 	@echo "macOS targets:"
 	@echo "  build-mac         - Build the macOS project"
@@ -200,12 +202,24 @@ deploy-device:
 	cd $(IOS_DIR) && xcrun devicectl device install app --device $(if $(DEVICE_ID),$(DEVICE_ID),$$(xcrun devicectl list devices | grep -i "iphone" | grep -E "(connected|available)" | grep -o '[0-9A-F]\{8\}-[0-9A-F]\{4\}-[0-9A-F]\{4\}-[0-9A-F]\{4\}-[0-9A-F]\{12\}' | head -1)) build/Build/Products/Debug-iphoneos/VoiceCode.app
 	@echo "✅ Deployed to iPhone! Launch the app manually."
 
-# Deploy to Travis's older iPhone 14, kept in use alongside the primary
-# phone. Paired over local network, not USB - deploy-device tunnels to it
-# either way. Update IPHONE14_UDID below if that phone is ever re-paired.
+# Both of Travis's iPhones register with devicectl under the identical
+# display name "iTravis phone" (see `xcrun devicectl list devices`), so
+# name-based auto-detection can't tell them apart - each gets its own
+# hardcoded UDID below. Either can be paired over local network instead of
+# USB; deploy-device tunnels to it either way. Update the UDIDs here if a
+# phone is ever re-paired (find the new one with `xcrun devicectl list
+# devices --json-output /tmp/d.json` and read hardwareProperties.udid).
+IPHONE15_UDID := 00008130-000260590C0B803A
 IPHONE14_UDID := 00008110-001609A21A29401E
-deploy-device-old:
+
+deploy-iphone15:
+	$(MAKE) deploy-device DEVICE_ID=$(IPHONE15_UDID)
+
+deploy-iphone14:
 	$(MAKE) deploy-device DEVICE_ID=$(IPHONE14_UDID)
+
+# Kept as an alias - deploy-device-old was the original target name.
+deploy-device-old: deploy-iphone14
 
 # Backend targets
 
