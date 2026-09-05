@@ -7,6 +7,7 @@ import dev.labs910.voicecode.data.local.VoiceCodeNotificationManager
 import dev.labs910.voicecode.data.remote.*
 import dev.labs910.voicecode.data.repository.SessionRepository
 import dev.labs910.voicecode.domain.model.*
+import dev.labs910.voicecode.util.TextProcessor
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 
@@ -212,8 +213,16 @@ class MainViewModel(
     // MARK: - Voice Output
     // ==========================================================================
 
+    /**
+     * Speak an assistant response. The wire text is display text, so it carries
+     * the backend's tool-call markers; those are noise to a listener and are
+     * stripped before speaking. A message that was only tool calls has nothing
+     * left to say and produces no utterance at all.
+     */
     fun speakResponse(text: String) {
-        voiceOutput.speak(text)
+        val spoken = TextProcessor.removeToolAnnouncements(text)
+        if (spoken.isBlank()) return
+        voiceOutput.speak(spoken)
     }
 
     fun stopSpeaking() {

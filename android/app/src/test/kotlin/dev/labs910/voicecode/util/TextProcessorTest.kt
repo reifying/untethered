@@ -341,4 +341,95 @@ class TextProcessorTest {
         assertTrue(result.contains("[code block]"))
         assertTrue(result.contains("println"))
     }
+
+    // =========================================================================
+    // MARK: - Tool Announcement Tests
+    //
+    // The backend folds tool_use / tool_result blocks into the message's display
+    // text as bracketed markers (providers.clj summarize-tool-use), and that same
+    // text drives both the transcript and TTS. These cover the speech-side
+    // filter; the transcript keeps the markers.
+    // =========================================================================
+
+    @Test
+    fun `removeToolAnnouncements strips a standalone tool marker`() {
+        val input = "Let me read that file.\n\n[Tool: Read file_path=/tmp/test.txt]"
+
+        assertEquals("Let me read that file.", TextProcessor.removeToolAnnouncements(input))
+    }
+
+    @Test
+    fun `removeToolAnnouncements yields empty for a tool-only message`() {
+        val input = "[Tool: Read file_path=/tmp/test.txt]"
+
+        assertEquals("", TextProcessor.removeToolAnnouncements(input))
+    }
+
+    @Test
+    fun `removeToolAnnouncements strips markers interleaved with prose`() {
+        val input = "First I'll look.\n\n[Tool: Grep pattern=needle]\n\n" +
+            "Then I'll fix it.\n\n[Tool: Edit file_path=/tmp/a.kt]\n\nDone."
+
+        assertEquals(
+            "First I'll look.\n\nThen I'll fix it.\n\nDone.",
+            TextProcessor.removeToolAnnouncements(input)
+        )
+    }
+
+    /** Copilot joins consecutive tool summaries with a single newline. */
+    @Test
+    fun `removeToolAnnouncements strips newline-joined markers`() {
+        val input = "Searching.\n\n[Tool: rg pattern=test]\n[Tool: glob pattern=**/*.clj]"
+
+        assertEquals("Searching.", TextProcessor.removeToolAnnouncements(input))
+    }
+
+    /** A Grep pattern can contain "]"; stopping at the first one leaves a tail. */
+    @Test
+    fun `removeToolAnnouncements strips a marker whose params contain brackets`() {
+        val input = "Looking.\n\n[Tool: Grep pattern=[0-9]+ items]"
+
+        assertEquals("Looking.", TextProcessor.removeToolAnnouncements(input))
+    }
+
+    /** Bash commands truncate at 50 chars, which can leave newlines inside. */
+    @Test
+    fun `removeToolAnnouncements strips a marker spanning newlines`() {
+        val input = "Running it.\n\n[Tool: Bash command=echo one\necho two\necho thre...]"
+
+        assertEquals("Running it.", TextProcessor.removeToolAnnouncements(input))
+    }
+
+    @Test
+    fun `removeToolAnnouncements truncates at the tool result marker`() {
+        val input = "Here's what came back.\n\n[Tool Result]\nline one\nline two\n\nline three"
+
+        assertEquals("Here's what came back.", TextProcessor.removeToolAnnouncements(input))
+    }
+
+    @Test
+    fun `removeToolAnnouncements yields empty for a tool-result-only message`() {
+        val input = "[Tool Result]\nsome captured output"
+
+        assertEquals("", TextProcessor.removeToolAnnouncements(input))
+    }
+
+    /** Thinking is signal for a listener and must survive the filter. */
+    @Test
+    fun `removeToolAnnouncements keeps thinking markers`() {
+        val input = "[Thinking: I should check the config first...]\n\n" +
+            "[Tool: Read file_path=/tmp/c.json]"
+
+        assertEquals(
+            "[Thinking: I should check the config first...]",
+            TextProcessor.removeToolAnnouncements(input)
+        )
+    }
+
+    @Test
+    fun `removeToolAnnouncements leaves ordinary prose untouched`() {
+        val input = "Just a normal reply with a [bracketed] aside."
+
+        assertEquals(input, TextProcessor.removeToolAnnouncements(input))
+    }
 }

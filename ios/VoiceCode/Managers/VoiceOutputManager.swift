@@ -198,6 +198,16 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
     ///   - sessionId: Originating session UUID for auto-cancellation on focus change. Nil for
     ///     non-session speech.
     func speakWithVoice(_ text: String, rate: Float = 0.5, voiceIdentifier: String? = nil, respectSilentMode: Bool = false, sessionId: UUID? = nil) {
+        // Nothing to say. A message that was only a tool call filters down to an
+        // empty string in TextProcessor.prepareForSpeech; handing that to the
+        // synthesizer would still preempt whatever is currently being read (see
+        // the stopSpeaking below) and burn a turn on an utterance with no words
+        // in it. Drop the request before touching any audio state.
+        if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            LogManager.shared.log("🔇 Speech skipped — nothing to speak", category: "VoiceOutput")
+            return
+        }
+
         #if os(macOS)
         // When muted, silently ignore all speech requests
         if isMuted {

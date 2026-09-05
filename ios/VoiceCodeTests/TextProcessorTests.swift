@@ -339,4 +339,121 @@ final class TextProcessorTests: XCTestCase {
         let result = TextProcessor.removeCodeBlocks(from: input)
         XCTAssertEqual(result, expected)
     }
+
+    // MARK: - Tool announcements
+    //
+    // The backend folds tool_use / tool_result blocks into the message's
+    // display text as bracketed markers (providers.clj `summarize-tool-use`),
+    // and that same text drives both the transcript and TTS. These cover the
+    // speech-side filter; the transcript keeps the markers.
+
+    func testRemovesStandaloneToolUseMarker() {
+        let input = "Let me read that file.\n\n[Tool: Read file_path=/tmp/test.txt]"
+        XCTAssertEqual(TextProcessor.removeToolAnnouncements(from: input), "Let me read that file.")
+    }
+
+    func testToolOnlyMessageBecomesEmpty() {
+        let input = "[Tool: Read file_path=/tmp/test.txt]"
+        XCTAssertEqual(TextProcessor.removeToolAnnouncements(from: input), "")
+    }
+
+    func testRemovesToolMarkersInterleavedWithProse() {
+        let input = """
+        First I'll look.
+
+        [Tool: Grep pattern=needle]
+
+        Then I'll fix it.
+
+        [Tool: Edit file_path=/tmp/a.swift]
+
+        Done.
+        """
+        let expected = """
+        First I'll look.
+
+        Then I'll fix it.
+
+        Done.
+        """
+        XCTAssertEqual(TextProcessor.removeToolAnnouncements(from: input), expected)
+    }
+
+    /// Copilot joins consecutive tool summaries with a single newline
+    /// (providers.clj `parse-message :copilot`), so the filter must handle
+    /// markers that are adjacent lines, not just separate paragraphs.
+    func testRemovesNewlineJoinedToolMarkers() {
+        let input = "Searching.\n\n[Tool: rg pattern=test]\n[Tool: glob pattern=**/*.clj]"
+        XCTAssertEqual(TextProcessor.removeToolAnnouncements(from: input), "Searching.")
+    }
+
+    /// A parameter value can contain "]" — a Grep pattern especially. Matching
+    /// to the first "]" would leave the tail behind to be spoken.
+    func testRemovesToolMarkerWhoseParamsContainBrackets() {
+        let input = "Looking.\n\n[Tool: Grep pattern=[0-9]+ items]"
+        XCTAssertEqual(TextProcessor.removeToolAnnouncements(from: input), "Looking.")
+    }
+
+    /// Bash commands are truncated at 50 characters, which can land mid-way
+    /// through a multi-line command and leave newlines inside the marker.
+    func testRemovesToolMarkerSpanningNewlines() {
+        let input = "Running it.\n\n[Tool: Bash command=echo one\necho two\necho thre...]"
+        XCTAssertEqual(TextProcessor.removeToolAnnouncements(from: input), "Running it.")
+    }
+
+    func testTruncatesAtToolResultMarker() {
+        let input = "Here's what came back.\n\n[Tool Result]\nline one\nline two\n\nline three"
+        XCTAssertEqual(TextProcessor.removeToolAnnouncements(from: input), "Here's what came back.")
+    }
+
+    func testToolResultOnlyMessageBecomesEmpty() {
+        let input = "[Tool Result]\nsome captured output"
+        XCTAssertEqual(TextProcessor.removeToolAnnouncements(from: input), "")
+    }
+
+    /// Thinking is signal for a listener and must survive the filter.
+    func testKeepsThinkingMarker() {
+        let input = "[Thinking: I should check the config first...]\n\n[Tool: Read file_path=/tmp/c.json]"
+        XCTAssertEqual(
+            TextProcessor.removeToolAnnouncements(from: input),
+            "[Thinking: I should check the config first...]"
+        )
+    }
+
+    func testLeavesProseWithoutToolMarkersUntouched() {
+        let input = "Just a normal reply with a [bracketed] aside."
+        XCTAssertEqual(TextProcessor.removeToolAnnouncements(from: input), input)
+    }
+
+    // MARK: - prepareForSpeech + tool announcements
+
+    func testPrepareForSpeechDropsToolCallsAndKeepsThinking() {
+        let input = """
+        [Thinking: Need to look at the parser...]
+
+        I'll check the parser now.
+
+        [Tool: Read file_path=/tmp/Parser.swift]
+        """
+        let expected = """
+        [Thinking: Need to look at the parser...]
+
+        I'll check the parser now.
+        """
+        XCTAssertEqual(TextProcessor.prepareForSpeech(from: input), expected)
+    }
+
+    /// The whole point of the empty result: callers must be able to tell that a
+    /// tool-only message has nothing to say, so no utterance is produced.
+    func testPrepareForSpeechYieldsEmptyForToolOnlyMessage() {
+        let input = "[Tool: Bash command=make test]\n\n[Tool: Read file_path=/tmp/log.txt]"
+        XCTAssertTrue(TextProcessor.prepareForSpeech(from: input).isEmpty)
+    }
+
+    /// Tool stripping has to run before CamelCase splitting, or "[Tool: WebFetch]"
+    /// would already have been rewritten to "[Tool: Web Fetch]".
+    func testPrepareForSpeechStripsToolMarkerBeforeCamelCaseSplit() {
+        let input = "Fetching.\n\n[Tool: WebFetch url=https://example.com]"
+        XCTAssertEqual(TextProcessor.prepareForSpeech(from: input), "Fetching.")
+    }
 }

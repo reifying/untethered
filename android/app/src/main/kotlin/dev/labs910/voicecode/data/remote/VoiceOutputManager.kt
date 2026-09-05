@@ -107,6 +107,14 @@ class VoiceOutputManager(
             return
         }
 
+        // Nothing to say. A message that was only a tool call filters down to an
+        // empty string upstream; handing that to the engine with QUEUE_FLUSH
+        // would cut off whatever is currently being read.
+        if (text.isBlank()) {
+            onComplete?.invoke()
+            return
+        }
+
         // Check silent mode
         if (respectSilentMode && isDeviceSilent()) {
             onComplete?.invoke()

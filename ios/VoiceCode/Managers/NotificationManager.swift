@@ -170,9 +170,13 @@ class NotificationManager: NSObject, ObservableObject, UNUserNotificationCenterD
             if let text = userInfo["responseText"] as? String {
                 LogManager.shared.log("🔊 Reading response aloud (\(text.count) characters)", category: "NotificationManager")
 
-                // Trigger TTS playback via VoiceOutputManager
+                // Trigger TTS playback via VoiceOutputManager. Route through
+                // TextProcessor for the same reason the in-app auto-speak path
+                // does: the stored text is display text, so it still carries
+                // tool-call markers and code fences the listener doesn't want.
                 let workingDirectory = userInfo["workingDirectory"] as? String
-                voiceOutputManager?.speak(text, workingDirectory: workingDirectory)
+                let processedText = TextProcessor.prepareForSpeech(from: text)
+                voiceOutputManager?.speak(processedText, workingDirectory: workingDirectory)
             } else {
                 LogManager.shared.log("❌ No response text found in notification userInfo", category: "NotificationManager")
             }

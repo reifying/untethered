@@ -239,6 +239,70 @@ final class VoiceOutputManagerTests: XCTestCase {
         wait(for: [realCompletion], timeout: 10.0)
     }
 
+    // MARK: - Tool-Call Suppression Tests
+
+    /// A message that was nothing but a tool call filters down to an empty
+    /// string, and an empty string must produce no utterance at all rather than
+    /// a silent-but-real one.
+    func testToolOnlyMessageProducesNoUtterance() {
+        let toolOnly = TextProcessor.prepareForSpeech(from: "[Tool: Read file_path=/tmp/test.txt]")
+        XCTAssertTrue(toolOnly.isEmpty, "precondition: a tool-only message filters to empty")
+
+        manager.speak(toolOnly)
+
+        let expectation = XCTestExpectation(description: "main queue settles")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+            XCTAssertFalse(self.manager.isSpeaking,
+                           "a tool-only message must not start an utterance")
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 1.0)
+    }
+
+    /// speakWithVoice preempts whatever is playing, so an empty utterance is not
+    /// merely wasteful — it would cut off the prose the listener is mid-way
+    /// through. A batch of [prose, tool call] must leave the prose running.
+    func testToolOnlyMessageDoesNotInterruptOngoingSpeech() {
+        manager.speak(TextProcessor.prepareForSpeech(
+            from: "This is a longer spoken reply that should keep the synthesizer busy for a while"))
+
+        let started = XCTestExpectation(description: "synthesizer starts")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            XCTAssertTrue(self.manager.isSpeaking, "precondition: prose is playing")
+            started.fulfill()
+        }
+        wait(for: [started], timeout: 1.0)
+
+        manager.speak(TextProcessor.prepareForSpeech(from: "[Tool: Bash command=make test]"))
+
+        let stillSpeaking = XCTestExpectation(description: "prose survives")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+            XCTAssertTrue(self.manager.isSpeaking,
+                          "the tool-call message must not preempt the prose already playing")
+            stillSpeaking.fulfill()
+        }
+        wait(for: [stillSpeaking], timeout: 1.0)
+
+        manager.stop()
+    }
+
+    /// Prose interleaved with tool markers still speaks — only the markers go.
+    func testProseWithToolMarkerStillSpeaks() {
+        let mixed = TextProcessor.prepareForSpeech(
+            from: "Let me look at that configuration file for you.\n\n[Tool: Read file_path=/tmp/c.json]")
+        XCTAssertEqual(mixed, "Let me look at that configuration file for you.")
+
+        manager.speak(mixed)
+
+        let expectation = XCTestExpectation(description: "speech starts")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            XCTAssertTrue(self.manager.isSpeaking, "prose alongside a tool marker must still be spoken")
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 1.0)
+        manager.stop()
+    }
+
     // MARK: - stop(completion:) Tests
 
     /// When the synthesizer was not speaking, stop(completion:) should still invoke

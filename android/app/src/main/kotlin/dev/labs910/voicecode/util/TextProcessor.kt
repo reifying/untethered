@@ -7,6 +7,59 @@ package dev.labs910.voicecode.util
 object TextProcessor {
 
     /**
+     * Matches one backend tool-call announcement, e.g.
+     * "[Tool: Read file_path=/tmp/x]" or "[Tool: Bash command=ls -la ...]"
+     * (see summarize-tool-use in backend/src/voice_code/providers.clj).
+     *
+     * The closing bracket must sit at end-of-line, so a parameter value that
+     * itself contains "]" — a Grep pattern=[0-9]+, say — doesn't cut the match
+     * short and leave the tail to be spoken. The body may span newlines (a
+     * truncated multi-line Bash command) but never a blank line, so a stray
+     * unterminated "[Tool:" in prose can't swallow the paragraphs after it.
+     */
+    private val TOOL_USE_PATTERN = Regex("\\[Tool:(?:(?!\\n\\n)[\\s\\S])*?\\][ \\t]*(?=\\n|\\z)")
+
+    /**
+     * Literal marker the backend emits ahead of tool-result content. The content
+     * that follows has no terminator we can recognise, so everything from the
+     * marker onwards is dropped.
+     */
+    private const val TOOL_RESULT_MARKER = "[Tool Result]"
+
+    /**
+     * Remove tool-call chatter so it is never spoken.
+     *
+     * The backend folds tool_use and tool_result content blocks into the
+     * message's display text as bracketed markers, and that same text feeds both
+     * the on-screen transcript and TTS. The transcript wants them; a listener
+     * does not. This strips them from the speech copy only.
+     *
+     * "[Thinking: ...]" markers are deliberately left alone — thinking is signal
+     * for a listener.
+     *
+     * Corresponds to iOS TextProcessor.removeToolAnnouncements(from:).
+     *
+     * @param text The message text to filter
+     * @return The text with tool announcements removed, trimmed. Empty when the
+     *   message was nothing but tool calls — callers must not speak that.
+     */
+    fun removeToolAnnouncements(text: String): String {
+        var result = TOOL_USE_PATTERN.replace(text, "")
+
+        // Tool-result content runs to the end of the block with no marker we can
+        // anchor on, so truncate here. Prose before the marker is preserved.
+        val markerIndex = result.indexOf(TOOL_RESULT_MARKER)
+        if (markerIndex >= 0) {
+            result = result.substring(0, markerIndex)
+        }
+
+        // Collapse the blank runs the removals leave behind.
+        result = Regex("\\n{3,}").replace(result, "\n\n")
+
+        return result.trim()
+    }
+
+    /**
      * Remove code blocks from markdown text for better text-to-speech experience.
      * Removes both fenced code blocks (```...```) and inline code (`...`).
      * Replaces them with spoken descriptions.
