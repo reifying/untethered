@@ -163,11 +163,12 @@ All messages sent from backend to iOS will use this structure:
 
 #### Text Extraction Rules
 
-> **Superseded for tool content (2026-11-08).** Tool calls and tool results are no
-> longer summarized into `text`: `parse-message` drops every tool block, and a record
-> that was only tool activity produces no message at all. The `[Tool: ...]` and
-> `[Tool Result]` rules and examples below are historical. See
-> [tool-filter-speech-queue-links.md](tool-filter-speech-queue-links.md) §1.
+> **Superseded for tool and thinking content (2026-11-08).** Tool calls, tool results
+> and thinking are no longer summarized into `text`: `parse-message` drops every tool
+> and thinking block (and Copilot `reasoningText`), and a record that was only those
+> produces no message at all. The `[Tool: ...]`, `[Tool Result]` and `[Thinking: ...]`
+> rules and examples below are historical. See
+> [tool-filter-speech-queue-links.md](tool-filter-speech-queue-links.md) §1 and §1a.
 
 The `text` field contains human-readable content extracted as follows:
 

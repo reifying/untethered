@@ -88,10 +88,10 @@
     :timestamp \"ISO-8601\"
     :provider :claude | :copilot}
 
-   or nil when the record has nothing for a reader. Tool calls and tool
-   results never appear in `:text`, so a record that was only tool activity
-   (a tool_use-only assistant write, a tool_result-only user write) returns
-   nil and never reaches a client. See docs/design/tool-filter-speech-queue-links.md."
+   or nil when the record has nothing for a reader. Tool calls, tool results
+   and thinking never appear in `:text`, so a record that was only working
+   steps (a tool_use-only or thinking-only assistant write, a
+   tool_result-only user write) returns nil and never reaches a client. See docs/design/tool-filter-speech-queue-links.md."
   (fn [provider _raw-msg] provider))
 
 (defmulti get-session-file
@@ -229,17 +229,18 @@
     (boolean (and (string? block-type)
                   (re-find #"(?:^|_)tool_(?:use|result)$" block-type)))))
 
-(defn- summarize-thinking
-  "Summarize a thinking block for display."
-  [{:keys [thinking]}]
-  (let [thinking-text (or thinking "")
-        preview (subs thinking-text 0 (min 50 (count thinking-text)))]
-    (str "[Thinking: " preview (when (> (count thinking-text) 50) "...") "]")))
+(defn thinking-block?
+  "True when a content block is the model's thinking: `thinking`, or
+   `redacted_thinking` when the provider withholds the text. Like tool
+   blocks, these are working steps rather than the reply, so `parse-message`
+   leaves them out of `:text`."
+  [block]
+  (contains? #{"thinking" "redacted_thinking"} (:type block)))
 
 (defn- extract-text-from-content
   "Extract human-readable text from Claude message content: string content as
-   is, text blocks, and a one-line summary of thinking blocks. Tool blocks
-   (see `tool-block?`) are dropped, so content that was only tool activity
+   is, and text blocks. Tool blocks (`tool-block?`) and thinking blocks
+   (`thinking-block?`) are dropped, so content that was only working steps
    yields \"\"."
   [content]
   (cond
@@ -252,10 +253,11 @@
     (let [summaries
           (for [block content
                 :let [block-type (:type block)]
-                :when (and block-type (not (tool-block? block)))]
+                :when (and block-type
+                           (not (tool-block? block))
+                           (not (thinking-block? block)))]
             (case block-type
               "text" (:text block)
-              "thinking" (summarize-thinking block)
               ;; Unknown block type
               (str "[" block-type "]")))]
       (str/join "\n\n" (remove str/blank? summaries)))
@@ -268,8 +270,9 @@
   ;; Filter out:
   ;; - Non user/assistant types (summary, system, init, etc.)
   ;; - Sidechain messages (warmup, internal overhead)
-  ;; - Records with no readable text once tool blocks are dropped: a
-  ;;   tool_use-only assistant write or a tool_result-only user write
+  ;; - Records with no readable text once tool and thinking blocks are
+  ;;   dropped: a tool_use-only or thinking-only assistant write, a
+  ;;   tool_result-only user write
   (let [msg-type (:type raw-msg)
         is-sidechain (:isSidechain raw-msg)
         message (:message raw-msg)
@@ -382,23 +385,15 @@
 (defmethod parse-message :copilot [_ raw-msg]
   ;; Transform Copilot events.jsonl event to canonical format
   ;; Only user.message and assistant.message events produce visible messages.
-  ;; An assistant.message's toolRequests are the agent's working steps and are
-  ;; left out of :text; one that carried nothing else returns nil.
+  ;; An assistant.message's toolRequests and reasoningText are the agent's
+  ;; working steps (tool calls and thinking) and are left out of :text; one
+  ;; that carried nothing else returns nil.
   (let [event-type (:type raw-msg)]
     (when (contains? #{"user.message" "assistant.message"} event-type)
       (let [data (:data raw-msg)
-            ;; Extract content from the data field
-            ;; For assistant messages, content is often empty and text is in reasoningText
-            raw-content (or (:content data)
-                            (:transformedContent data)
-                            "")
-            reasoning-text (:reasoningText data)
-            ;; Build text content: prefer content, fall back to reasoningText for assistant
-            text (if (and (= "assistant.message" event-type)
-                          (str/blank? raw-content)
-                          (not (str/blank? reasoning-text)))
-                   reasoning-text
-                   raw-content)
+            text (or (:content data)
+                     (:transformedContent data)
+                     "")
             ;; Generate a UUID if messageId not present
             msg-id (or (:messageId data)
                        (:id raw-msg)

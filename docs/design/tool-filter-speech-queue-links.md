@@ -2,7 +2,8 @@
 
 Three changes to the transcript and to speech, shipped together on 2026-11-08.
 
-1. **Tool calls are filtered on the backend.** No tool call or tool result reaches a client.
+1. **Tool calls and thinking are filtered on the backend.** No tool call, tool result or thinking
+   step reaches a client. (Thinking was added on 2026-11-08 as a follow-up; see §1a.)
 2. **New replies don't interrupt the one being read.** Replies that arrive while a session is open are queued and each is read in full, in order.
 3. **Links are tappable**, in the conversation list and in the full-message view.
 
@@ -41,8 +42,8 @@ broadcast and subscribe, the Copilot push) goes through it.
 
 - `providers/tool-block?` recognizes a tool block by type: `tool_use`, `tool_result`, and the server and
   MCP variants (`server_tool_use`, `mcp_tool_use`, `web_search_tool_result`, `mcp_tool_result`, ...).
-- Claude: tool blocks are dropped from `text`. Text and thinking blocks are kept, so a mixed record keeps
-  its prose. A record with no readable text left returns `nil`.
+- Claude: tool blocks are dropped from `text`. Text blocks are kept, so a mixed record keeps its prose.
+  (Thinking blocks are dropped too since §1a.) A record with no readable text left returns `nil`.
 - Copilot: `toolRequests` are no longer summarized. An `assistant.message` with no content or reasoning
   text returns `nil`.
 - OpenCode is unchanged. Its text has always been the message's text parts only.
@@ -80,6 +81,24 @@ now a no-op against this backend and was left alone.
 - **v0.4.0 seq counters.** In the v0.4.0 rollback path, the persisted `:next-seq` of a session that
   predates this change counted tool messages, while a fresh subscribe recounts without them. Current
   iOS and macOS clients use v0.5.0 offsets, which are unaffected.
+
+## 1a. Thinking filtered the same way
+
+Thinking is a working step too, so it now follows the same path as tool calls. Claude `thinking` and
+`redacted_thinking` blocks are dropped from `text` (`providers/thinking-block?`); before, they were
+sent as `[Thinking: <first 50 chars>...]`. Copilot's `reasoningText` is no longer used as a fallback
+when `content` is empty. A record with nothing left returns `nil`, exactly as a tool-only record
+does. OpenCode is unchanged, because its text was already the text parts only and its reasoning parts
+were never included.
+
+The client has no thinking-specific logic. It displayed the marker, and the speech path deliberately
+read it aloud. So nothing on the device needs changing, and the same consumer table as §1 applies:
+thinking-only messages no longer create bubbles, get spoken, notify, count as unread, update the
+preview, or claim the priority-queue slot.
+
+Risk: if a Copilot model ever puts its final answer only in `reasoningText` with an empty `content`,
+that answer is now dropped. The field holds the model's reasoning, and the replies seen in tests
+carry their answer in `content`.
 
 ## 2. Replies read in turn
 

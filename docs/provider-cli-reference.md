@@ -140,8 +140,9 @@ copilot -p "prompt text" \
 
 - `user.message` — user prompts
 - `assistant.message` — assistant responses
-- Content in `content`, `transformedContent`, or `reasoningText` fields
-- Tool requests summarized similarly to Claude's `tool_use`
+- Content in `content` or `transformedContent`; `reasoningText` holds the model's thinking
+- `toolRequests` and `reasoningText` are working steps and are not sent to clients (see
+  `docs/design/tool-filter-speech-queue-links.md`)
 
 ### Session ID Discovery (New Sessions)
 

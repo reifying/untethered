@@ -2231,6 +2231,24 @@
   (testing "A tick that is nothing but tool activity yields an empty snapshot"
     (is (= [] (repl/stamp-offsets :claude (subvec (tool-heavy-turn-lines) 1 5) 0)))))
 
+(deftest test-stamp-offsets-drops-thinking
+  (testing "Thinking-only lines never reach the v0.5.0 push snapshot; the reply after them does"
+    (let [raw [(claude-jsonl {:type "user" :text "what time is it" :uuid "u-0"})
+               (json/generate-string {:type "assistant" :uuid "a-1" :isSidechain false
+                                      :timestamp "2026-04-19T00:00:01Z"
+                                      :message {:role "assistant"
+                                                :content [{:type "thinking"
+                                                           :thinking "The user wants the time; run date."}]}})
+               (json/generate-string {:type "assistant" :uuid "a-2" :isSidechain false
+                                      :timestamp "2026-04-19T00:00:02Z"
+                                      :message {:role "assistant"
+                                                :content [{:type "redacted_thinking" :data "opaque"}]}})
+               (claude-jsonl {:type "assistant" :text "It's 18:14 UTC." :uuid "a-3"})]
+          stamped (repl/stamp-offsets :claude raw 0)]
+      (is (= ["u-0" "a-3"] (mapv :uuid stamped)))
+      (is (= [0 3] (mapv :offset stamped)))
+      (is (not-any? #(re-find #"(?i)thinking" (:text %)) stamped)))))
+
 (deftest test-read-from-offset-drops-tool-activity
   (testing "The v0.5.0 subscribe/backfill read carries no tool activity and still reaches EOF"
     (let [file (create-test-jsonl-file "rfo-tool-heavy.jsonl" (tool-heavy-turn-lines))

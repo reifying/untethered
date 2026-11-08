@@ -756,30 +756,29 @@ branch: main")
                                                   :message {:content content}}))
           (str "content " (pr-str content) " carries nothing to show"))))
 
-  (testing "thinking block"
-    (let [raw {:type "assistant"
-               :uuid "880e8400-e29b-41d4-a716-446655440000"
-               :timestamp "2026-01-30T12:35:10.000Z"
-               :message {:role "assistant"
-                         :content [{:type "thinking"
-                                    :thinking "Let me analyze this problem step by step..."}]}}
-          result (providers/parse-message :claude raw)]
-      (is (valid-canonical-message? result))
-      (is (str/includes? (:text result) "[Thinking:"))))
+  (testing "thinking-only assistant write is not a message"
+    (doseq [block [{:type "thinking" :thinking "Let me analyze this problem step by step..."}
+                   {:type "thinking" :thinking (apply str (repeat 100 "x"))}
+                   {:type "redacted_thinking" :data "opaque"}]]
+      (let [raw {:type "assistant"
+                 :uuid "880e8400-e29b-41d4-a716-446655440000"
+                 :timestamp "2026-01-30T12:35:10.000Z"
+                 :message {:role "assistant" :content [block]}}]
+        (is (nil? (providers/parse-message :claude raw))
+            (str (:type block) " must not produce a wire message")))))
 
-  (testing "thinking block with long content gets truncated"
-    (let [long-thinking (apply str (repeat 100 "x"))
-          raw {:type "assistant"
+  (testing "thinking alongside text is dropped; the text is kept"
+    (let [raw {:type "assistant"
                :uuid "880e8400-e29b-41d4-a716-446655440001"
                :timestamp "2026-01-30T12:35:10.000Z"
                :message {:role "assistant"
-                         :content [{:type "thinking"
-                                    :thinking long-thinking}]}}
+                         :content [{:type "thinking" :thinking "The user wants the time."}
+                                   {:type "text" :text "It's 18:14 UTC."}
+                                   {:type "tool_use" :name "Bash" :input {:command "date"}}]}}
           result (providers/parse-message :claude raw)]
-      (is (str/includes? (:text result) "[Thinking:"))
-      (is (str/includes? (:text result) "..."))
-      ;; Should truncate to ~50 chars preview
-      (is (< (count (:text result)) 100))))
+      (is (valid-canonical-message? result))
+      (is (= "It's 18:14 UTC." (:text result)))
+      (is (not (str/includes? (:text result) "Thinking")))))
 
   (testing "mixed content (text + tool_use) keeps every text block, in order"
     (let [raw {:type "assistant"
@@ -889,22 +888,18 @@ branch: main")
       (is (valid-canonical-message? result))
       (is (= "Transformed content here" (:text result)))))
 
-  (testing "uses reasoningText when content is empty for assistant messages"
+  (testing "reasoningText alone is thinking, not a message"
     (let [raw-msg {:type "assistant.message"
                    :timestamp "2026-01-28T10:00:05Z"
                    :data {:content ""
                           :reasoningText "**Planning the task**\n\nI'm going to search for the files."
-                          :messageId "880e8400-e29b-41d4-a716-446655440010"}}
-          result (providers/parse-message :copilot raw-msg)]
+                          :messageId "880e8400-e29b-41d4-a716-446655440010"}}]
+      (is (nil? (providers/parse-message :copilot raw-msg)))))
 
-      (is (valid-canonical-message? result))
-      (is (str/includes? (:text result) "Planning the task"))
-      (is (str/includes? (:text result) "search for the files"))))
-
-  (testing "tool requests are left out of the text"
+  (testing "content is kept; reasoningText and tool requests are left out"
     (let [raw-msg {:type "assistant.message"
                    :timestamp "2026-01-28T10:00:05Z"
-                   :data {:content ""
+                   :data {:content "Found three matches."
                           :reasoningText "Searching codebase"
                           :toolRequests [{:name "rg" :arguments {:pattern "test"}}
                                          {:name "glob" :arguments {:pattern "**/*.clj"}}]
@@ -912,7 +907,16 @@ branch: main")
           result (providers/parse-message :copilot raw-msg)]
 
       (is (valid-canonical-message? result))
-      (is (= "Searching codebase" (:text result)))))
+      (is (= "Found three matches." (:text result)))))
+
+  (testing "reasoning plus tool requests with no content is not a message"
+    (let [raw-msg {:type "assistant.message"
+                   :timestamp "2026-01-28T10:00:05Z"
+                   :data {:content ""
+                          :reasoningText "Searching codebase"
+                          :toolRequests [{:name "rg" :arguments {:pattern "test"}}]
+                          :messageId "990e8400-e29b-41d4-a716-446655440013"}}]
+      (is (nil? (providers/parse-message :copilot raw-msg)))))
 
   (testing "assistant.message carrying only tool requests is not a message"
     (let [raw-msg {:type "assistant.message"
