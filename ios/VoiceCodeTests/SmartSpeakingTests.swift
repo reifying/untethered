@@ -742,6 +742,55 @@ extension SmartSpeakingTests {
                        "the live turn is announced exactly once across the file_replaced churn")
     }
 
+    /// Several replies landing in one push are each handed to the speech queue,
+    /// in order — none of them through the interrupting `speak`, which would
+    /// cut off the reply being read.
+    func testLiveRepliesAreQueuedInOrderNotInterrupting() throws {
+        let mockVoiceOutput = MockVoiceOutputManager()
+        let manager = SessionSyncManager(
+            persistenceController: persistenceController,
+            voiceOutputManager: mockVoiceOutput
+        )
+
+        let sessionId = UUID()
+        let session = CDBackendSession(context: context)
+        session.id = sessionId
+        session.backendName = "Queue"
+        session.workingDirectory = "/test"
+        session.lastModified = Date()
+        session.messageCount = 0
+        session.preview = ""
+        session.unreadCount = 0
+        session.liveFromOffset = 0
+        try context.save()
+
+        ActiveSessionManager.shared.setActiveSession(sessionId)
+
+        // Opening the session: existing history is not read.
+        manager.handleSessionHistoryPayload(
+            v5Payload(sessionId,
+                      messages: [v5Message(sessionId, offset: 0, text: "already there", uuid: UUID().uuidString.lowercased())],
+                      nextOffset: 1, endOfFile: true))
+        settle()
+        XCTAssertTrue(mockVoiceOutput.spokenTexts.isEmpty, "opening a session must not read its history")
+
+        // Three replies arrive while it is open, in one push.
+        manager.handleSessionHistoryPayload(
+            v5Payload(sessionId,
+                      messages: [
+                        v5Message(sessionId, offset: 1, text: "first reply", uuid: UUID().uuidString.lowercased()),
+                        v5Message(sessionId, offset: 3, text: "second reply", uuid: UUID().uuidString.lowercased()),
+                        v5Message(sessionId, offset: 4, text: "third reply", uuid: UUID().uuidString.lowercased())
+                      ],
+                      nextOffset: 5, endOfFile: true))
+        settle()
+
+        XCTAssertEqual(mockVoiceOutput.spokenTexts, ["first reply", "second reply", "third reply"],
+                       "every live reply is queued, in arrival order")
+        XCTAssertTrue(mockVoiceOutput.interruptingTexts.isEmpty,
+                      "live replies must use enqueue, never the interrupting speak")
+    }
+
     /// v0.4.0-path sibling: a duplicate `turn_complete` fan-out that re-inserts
     /// the same message UUID (after a cache prune made it look new) must not
     /// re-speak it.
@@ -871,12 +920,27 @@ class MockVoiceOutputManager: VoiceOutputManager {
     var spokenTexts: [String] = []
     var speakCallCount: Int { spokenTexts.count }
 
+    /// Texts that arrived through `speak` (interrupting) rather than
+    /// `enqueue` (read in turn). Live replies must never land here.
+    var interruptingTexts: [String] = []
+
     override func speak(_ text: String, rate: Float = 0.5, respectSilentMode: Bool = false, workingDirectory: String? = nil, sessionId: UUID? = nil) {
+        interruptingTexts.append(text)
+        record(text, workingDirectory: workingDirectory, sessionId: sessionId, via: "speak")
+    }
+
+    /// Automatic reading of live replies goes through `enqueue`; for the
+    /// speak-once / never-speak assertions it counts the same as `speak`.
+    override func enqueue(_ text: String, rate: Float = 0.5, respectSilentMode: Bool = false, workingDirectory: String? = nil, sessionId: UUID? = nil) {
+        record(text, workingDirectory: workingDirectory, sessionId: sessionId, via: "enqueue")
+    }
+
+    private func record(_ text: String, workingDirectory: String?, sessionId: UUID?, via: String) {
         speakWasCalled = true
         lastSpokenText = text
         lastWorkingDirectory = workingDirectory
         lastSessionId = sessionId
         spokenTexts.append(text)
-        print("🎤 [MockVoiceOutput] speak() called with text: \(text), workingDirectory: \(workingDirectory ?? "nil"), sessionId: \(sessionId?.uuidString.lowercased() ?? "nil")")
+        print("🎤 [MockVoiceOutput] \(via)() called with text: \(text), workingDirectory: \(workingDirectory ?? "nil"), sessionId: \(sessionId?.uuidString.lowercased() ?? "nil")")
     }
 }

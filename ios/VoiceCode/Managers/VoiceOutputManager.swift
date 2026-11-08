@@ -63,6 +63,36 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
     private var pendingStopCompletion: (() -> Void)?
     private var pendingStopTimeoutItem: DispatchWorkItem?
 
+    /// One reply waiting its turn behind the utterance in flight.
+    private struct PendingSpeech {
+        let text: String
+        let rate: Float
+        let voiceIdentifier: String?
+        let respectSilentMode: Bool
+        let sessionId: UUID?
+    }
+
+    // Replies queued by `enqueue(...)`, oldest first, read one after another
+    // once the utterance in flight finishes. All access is on the main queue.
+    private var pendingSpeech: [PendingSpeech] = []
+
+    // The utterance most recently handed to the synthesizer, until its
+    // didFinish/didCancel. Set synchronously when speech starts, so unlike
+    // `synthesizer.isSpeaking` (which flips true tens of milliseconds after
+    // speak() returns) it is accurate the instant `enqueue` asks "is anything
+    // being read?". Compared by identity in the delegate callbacks, so the
+    // late didCancel of an utterance that a Read Aloud already replaced can't
+    // advance or clear the queue. All access is on the main queue.
+    private(set) var currentUtterance: AVSpeechUtterance?
+
+    /// How many replies are waiting behind the one being read.
+    var pendingSpeechCount: Int { pendingSpeech.count }
+
+    /// Utterances the synthesizer finished reading in full (not cancelled).
+    /// Lets tests assert that queued replies were each read to the end rather
+    /// than cut off by the next one.
+    private(set) var utterancesFinished = 0
+
     // iOS-only: Audio session manager for silent switch handling
     #if os(iOS)
     private let audioSessionManager = DeviceAudioSessionManager()
@@ -110,8 +140,15 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
         // restore home-stops behavior once we have a more reliable
         // "user is no longer in any session" signal.
         guard let newActive = activeId else { return }
+        // Replies queued for the session the user just left are not read.
+        let queuedBefore = pendingSpeech.count
+        pendingSpeech.removeAll { $0.sessionId != nil && $0.sessionId != newActive }
+        if pendingSpeech.count != queuedBefore {
+            LogManager.shared.log("🔇 Dropped \(queuedBefore - pendingSpeech.count) queued replies for a session no longer active", category: "VoiceOutput")
+        }
         guard let inFlight = inFlightSessionId, inFlight != newActive else { return }
         LogManager.shared.log("🔇 STOPPING TTS — in-flight \(inFlight.uuidString.lowercased()) != active \(activeStr)", category: "VoiceOutput")
+        currentUtterance = nil
         synthesizer.stopSpeaking(at: .immediate)
     }
 
@@ -189,6 +226,39 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
         speakWithVoice(text, rate: rate, voiceIdentifier: voiceIdentifier, respectSilentMode: respectSilentMode, sessionId: sessionId)
     }
 
+    /// Read `text` after everything already being read or waiting has been read
+    /// in full. Nothing is interrupted: if an utterance is in flight, `text`
+    /// waits its turn, and each queued reply starts when the one before it
+    /// finishes. `isSpeaking` stays true from the first reply to the end of the
+    /// last, so observers (the headset state machine, the macOS output router)
+    /// see one stretch of speech rather than a stop and start between replies.
+    ///
+    /// For replies that arrive while a session is open. An explicit request —
+    /// Read Aloud, a voice preview — goes through `speak` instead, which takes
+    /// over immediately and discards the queue; so do `stop()` and switching to
+    /// a different session.
+    ///
+    /// Parameters as for `speak`.
+    func enqueue(_ text: String, rate: Float = 0.5, respectSilentMode: Bool = false, workingDirectory: String? = nil, sessionId: UUID? = nil) {
+        if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            LogManager.shared.log("🔇 Queued speech skipped — nothing to speak", category: "VoiceOutput")
+            return
+        }
+        let item = PendingSpeech(
+            text: text,
+            rate: rate,
+            voiceIdentifier: appSettings?.resolveVoiceIdentifier(forWorkingDirectory: workingDirectory),
+            respectSilentMode: respectSilentMode,
+            sessionId: sessionId
+        )
+        if currentUtterance == nil {
+            startUtterance(item)
+        } else {
+            pendingSpeech.append(item)
+            LogManager.shared.log("🔊 Reply queued behind the one being read (\(pendingSpeech.count) waiting)", category: "VoiceOutput")
+        }
+    }
+
     /// Speak text with a specific voice identifier (for special cases like voice preview)
     /// - Parameters:
     ///   - text: The text to speak
@@ -198,21 +268,43 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
     ///   - sessionId: Originating session UUID for auto-cancellation on focus change. Nil for
     ///     non-session speech.
     func speakWithVoice(_ text: String, rate: Float = 0.5, voiceIdentifier: String? = nil, respectSilentMode: Bool = false, sessionId: UUID? = nil) {
-        // Nothing to say. A message that was only a tool call filters down to an
-        // empty string in TextProcessor.prepareForSpeech; handing that to the
-        // synthesizer would still preempt whatever is currently being read (see
-        // the stopSpeaking below) and burn a turn on an utterance with no words
-        // in it. Drop the request before touching any audio state.
+        // Nothing to say. A message that processes down to an empty string must
+        // not reach startUtterance, which would preempt whatever is currently
+        // being read and discard the queue for an utterance with no words in it.
+        // Drop the request before touching any audio or queue state.
         if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             LogManager.shared.log("🔇 Speech skipped — nothing to speak", category: "VoiceOutput")
             return
+        }
+
+        // An explicit request takes over now: queued replies are discarded
+        // along with whatever is playing.
+        discardPendingSpeech(reason: "explicit speak")
+        startUtterance(PendingSpeech(text: text, rate: rate, voiceIdentifier: voiceIdentifier,
+                                     respectSilentMode: respectSilentMode, sessionId: sessionId))
+    }
+
+    /// Hand one utterance to the synthesizer, preempting anything it is still
+    /// playing. Returns false when the request was dropped (muted, recording,
+    /// or the audio session could not be set up) and nothing is in flight.
+    @discardableResult
+    private func startUtterance(_ item: PendingSpeech) -> Bool {
+        let text = item.text
+        let rate = item.rate
+        let voiceIdentifier = item.voiceIdentifier
+        let respectSilentMode = item.respectSilentMode
+        let sessionId = item.sessionId
+
+        if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            LogManager.shared.log("🔇 Speech skipped — nothing to speak", category: "VoiceOutput")
+            return false
         }
 
         #if os(macOS)
         // When muted, silently ignore all speech requests
         if isMuted {
             LogManager.shared.log("🔇 Speech muted, ignoring request", category: "VoiceOutput")
-            return
+            return false
         }
         #endif
 
@@ -220,7 +312,7 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
         // into the open mic creates a feedback loop. Drop the request (don't queue).
         if isRecordingActive {
             LogManager.shared.log("🔇 Speech suppressed — recording active, dropping request", category: "VoiceOutput")
-            return
+            return false
         }
 
         // Stop any ongoing speech
@@ -249,7 +341,7 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
                 }
             } catch {
                 LogManager.shared.log("Failed to setup audio session: \(error)", category: "VoiceOutput")
-                return
+                return false
             }
         } else {
             let msg = "VoiceOutput: headset mode active — keeping .playAndRecord session"
@@ -299,6 +391,7 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
         // didCancel for any preempted prior utterance will compare against
         // this new value and skip clearing it.
         inFlightSessionId = sessionId
+        currentUtterance = utterance
 
         // Speak
         LogManager.shared.log("🔊 Invoking synthesizer.speak() with text length: \(text.count), voice: \(utterance.voice?.name ?? "system default"), sessionId: \(sessionId?.uuidString.lowercased() ?? "nil")", category: "VoiceOutput")
@@ -307,6 +400,26 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
         DispatchQueue.main.async {
             self.isSpeaking = true
         }
+        return true
+    }
+
+    /// Start the next queued reply, skipping any that are dropped (recording
+    /// started, muted). Returns true when one is now in flight.
+    private func startNextPendingSpeech() -> Bool {
+        while !pendingSpeech.isEmpty {
+            let next = pendingSpeech.removeFirst()
+            if startUtterance(next) {
+                LogManager.shared.log("🔊 Reading next queued reply (\(pendingSpeech.count) still waiting)", category: "VoiceOutput")
+                return true
+            }
+        }
+        return false
+    }
+
+    private func discardPendingSpeech(reason: String) {
+        guard !pendingSpeech.isEmpty else { return }
+        LogManager.shared.log("🔇 Discarding \(pendingSpeech.count) queued replies — \(reason)", category: "VoiceOutput")
+        pendingSpeech.removeAll()
     }
 
     func stop() {
@@ -321,6 +434,8 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
     /// Callers that need the audio session free before reconfiguring it (e.g.
     /// VoiceInputManager flipping AVAudioSession to .record) must use this form.
     func stop(completion: (() -> Void)?) {
+        discardPendingSpeech(reason: "stop")
+        currentUtterance = nil
         #if os(iOS)
         stopKeepAliveTimer()
         #endif
@@ -383,25 +498,31 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
 
     func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
         LogManager.shared.log("🔊 Speech FINISHED", category: "VoiceOutput")
-        #if os(iOS)
-        // Stop keep-alive timer
-        stopKeepAliveTimer()
-
-        // When headset mode is active, HeadsetRemoteCommandManager owns the session
-        // lifecycle — deactivating here would kill the Now Playing slot.
-        if appSettings?.headsetModeEnabled != true,
-           !(appSettings?.continuePlaybackWhenLocked ?? true) {
-            let audioSession = AVAudioSession.sharedInstance()
-            do {
-                try audioSession.setActive(false, options: .notifyOthersOnDeactivation)
-            } catch {
-                LogManager.shared.log("Failed to deactivate audio session: \(error.localizedDescription)", category: "VoiceOutput")
-            }
-        }
-        #endif
-
         let finishedSessionId = utterance.voiceCodeSessionId
         DispatchQueue.main.async {
+            if utterance === self.currentUtterance {
+                self.currentUtterance = nil
+                self.utterancesFinished += 1
+                // Read the next queued reply. Speech carries on, so none of the
+                // end-of-speech work below runs: `isSpeaking` never drops, the
+                // keep-alive timer keeps running and the session stays up.
+                if self.startNextPendingSpeech() { return }
+            }
+            #if os(iOS)
+            self.stopKeepAliveTimer()
+
+            // When headset mode is active, HeadsetRemoteCommandManager owns the session
+            // lifecycle — deactivating here would kill the Now Playing slot.
+            if self.appSettings?.headsetModeEnabled != true,
+               !(self.appSettings?.continuePlaybackWhenLocked ?? true) {
+                let audioSession = AVAudioSession.sharedInstance()
+                do {
+                    try audioSession.setActive(false, options: .notifyOthersOnDeactivation)
+                } catch {
+                    LogManager.shared.log("Failed to deactivate audio session: \(error.localizedDescription)", category: "VoiceOutput")
+                }
+            }
+            #endif
             self.isSpeaking = false
             self.clearInFlightIfMatches(finishedSessionId)
             self.onSpeechComplete?()
@@ -418,6 +539,12 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
 
         let cancelledSessionId = utterance.voiceCodeSessionId
         DispatchQueue.main.async {
+            // A cancelled read ends the queue: whoever cancelled it meant
+            // "stop reading", not "skip to the next one".
+            if utterance === self.currentUtterance {
+                self.currentUtterance = nil
+                self.discardPendingSpeech(reason: "current utterance cancelled")
+            }
             self.isSpeaking = false
             self.clearInFlightIfMatches(cancelledSessionId)
             self.firePendingStopCompletion()

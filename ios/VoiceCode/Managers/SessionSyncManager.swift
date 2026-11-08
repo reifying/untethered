@@ -762,9 +762,11 @@ class SessionSyncManager {
                         // they no longer have open.
                         guard ActiveSessionManager.shared.isActive(sessionUUID) else { return }
                         guard let voiceManager = voiceManager else { return }
+                        // Queued, not spoken: each reply is read in full, in
+                        // order, after whatever is already being read.
                         for text in newAssistantTexts {
                             let processedText = TextProcessor.prepareForSpeech(from: text)
-                            voiceManager.speak(processedText, respectSilentMode: true, workingDirectory: workingDirectory, sessionId: sessionUUID)
+                            voiceManager.enqueue(processedText, respectSilentMode: true, workingDirectory: workingDirectory, sessionId: sessionUUID)
                         }
                     }
                 } else {
@@ -1110,9 +1112,11 @@ class SessionSyncManager {
                         DispatchQueue.main.async {
                             guard ActiveSessionManager.shared.isActive(sessionUUID) else { return }
                             guard let voiceManager = voiceManager else { return }
+                            // Queued, not spoken: each reply is read in full, in
+                            // order, after whatever is already being read.
                             for text in newAssistantTexts {
                                 let processedText = TextProcessor.prepareForSpeech(from: text)
-                                voiceManager.speak(processedText, respectSilentMode: true, workingDirectory: workingDirectory, sessionId: sessionUUID)
+                                voiceManager.enqueue(processedText, respectSilentMode: true, workingDirectory: workingDirectory, sessionId: sessionUUID)
                             }
                         }
                     } else {
@@ -1935,8 +1939,8 @@ class SessionSyncManager {
                         if let voiceManager = voiceManager {
                             for text in assistantMessagesToSpeak {
                                 let processedText = TextProcessor.prepareForSpeech(from: text)
-                                LogManager.shared.log("🔊 Calling speak() with text length: \(processedText.count)", category: "SessionSync")
-                                voiceManager.speak(processedText, respectSilentMode: true, workingDirectory: workingDirectory, sessionId: sessionUUID)
+                                LogManager.shared.log("🔊 Queueing speech with text length: \(processedText.count)", category: "SessionSync")
+                                voiceManager.enqueue(processedText, respectSilentMode: true, workingDirectory: workingDirectory, sessionId: sessionUUID)
                             }
                         } else {
                             LogManager.shared.log("⚠️ voiceOutputManager is nil, cannot speak messages", category: "SessionSync")
