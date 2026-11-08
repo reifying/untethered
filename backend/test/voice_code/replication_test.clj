@@ -44,7 +44,8 @@
 (defn claude-tool-result-jsonl
   "Build a Claude .jsonl line for a tool_result, which on disk is a user-typed
    message whose content array carries a tool_result block. Used to verify the
-   watcher does not suppress these (they're not user-typed prompts)."
+   watcher keeps these off the wire without mistaking them for user-typed
+   prompts."
   [{:keys [tool-use-id text uuid timestamp]
     :or {timestamp "2026-04-19T00:00:00Z"
          uuid (str (java.util.UUID/randomUUID))
@@ -2199,6 +2200,52 @@
       ;; test-watcher-pipeline-empty-snapshot-shape.
       )))
 
+;; A realistic tool-heavy turn as Claude Code writes it: one line per block.
+;; Lines 1-4 are tool activity; only the prompt and the two prose replies are
+;; conversation.
+(defn- tool-heavy-turn-lines []
+  [(claude-jsonl {:type "user" :text "what time is it" :uuid "u-0"})
+   (json/generate-string {:type "assistant" :uuid "a-1" :isSidechain false
+                          :timestamp "2026-04-19T00:00:01Z"
+                          :message {:role "assistant"
+                                    :content [{:type "tool_use" :id "t1" :name "Bash"
+                                               :input {:command "date"}}]}})
+   (claude-tool-result-jsonl {:text "Sun Apr 19 18:14:40 UTC 2026" :uuid "u-2"})
+   (json/generate-string {:type "assistant" :uuid "a-3" :isSidechain false
+                          :timestamp "2026-04-19T00:00:03Z"
+                          :message {:role "assistant"
+                                    :content [{:type "tool_use" :id "t2" :name "Read"
+                                               :input {:file_path "/tmp/tz"}}]}})
+   (claude-tool-result-jsonl {:text "UTC" :uuid "u-4"})
+   (claude-jsonl {:type "assistant" :text "It's 18:14 UTC." :uuid "a-5"})
+   (claude-jsonl {:type "assistant" :text "Anything else?" :uuid "a-6"})])
+
+(deftest test-stamp-offsets-drops-tool-activity
+  (testing "The v0.5.0 push snapshot carries no tool calls or tool results, and survivors keep raw-line offsets"
+    (let [stamped (repl/stamp-offsets :claude (tool-heavy-turn-lines) 20)]
+      (is (= ["u-0" "a-5" "a-6"] (mapv :uuid stamped)))
+      (is (= [20 25 26] (mapv :offset stamped))
+          "Tool lines still advance the raw index, so offsets stay true file positions")
+      (is (not-any? #(re-find #"Tool" (:text %)) stamped))))
+
+  (testing "A tick that is nothing but tool activity yields an empty snapshot"
+    (is (= [] (repl/stamp-offsets :claude (subvec (tool-heavy-turn-lines) 1 5) 0)))))
+
+(deftest test-read-from-offset-drops-tool-activity
+  (testing "The v0.5.0 subscribe/backfill read carries no tool activity and still reaches EOF"
+    (let [file (create-test-jsonl-file "rfo-tool-heavy.jsonl" (tool-heavy-turn-lines))
+          r (repl/read-from-offset :claude (.getAbsolutePath file) 0 100)]
+      (is (= ["what time is it" "It's 18:14 UTC." "Anything else?"] (mapv :text (:messages r))))
+      (is (= [0 5 6] (mapv :offset (:messages r))))
+      (is (= 7 (:next-offset r)) "The cursor moves past the filtered tool lines")
+      (is (true? (:end-of-file? r)))))
+
+  (testing "A window of only tool lines returns no messages but still advances the cursor"
+    (let [file (create-test-jsonl-file "rfo-tool-only-window.jsonl" (tool-heavy-turn-lines))
+          r (repl/read-from-offset :claude (.getAbsolutePath file) 1 4)]
+      (is (= [] (:messages r)))
+      (is (= 5 (:next-offset r))))))
+
 (deftest test-stamp-offsets-handles-malformed-json-as-filtered
   (testing "Lines that fail JSON parse are filtered out and still advance the raw index"
     (let [raw [(claude-jsonl {:type "user" :text "good" :uuid "u-0"})
@@ -3731,7 +3778,7 @@
       (repl/unsubscribe-from-session! session-id)
       (repl/reset-file-position! file-path)))
 
-  (testing "Tool results (encoded as user-typed messages with tool_result content) ARE forwarded"
+  (testing "Tool results (encoded as user-typed messages with tool_result content) are NOT forwarded"
     (let [callback-messages (atom nil)
           session-id "550e8400-e29b-41d4-a716-4466554400ad"
           ;; Realistic flow: user prompt, assistant tool_use, tool_result echoed as user msg.
@@ -3761,16 +3808,13 @@
 
       (repl/handle-file-modified file)
 
-      ;; Three messages should flow: two assistant + tool_result, in original order
-      ;; (assistant "let me check", tool_result, assistant "It's 18:14"). The human
-      ;; prompt is dropped.
-      (is (= 3 (count @callback-messages)))
-      (is (= ["assistant" "user" "assistant"] (mapv :role @callback-messages))
-          "tool_result message keeps :role \"user\" but is forwarded")
-      (is (= "let me check" (:text (first @callback-messages))))
-      (is (re-find #"Tool Result" (:text (second @callback-messages)))
-          "tool_result content surfaces in the canonical :text")
-      (is (= "It's 18:14 UTC" (:text (last @callback-messages))))
+      ;; Only the two assistant messages flow, in original order. The human
+      ;; prompt is dropped (iOS echoed it optimistically) and so is the
+      ;; tool_result: tool activity is filtered on the server, never sent.
+      (is (= ["let me check" "It's 18:14 UTC"] (mapv :text @callback-messages)))
+      (is (= ["assistant" "assistant"] (mapv :role @callback-messages)))
+      (is (not-any? #(re-find #"Tool" (:text %)) @callback-messages)
+          "no tool marker of any kind reaches the client")
 
       (repl/unsubscribe-from-session! session-id)
       (repl/reset-file-position! file-path))))

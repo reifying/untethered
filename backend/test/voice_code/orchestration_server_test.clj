@@ -488,6 +488,22 @@
    :message {:content [{:type "tool_use" :name tool :input {}}]
              :stop_reason "tool_use"}})
 
+(deftest last-assistant-turn-tool-only-write-test
+  ;; The canonical parser returns nil for a tool_use-only write (tool calls are
+  ;; filtered on the server). The trigger gate's watermark is the raw uuid, so a
+  ;; dispatch that lands mid-turn still records which write it saw.
+  (testing "a tool-only last write keeps its uuid and reports empty text"
+    (with-redefs [replication/get-session-metadata
+                  (constantly {:provider :claude :file "/tmp/fake.jsonl"})
+                  replication/parse-jsonl-file
+                  (constantly [(raw-end-turn-msg "a-prev" "earlier answer")
+                               (raw-tool-use-msg "a-tool" "Bash")])]
+      (let [turn (#'server/last-assistant-turn "s-tool-only")]
+        (is (= "a-tool" (:uuid turn)))
+        (is (= "" (:text turn)))
+        (is (false? (:end-of-turn? turn)))
+        (is (true? (:tool-use? turn)))))))
+
 (deftest on-turn-complete-fires-recipe-callback-test
   (testing "on-turn-complete invokes callback on a genuine newer end-of-turn message"
     (let [session-id "turn-complete-test"

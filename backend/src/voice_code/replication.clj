@@ -1074,8 +1074,9 @@
   "True when a raw Claude .jsonl message is a human-typed user prompt with no
   tool_result blocks. Such messages are echoes of what iOS already inserted
   optimistically when the user hit send, so the watcher must not re-emit them
-  (would render a duplicate user bubble). Tool-result user messages, in contrast,
-  must flow through so iOS can show them in real-time."
+  (would render a duplicate user bubble). Tool-result user messages are not human
+  prompts; they never reach iOS either, because `providers/parse-message` drops
+  tool-only records."
   [raw-msg]
   (and (= "user" (:type raw-msg))
        (let [content (get-in raw-msg [:message :content])]
@@ -2718,10 +2719,10 @@
               (when (seq filtered-messages)
                 (let [;; Pair each raw filtered message with its canonical form,
                       ;; in file order. filter-internal-messages has already
-                      ;; dropped sidechain/summary/system and parse-message
-                      ;; :claude rejects exactly that same set, so in practice
-                      ;; every raw yields a canonical; the `keep` is defensive
-                      ;; for malformed content that somehow slips through.
+                      ;; dropped sidechain/summary/system; parse-message :claude
+                      ;; additionally drops records that were only tool activity
+                      ;; (tool_use-only assistant writes, tool_result-only user
+                      ;; writes), which is what keeps tool calls off the wire.
                       raw+canonical (->> filtered-messages
                                          (keep (fn [raw]
                                                  (when-let [c (providers/parse-message :claude raw)]
@@ -2738,14 +2739,17 @@
                       ;; to nobody (no active subscriber).
                       canonical-seq (assign-seq! session-id (mapv second raw+canonical))
                       ;; Drop human-typed user prompts from broadcast (iOS
-                      ;; already rendered them optimistically on send); keep
-                      ;; tool_result user messages so the UI can render tool
-                      ;; output live. Partition on the raw predicate directly
+                      ;; already rendered them optimistically on send).
+                      ;; Partition on the raw predicate directly
                       ;; — claude-human-prompt? inspects raw-only fields
                       ;; (:type / nested :message.content), and positional
                       ;; pairing (rather than joining on :uuid) keeps the
                       ;; filter correct even for raw entries that lack :uuid.
-                      human-prompts (->> (map first raw+canonical)
+                      ;; Detection reads every filtered raw message, not only
+                      ;; those with a canonical form, so whether a prompt was
+                      ;; typed in the pane never depends on what the wire
+                      ;; format chooses to show.
+                      human-prompts (->> filtered-messages
                                          (filter claude-human-prompt?)
                                          (vec))
                       broadcast-messages (->> (map vector (map first raw+canonical) canonical-seq)

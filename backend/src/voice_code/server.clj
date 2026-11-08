@@ -1255,7 +1255,7 @@
    logging/observability so a still-working turn is recognizable).
 
    Claude is read from the RAW .jsonl so stop_reason / tool_use blocks survive
-   (the canonical parser collapses them into display text). Other providers
+   (the canonical parser drops tool blocks from display text). Other providers
    fall back to the canonical parser and are treated as end-of-turn, because
    their watcher layer already gates intermediate writes before on-turn-complete
    fires (Copilot toolRequests lookback, Cursor mtime stability, OpenCode
@@ -1272,9 +1272,12 @@
                                 (filter #(and (= "assistant" (:type %))
                                               (not (:isSidechain %))))
                                 last)]
+              ;; canonical is nil when `raw` was only tool activity — the
+              ;; usual shape of a still-working turn — so the uuid must not
+              ;; depend on it, or a tool-use watermark would read as "none".
               (let [canonical (providers/parse-message :claude raw)]
-                {:uuid (:uuid canonical)
-                 :text (:text canonical)
+                {:uuid (or (:uuid canonical) (:uuid raw))
+                 :text (or (:text canonical) "")
                  :end-of-turn? (providers/turn-complete? :claude raw)
                  :tool-use? (providers/assistant-tool-use? :claude raw)}))
             (when-let [msg (->> (repl/parse-session-messages provider file-path)

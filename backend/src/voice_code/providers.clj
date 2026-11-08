@@ -86,7 +86,12 @@
     :role \"user\" | \"assistant\"
     :text \"content string\"
     :timestamp \"ISO-8601\"
-    :provider :claude | :copilot}"
+    :provider :claude | :copilot}
+
+   or nil when the record has nothing for a reader. Tool calls and tool
+   results never appear in `:text`, so a record that was only tool activity
+   (a tool_use-only assistant write, a tool_result-only user write) returns
+   nil and never reaches a client. See docs/design/tool-filter-speech-queue-links.md."
   (fn [provider _raw-msg] provider))
 
 (defmulti get-session-file
@@ -213,33 +218,16 @@
   ;; For now, return nil to indicate the caller should use the existing logic.
   nil)
 
-(defn- summarize-tool-use
-  "Summarize a tool_use block for display."
-  [{:keys [name input]}]
-  (let [;; Extract key parameters for common tools
-        params (cond
-                 (= name "Read")
-                 (str "file_path=" (:file_path input))
-
-                 (= name "Write")
-                 (str "file_path=" (:file_path input))
-
-                 (= name "Edit")
-                 (str "file_path=" (:file_path input))
-
-                 (= name "Bash")
-                 (let [cmd (str (:command input))]
-                   (str "command=" (subs cmd 0 (min 50 (count cmd)))
-                        (when (> (count cmd) 50) "...")))
-
-                 (= name "Grep")
-                 (str "pattern=" (:pattern input))
-
-                 :else
-                 nil)]
-    (if params
-      (str "[Tool: " name " " params "]")
-      (str "[Tool: " name "]"))))
+(defn tool-block?
+  "True when a content block records a tool invocation or its output:
+   `tool_use` / `tool_result` and their server-side and MCP variants
+   (`server_tool_use`, `mcp_tool_use`, `web_search_tool_result`,
+   `mcp_tool_result`, ...). These are the agent's working steps, not the
+   conversation, so `parse-message` leaves them out of `:text` entirely."
+  [block]
+  (let [block-type (:type block)]
+    (boolean (and (string? block-type)
+                  (re-find #"(?:^|_)tool_(?:use|result)$" block-type)))))
 
 (defn- summarize-thinking
   "Summarize a thinking block for display."
@@ -249,8 +237,10 @@
     (str "[Thinking: " preview (when (> (count thinking-text) 50) "...") "]")))
 
 (defn- extract-text-from-content
-  "Extract human-readable text from Claude message content.
-   Handles string content, text blocks, tool_use, tool_result, and thinking."
+  "Extract human-readable text from Claude message content: string content as
+   is, text blocks, and a one-line summary of thinking blocks. Tool blocks
+   (see `tool-block?`) are dropped, so content that was only tool activity
+   yields \"\"."
   [content]
   (cond
     ;; Simple string content
@@ -262,20 +252,13 @@
     (let [summaries
           (for [block content
                 :let [block-type (:type block)]
-                :when block-type]
+                :when (and block-type (not (tool-block? block)))]
             (case block-type
               "text" (:text block)
-              "tool_use" (summarize-tool-use block)
-              "tool_result" (str "[Tool Result]\n"
-                                 (if-let [c (:content block)]
-                                   (if (string? c)
-                                     c
-                                     (pr-str c))
-                                   ""))
               "thinking" (summarize-thinking block)
               ;; Unknown block type
               (str "[" block-type "]")))]
-      (str/join "\n\n" (filter some? summaries)))
+      (str/join "\n\n" (remove str/blank? summaries)))
 
     :else
     ""))
@@ -285,17 +268,21 @@
   ;; Filter out:
   ;; - Non user/assistant types (summary, system, init, etc.)
   ;; - Sidechain messages (warmup, internal overhead)
+  ;; - Records with no readable text once tool blocks are dropped: a
+  ;;   tool_use-only assistant write or a tool_result-only user write
   (let [msg-type (:type raw-msg)
         is-sidechain (:isSidechain raw-msg)
         message (:message raw-msg)
         content (:content message)]
     (when (and (contains? #{"user" "assistant"} msg-type)
                (not is-sidechain))
-      {:uuid (or (:uuid raw-msg) (str (java.util.UUID/randomUUID)))
-       :role msg-type
-       :text (extract-text-from-content content)
-       :timestamp (:timestamp raw-msg)
-       :provider :claude})))
+      (let [text (extract-text-from-content content)]
+        (when-not (str/blank? text)
+          {:uuid (or (:uuid raw-msg) (str (java.util.UUID/randomUUID)))
+           :role msg-type
+           :text text
+           :timestamp (:timestamp raw-msg)
+           :provider :claude})))))
 
 (defmethod turn-complete? :claude [_ raw-msg]
   (and (= "assistant" (:type raw-msg))
@@ -394,7 +381,9 @@
 
 (defmethod parse-message :copilot [_ raw-msg]
   ;; Transform Copilot events.jsonl event to canonical format
-  ;; Only user.message and assistant.message events produce visible messages
+  ;; Only user.message and assistant.message events produce visible messages.
+  ;; An assistant.message's toolRequests are the agent's working steps and are
+  ;; left out of :text; one that carried nothing else returns nil.
   (let [event-type (:type raw-msg)]
     (when (contains? #{"user.message" "assistant.message"} event-type)
       (let [data (:data raw-msg)
@@ -404,65 +393,22 @@
                             (:transformedContent data)
                             "")
             reasoning-text (:reasoningText data)
-            tool-requests (:toolRequests data)
             ;; Build text content: prefer content, fall back to reasoningText for assistant
-            text-content (if (and (= "assistant.message" event-type)
-                                  (str/blank? raw-content)
-                                  (not (str/blank? reasoning-text)))
-                           reasoning-text
-                           raw-content)
-            ;; Summarize tool requests if present (similar to Claude's tool_use)
-            tool-summaries (when (and (= "assistant.message" event-type)
-                                      (seq tool-requests))
-                             (->> tool-requests
-                                  (map (fn [{:keys [name arguments]}]
-                                         (let [params (cond
-                                                        (= name "read_file")
-                                                        (str "path=" (:path arguments))
-
-                                                        (= name "write_file")
-                                                        (str "path=" (:path arguments))
-
-                                                        (= name "edit_file")
-                                                        (str "path=" (:path arguments))
-
-                                                        (= name "run_terminal_cmd")
-                                                        (let [cmd (str (:command arguments))]
-                                                          (str "command=" (subs cmd 0 (min 50 (count cmd)))
-                                                               (when (> (count cmd) 50) "...")))
-
-                                                        (= name "rg")
-                                                        (str "pattern=" (:pattern arguments))
-
-                                                        (= name "glob")
-                                                        (str "pattern=" (:pattern arguments))
-
-                                                        :else nil)]
-                                           (if params
-                                             (str "[Tool: " name " " params "]")
-                                             (str "[Tool: " name "]")))))
-                                  (str/join "\n")))
-            ;; Combine text content and tool summaries
-            final-text (cond
-                         (and (not (str/blank? text-content)) (not (str/blank? tool-summaries)))
-                         (str text-content "\n\n" tool-summaries)
-
-                         (not (str/blank? text-content))
-                         text-content
-
-                         (not (str/blank? tool-summaries))
-                         tool-summaries
-
-                         :else "")
+            text (if (and (= "assistant.message" event-type)
+                          (str/blank? raw-content)
+                          (not (str/blank? reasoning-text)))
+                   reasoning-text
+                   raw-content)
             ;; Generate a UUID if messageId not present
             msg-id (or (:messageId data)
                        (:id raw-msg)
                        (str (java.util.UUID/randomUUID)))]
-        {:uuid msg-id
-         :role (if (= "user.message" event-type) "user" "assistant")
-         :text final-text
-         :timestamp (:timestamp raw-msg)
-         :provider :copilot}))))
+        (when-not (str/blank? text)
+          {:uuid msg-id
+           :role (if (= "user.message" event-type) "user" "assistant")
+           :text text
+           :timestamp (:timestamp raw-msg)
+           :provider :copilot})))))
 
 (defmethod turn-complete? :copilot [_ raw-msg]
   ;; Only the turn_end event is a terminal marker. The watcher layer applies

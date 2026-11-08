@@ -687,7 +687,7 @@ branch: main")
       (is (= "assistant" (:role result)))
       (is (= "Hello! How can I help?" (:text result)))))
 
-  (testing "assistant message with tool_use content"
+  (testing "assistant message with text + tool_use keeps only the text"
     (let [raw {:type "assistant"
                :uuid "660e8400-e29b-41d4-a716-446655440002"
                :timestamp "2026-01-30T12:35:00.000Z"
@@ -699,94 +699,62 @@ branch: main")
           result (providers/parse-message :claude raw)]
       (is (valid-canonical-message? result))
       (is (= "assistant" (:role result)))
-      (is (str/includes? (:text result) "Let me read that."))
-      (is (str/includes? (:text result) "[Tool: Read"))
-      (is (str/includes? (:text result) "file_path=/tmp/test.txt"))))
+      (is (= "Let me read that." (:text result))
+          "the tool call is dropped; nothing about it reaches the text")))
 
-  (testing "assistant message with Write tool"
+  (testing "tool_use-only assistant write is not a message"
+    (doseq [[tool input] [["Read" {:file_path "/tmp/test.txt"}]
+                          ["Write" {:file_path "/tmp/output.txt"}]
+                          ["Bash" {:command (apply str (repeat 100 "x"))}]
+                          ["CustomTool" {:some "param"}]]]
+      (let [raw {:type "assistant"
+                 :uuid "660e8400-e29b-41d4-a716-446655440003"
+                 :timestamp "2026-01-30T12:35:00.000Z"
+                 :message {:role "assistant"
+                           :content [{:type "tool_use" :name tool :input input}]}}]
+        (is (nil? (providers/parse-message :claude raw))
+            (str tool " tool call must not produce a wire message")))))
+
+  (testing "tool_result-only user write is not a message"
+    (doseq [content ["File contents here" {:key "value"} [{:type "text" :text "nested"}]]]
+      (let [raw {:type "user"
+                 :uuid "770e8400-e29b-41d4-a716-446655440002"
+                 :timestamp "2026-01-30T12:35:05.000Z"
+                 :message {:role "user"
+                           :content [{:type "tool_result"
+                                      :tool_use_id "toolu_123"
+                                      :content content}]}}]
+        (is (nil? (providers/parse-message :claude raw))
+            (str "tool result with content " (pr-str content) " must not produce a wire message")))))
+
+  (testing "server-side and MCP tool blocks are dropped the same way"
     (let [raw {:type "assistant"
-               :uuid "660e8400-e29b-41d4-a716-446655440003"
-               :timestamp "2026-01-30T12:35:00.000Z"
+               :uuid "770e8400-e29b-41d4-a716-446655440004"
+               :timestamp "2026-01-30T12:35:05.000Z"
                :message {:role "assistant"
-                         :content [{:type "tool_use"
-                                    :name "Write"
-                                    :input {:file_path "/tmp/output.txt"}}]}}
-          result (providers/parse-message :claude raw)]
-      (is (str/includes? (:text result) "[Tool: Write file_path=/tmp/output.txt]"))))
+                         :content [{:type "server_tool_use" :name "web_search" :input {:query "x"}}
+                                   {:type "web_search_tool_result" :content []}
+                                   {:type "mcp_tool_use" :name "jira" :input {}}
+                                   {:type "mcp_tool_result" :content "ok"}
+                                   {:type "text" :text "Found it."}]}}]
+      (is (= "Found it." (:text (providers/parse-message :claude raw))))))
 
-  (testing "assistant message with Edit tool"
-    (let [raw {:type "assistant"
-               :uuid "660e8400-e29b-41d4-a716-446655440004"
-               :timestamp "2026-01-30T12:35:00.000Z"
-               :message {:role "assistant"
-                         :content [{:type "tool_use"
-                                    :name "Edit"
-                                    :input {:file_path "/tmp/edit.txt"}}]}}
-          result (providers/parse-message :claude raw)]
-      (is (str/includes? (:text result) "[Tool: Edit file_path=/tmp/edit.txt]"))))
-
-  (testing "assistant message with Bash tool (truncated command)"
-    (let [long-command (apply str (repeat 100 "x"))
-          raw {:type "assistant"
-               :uuid "660e8400-e29b-41d4-a716-446655440005"
-               :timestamp "2026-01-30T12:35:00.000Z"
-               :message {:role "assistant"
-                         :content [{:type "tool_use"
-                                    :name "Bash"
-                                    :input {:command long-command}}]}}
-          result (providers/parse-message :claude raw)]
-      (is (str/includes? (:text result) "[Tool: Bash command="))
-      (is (str/includes? (:text result) "..."))
-      ;; Should truncate to ~50 chars
-      (is (< (count (:text result)) 100))))
-
-  (testing "assistant message with Grep tool"
-    (let [raw {:type "assistant"
-               :uuid "660e8400-e29b-41d4-a716-446655440006"
-               :timestamp "2026-01-30T12:35:00.000Z"
-               :message {:role "assistant"
-                         :content [{:type "tool_use"
-                                    :name "Grep"
-                                    :input {:pattern "foo.*bar"}}]}}
-          result (providers/parse-message :claude raw)]
-      (is (str/includes? (:text result) "[Tool: Grep pattern=foo.*bar]"))))
-
-  (testing "assistant message with unknown tool (no params shown)"
-    (let [raw {:type "assistant"
-               :uuid "660e8400-e29b-41d4-a716-446655440007"
-               :timestamp "2026-01-30T12:35:00.000Z"
-               :message {:role "assistant"
-                         :content [{:type "tool_use"
-                                    :name "CustomTool"
-                                    :input {:some "param"}}]}}
-          result (providers/parse-message :claude raw)]
-      (is (= "[Tool: CustomTool]" (:text result)))))
-
-  (testing "tool result message"
+  (testing "user message mixing a tool_result with typed text keeps the text"
     (let [raw {:type "user"
-               :uuid "770e8400-e29b-41d4-a716-446655440002"
+               :uuid "770e8400-e29b-41d4-a716-446655440005"
                :timestamp "2026-01-30T12:35:05.000Z"
                :message {:role "user"
-                         :content [{:type "tool_result"
-                                    :tool_use_id "toolu_123"
-                                    :content "File contents here"}]}}
-          result (providers/parse-message :claude raw)]
-      (is (valid-canonical-message? result))
-      (is (= "user" (:role result)))
-      (is (str/includes? (:text result) "[Tool Result]"))
-      (is (str/includes? (:text result) "File contents here"))))
+                         :content [{:type "tool_result" :tool_use_id "t" :content "x"}
+                                   {:type "text" :text "[Request interrupted by user for tool use]"}]}}]
+      (is (= "[Request interrupted by user for tool use]"
+             (:text (providers/parse-message :claude raw))))))
 
-  (testing "tool result with non-string content"
-    (let [raw {:type "user"
-               :uuid "770e8400-e29b-41d4-a716-446655440003"
-               :timestamp "2026-01-30T12:35:05.000Z"
-               :message {:role "user"
-                         :content [{:type "tool_result"
-                                    :tool_use_id "toolu_456"
-                                    :content {:key "value"}}]}}
-          result (providers/parse-message :claude raw)]
-      (is (str/includes? (:text result) "[Tool Result]"))
-      (is (str/includes? (:text result) ":key"))))
+  (testing "message with no readable text is not a message"
+    (doseq [content ["" "   " [] [{:type "text" :text ""}]]]
+      (is (nil? (providers/parse-message :claude {:type "assistant"
+                                                  :uuid "770e8400-e29b-41d4-a716-446655440006"
+                                                  :message {:content content}}))
+          (str "content " (pr-str content) " carries nothing to show"))))
 
   (testing "thinking block"
     (let [raw {:type "assistant"
@@ -813,7 +781,7 @@ branch: main")
       ;; Should truncate to ~50 chars preview
       (is (< (count (:text result)) 100))))
 
-  (testing "mixed content (text + tool_use)"
+  (testing "mixed content (text + tool_use) keeps every text block, in order"
     (let [raw {:type "assistant"
                :uuid "990e8400-e29b-41d4-a716-446655440000"
                :timestamp "2026-01-30T12:35:15.000Z"
@@ -828,12 +796,8 @@ branch: main")
                                     :input {:command "ls -la"}}]}}
           result (providers/parse-message :claude raw)]
       (is (valid-canonical-message? result))
-      (is (str/includes? (:text result) "Let me check that file."))
-      (is (str/includes? (:text result) "[Tool: Read"))
-      (is (str/includes? (:text result) "And also run a command."))
-      (is (str/includes? (:text result) "[Tool: Bash"))
-      ;; Content blocks should be separated by double newlines
-      (is (str/includes? (:text result) "\n\n"))))
+      ;; Content blocks are separated by double newlines
+      (is (= "Let me check that file.\n\nAnd also run a command." (:text result)))))
 
   (testing "unknown block type becomes marker"
     (let [raw {:type "assistant"
@@ -873,23 +837,19 @@ branch: main")
                                         :isSidechain true
                                         :message {:role "assistant" :content "Internal response"}}))))
 
-  (testing "handles nil content gracefully"
+  (testing "nil content is not a message (and does not throw)"
     (let [raw {:type "user"
                :uuid "bb0e8400-e29b-41d4-a716-446655440000"
                :timestamp "2026-01-30T12:34:56.789Z"
-               :message {:role "user" :content nil}}
-          result (providers/parse-message :claude raw)]
-      (is (valid-canonical-message? result))
-      (is (= "" (:text result)))))
+               :message {:role "user" :content nil}}]
+      (is (nil? (providers/parse-message :claude raw)))))
 
-  (testing "handles empty array content"
+  (testing "empty array content is not a message"
     (let [raw {:type "user"
                :uuid "cc0e8400-e29b-41d4-a716-446655440000"
                :timestamp "2026-01-30T12:34:56.789Z"
-               :message {:role "user" :content []}}
-          result (providers/parse-message :claude raw)]
-      (is (valid-canonical-message? result))
-      (is (= "" (:text result))))))
+               :message {:role "user" :content []}}]
+      (is (nil? (providers/parse-message :claude raw))))))
 
 (deftest test-parse-message-copilot
   (testing "parses user.message event with canonical format validation"
@@ -941,7 +901,7 @@ branch: main")
       (is (str/includes? (:text result) "Planning the task"))
       (is (str/includes? (:text result) "search for the files"))))
 
-  (testing "includes tool request summaries for assistant messages"
+  (testing "tool requests are left out of the text"
     (let [raw-msg {:type "assistant.message"
                    :timestamp "2026-01-28T10:00:05Z"
                    :data {:content ""
@@ -952,20 +912,15 @@ branch: main")
           result (providers/parse-message :copilot raw-msg)]
 
       (is (valid-canonical-message? result))
-      (is (str/includes? (:text result) "Searching codebase"))
-      (is (str/includes? (:text result) "[Tool: rg pattern=test]"))
-      (is (str/includes? (:text result) "[Tool: glob pattern=**/*.clj]"))))
+      (is (= "Searching codebase" (:text result)))))
 
-  (testing "shows only tool summaries when both content and reasoningText are empty"
+  (testing "assistant.message carrying only tool requests is not a message"
     (let [raw-msg {:type "assistant.message"
                    :timestamp "2026-01-28T10:00:05Z"
                    :data {:content ""
                           :toolRequests [{:name "read_file" :arguments {:path "/test/file.clj"}}]
-                          :messageId "aa0e8400-e29b-41d4-a716-446655440012"}}
-          result (providers/parse-message :copilot raw-msg)]
-
-      (is (valid-canonical-message? result))
-      (is (= "[Tool: read_file path=/test/file.clj]" (:text result)))))
+                          :messageId "aa0e8400-e29b-41d4-a716-446655440012"}}]
+      (is (nil? (providers/parse-message :copilot raw-msg)))))
 
   (testing "generates valid UUID when messageId is missing"
     (let [raw-msg {:type "user.message"
@@ -987,14 +942,11 @@ branch: main")
           (is (nil? (providers/parse-message :copilot raw-msg))
               (str "Expected nil for event type: " event-type))))))
 
-  (testing "handles empty content gracefully"
+  (testing "event with no content is not a message"
     (let [raw-msg {:type "user.message"
                    :timestamp "2026-01-28T10:00:00Z"
-                   :data {:messageId "880e8400-e29b-41d4-a716-446655440003"}}
-          result (providers/parse-message :copilot raw-msg)]
-
-      (is (valid-canonical-message? result))
-      (is (= "" (:text result)))))
+                   :data {:messageId "880e8400-e29b-41d4-a716-446655440003"}}]
+      (is (nil? (providers/parse-message :copilot raw-msg)))))
 
   (testing "falls back to raw-msg :id when messageId missing"
     (let [raw-msg {:type "user.message"
@@ -1087,20 +1039,23 @@ branch: main")
       (is (= "assistant" (:role msg)))
       (is (= :claude (:provider msg)))))
 
-  (testing "Claude messages with tool calls produce text summaries"
-    (let [sample-raw {:type "assistant"
-                      :uuid "770e8400-e29b-41d4-a716-446655440002"
-                      :timestamp "2026-01-30T12:35:05.000Z"
-                      :message {:role "assistant"
-                                :content [{:type "tool_use"
-                                           :name "Read"
-                                           :input {:file_path "/tmp/test.txt"}}]}}
-          msg (providers/parse-message :claude sample-raw)]
-
-      ;; Contract: text is always a string, never nested content
-      (is (string? (:text msg)) "Contract: tool calls produce string text")
-      (is (str/includes? (:text msg) "[Tool:")
-          "Contract: tool calls are summarized with [Tool: ...] format"))))
+  (testing "Claude tool calls never reach the wire"
+    (let [tool-only {:type "assistant"
+                     :uuid "770e8400-e29b-41d4-a716-446655440002"
+                     :timestamp "2026-01-30T12:35:05.000Z"
+                     :message {:role "assistant"
+                               :content [{:type "tool_use"
+                                          :name "Read"
+                                          :input {:file_path "/tmp/test.txt"}}]}}
+          mixed (assoc-in tool-only [:message :content]
+                          [{:type "text" :text "Reading it now."}
+                           {:type "tool_use" :name "Read" :input {:file_path "/tmp/test.txt"}}])]
+      (is (nil? (providers/parse-message :claude tool-only))
+          "Contract: a tool-only record produces no message")
+      ;; Contract: text is always a string, never nested content, and carries
+      ;; no trace of the tool call
+      (is (= "Reading it now." (:text (providers/parse-message :claude mixed)))
+          "Contract: prose alongside a tool call is kept, the call is not"))))
 
 (deftest contract-test-canonical-message-format-copilot
   (testing "Copilot messages conform to canonical wire format contract"
@@ -1189,8 +1144,10 @@ branch: main")
       (is (= "user" (:role copilot-msg)))
       (is (= "user" (:role opencode-msg)))))
 
-  (testing "text field is never nil for any parseable provider"
-    ;; iOS does: messageData["text"] as? String - nil would fail
+  (testing "a message that is produced always carries string text"
+    ;; iOS does: messageData["text"] as? String - nil would fail. Claude and
+    ;; Copilot produce no message at all for an empty record (nothing to show),
+    ;; so the wire never carries a message without text.
     (let [claude-empty (providers/parse-message :claude
                                                 {:type "user"
                                                  :uuid "cc0e8400-e29b-41d4-a716-446655440007"
@@ -1205,10 +1162,10 @@ branch: main")
                                                    :role "user"
                                                    :time {:created 1770528283010}})]
 
-      (is (string? (:text claude-empty))
-          "Contract: Claude text must be string even when content is nil")
-      (is (string? (:text copilot-empty))
-          "Contract: Copilot text must be string even when content is missing")
+      (is (nil? claude-empty)
+          "Contract: an empty Claude record produces no message, not one with nil text")
+      (is (nil? copilot-empty)
+          "Contract: an empty Copilot event produces no message, not one with nil text")
       (is (string? (:text opencode-empty))
           "Contract: OpenCode text must be string even when assembled-text is missing"))))
 

@@ -444,7 +444,7 @@ On failure (model omitted the sentinels, fork never readied, etc.) no `ghost_pro
 
 **Fields:**
 - `session_id` (required): Claude session ID
-- `messages` (required): Array of canonical messages in ascending `seq` order. Every message carries a `seq` field (1-indexed, monotonic per session, strictly increasing). Each message also carries its own `session_id` for iOS routing.
+- `messages` (required): Array of canonical messages in ascending `seq` order. Every message carries a `seq` field (1-indexed, monotonic per session, strictly increasing). Each message also carries its own `session_id` for iOS routing. Messages carry conversation only: tool calls and tool results are filtered on the backend and never appear, neither as messages nor inside `text` (see `docs/design/tool-filter-speech-queue-links.md`). Under v0.5.0 a filtered record still occupies its raw-line offset, so surviving offsets are non-contiguous and `next_offset` advances past it.
 - `first_seq` (nullable integer): Smallest `seq` in `messages`. Null when `messages` is empty.
 - `last_seq` (nullable integer): Largest `seq` in `messages`. Null when `messages` is empty.
 - `next_seq` (required integer): The `seq` the server will assign to the next new message. A client is caught up when `next_seq == last_seq + 1` and the server has no newer writes.
