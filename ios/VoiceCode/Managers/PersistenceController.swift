@@ -11,9 +11,14 @@ class PersistenceController {
         // the autoscroll crash-guard UI test (AutoScrollCrashUITests) from touching
         // real on-disk data and gives it a clean, large backlog on every launch.
         // Production never passes the flag, so this branch never runs in the field.
-        if TestingEnvironment.shouldSeedLargeSession {
+        if TestingEnvironment.shouldSeedLargeSession || TestingEnvironment.shouldSeedLinkSession {
             let controller = PersistenceController(inMemory: true)
-            controller.seedLargeSessionForUITesting()
+            if TestingEnvironment.shouldSeedLargeSession {
+                controller.seedLargeSessionForUITesting()
+            }
+            if TestingEnvironment.shouldSeedLinkSession {
+                controller.seedLinkSessionForUITesting()
+            }
             return controller
         }
         #endif
@@ -389,6 +394,49 @@ extension PersistenceController {
                 "🧪 Failed to seed large UI-test session: \(error.localizedDescription)",
                 category: "Persistence"
             )
+        }
+    }
+
+    /// Working directory and link of the LinkTapUITests seed session.
+    static let uiTestLinkWorkingDirectory = "/uitest/Links"
+    static let uiTestLinkURL = "https://example.com/untethered-link-test"
+
+    /// Seed a two-message session whose reply contains `uiTestLinkURL`
+    /// (`-uiTestSeedLinkSession`). Same isolated in-memory store as the large
+    /// seed; debug-only.
+    func seedLinkSessionForUITesting() {
+        let context = container.viewContext
+        let sessionId = UUID()
+        let session = CDBackendSession(context: context)
+        session.id = sessionId
+        session.backendName = "UITest Link Session"
+        session.workingDirectory = Self.uiTestLinkWorkingDirectory
+        session.lastModified = Date()
+        session.messageCount = 2
+        session.preview = "Link seed"
+        session.unreadCount = 0
+        session.isLocallyCreated = false
+        session.provider = "claude"
+
+        let texts = [("user", "Where is the pull request?"),
+                     ("assistant", "It is up at \(Self.uiTestLinkURL) for review.")]
+        let base = Date().addingTimeInterval(-10)
+        for (i, (role, text)) in texts.enumerated() {
+            let message = CDMessage(context: context)
+            message.id = UUID()
+            message.sessionId = sessionId
+            message.role = role
+            message.text = text
+            message.timestamp = base.addingTimeInterval(Double(i))
+            message.offset = Int64(i)
+            message.messageStatus = .confirmed
+            message.session = session
+        }
+        do {
+            try context.save()
+            LogManager.shared.log("🧪 Seeded link UI-test session \(sessionId.uuidString.lowercased())", category: "Persistence")
+        } catch {
+            LogManager.shared.log("🧪 Failed to seed link UI-test session: \(error.localizedDescription)", category: "Persistence")
         }
     }
 

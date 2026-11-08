@@ -1552,10 +1552,10 @@ struct CDMessageView: View {
                     .fontWeight(.semibold)
                     .foregroundColor(.secondary)
 
-                // Message text (truncated for display)
+                // Message text (truncated for display), with web links tappable
                 // Removed .textSelection and .contextMenu to reduce layout overhead
                 // Users can tap "View Full" button to access full text and actions
-                Text(message.displayText)
+                Text(message.displayAttributedText)
                     .font(.body)
                     .lineLimit(nil)  // displayText is already bounded; no limit needed
 
@@ -1646,7 +1646,7 @@ struct MessageDetailView: View {
     private var messageDetailContent: some View {
         VStack(spacing: 0) {
             ScrollView {
-                SelectableText(text: currentText)
+                SelectableText(text: currentText, detectsLinks: true)
                     .padding()
             }
 

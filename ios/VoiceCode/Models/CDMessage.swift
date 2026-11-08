@@ -96,6 +96,23 @@ public class CDMessage: NSManagedObject {
         return result
     }
 
+    private var _displayAttributedTextCache: AttributedString?
+    private var _displayAttributedTextCacheKey: Int?
+
+    /// `displayText` with its web links made tappable (see `LinkDetector`).
+    /// Cached on the same content-hash key as `displayText`, so link detection
+    /// runs once per text change rather than on every layout pass.
+    var displayAttributedText: AttributedString {
+        let cacheKey = text.hashValue
+        if let cached = _displayAttributedTextCache, _displayAttributedTextCacheKey == cacheKey {
+            return cached
+        }
+        let result = LinkDetector.attributedString(displayText)
+        _displayAttributedTextCache = result
+        _displayAttributedTextCacheKey = cacheKey
+        return result
+    }
+
     /// Whether this message's text is truncated in display
     var isTruncated: Bool {
         text.count > (Self.truncationHalfLength * 2)

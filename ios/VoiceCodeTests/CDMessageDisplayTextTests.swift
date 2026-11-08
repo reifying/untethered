@@ -116,4 +116,22 @@ final class CDMessageDisplayTextTests: XCTestCase {
         XCTAssertEqual(display2, "short",
                        "displayText did not update after replacing long text with short text")
     }
+
+    // MARK: - Tappable links
+
+    func testDisplayAttributedTextLinksWebURLs() {
+        let msg = makeMessage(text: "Merged: https://github.com/reifying/untethered/pull/7")
+        let links = msg.displayAttributedText.runs.compactMap(\.link)
+        XCTAssertEqual(links, [URL(string: "https://github.com/reifying/untethered/pull/7")!])
+        XCTAssertEqual(String(msg.displayAttributedText.characters), msg.displayText)
+    }
+
+    func testDisplayAttributedTextFollowsTextChanges() {
+        let msg = makeMessage(text: "see https://a.example.com")
+        XCTAssertEqual(msg.displayAttributedText.runs.compactMap(\.link), [URL(string: "https://a.example.com")!])
+
+        msg.text = "see https://b.example.com"
+        XCTAssertEqual(msg.displayAttributedText.runs.compactMap(\.link), [URL(string: "https://b.example.com")!],
+                       "the cache is keyed on content, like displayText")
+    }
 }

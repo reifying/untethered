@@ -26,6 +26,12 @@ enum TestingEnvironment {
         ProcessInfo.processInfo.arguments.contains("-uiTestSeedLargeSession")
     }
 
+    /// Returns true when a UI test passes -uiTestSeedLinkSession: seed a small
+    /// conversation whose reply contains a web link, for LinkTapUITests.
+    static var shouldSeedLinkSession: Bool {
+        ProcessInfo.processInfo.arguments.contains("-uiTestSeedLinkSession")
+    }
+
     /// Returns true when running unit tests (XCTest but not UI tests)
     static var isUnitTesting: Bool {
         NSClassFromString("XCTestCase") != nil && !isUITesting

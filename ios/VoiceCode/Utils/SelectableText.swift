@@ -14,6 +14,9 @@ struct SelectableText: View {
     var isMonospaced: Bool = false
     var fontSize: CGFloat? = nil
     var textColor: Color? = nil
+    /// Make web links in `text` tappable (see `LinkDetector`). Off by default:
+    /// detection is wasted work on large non-message text such as debug logs.
+    var detectsLinks: Bool = false
 
     var body: some View {
         #if os(iOS)
@@ -21,17 +24,26 @@ struct SelectableText: View {
             text: text,
             isMonospaced: isMonospaced,
             fontSize: fontSize,
-            textColor: textColor
+            textColor: textColor,
+            detectsLinks: detectsLinks
         )
         #elseif os(macOS)
         SelectableTextView_macOS(
             text: text,
             isMonospaced: isMonospaced,
             fontSize: fontSize,
-            textColor: textColor
+            textColor: textColor,
+            detectsLinks: detectsLinks
         )
         #endif
     }
+}
+
+/// Remembers the attributed content last written into the platform text view.
+/// Rewriting identical content resets the user's selection, and SwiftUI calls
+/// update for unrelated state changes (e.g. the Read Aloud button flipping).
+final class SelectableTextCoordinator {
+    var appliedContent: NSAttributedString?
 }
 
 #if os(iOS)
@@ -61,6 +73,9 @@ struct SelectableTextView_iOS: UIViewRepresentable {
     let isMonospaced: Bool
     let fontSize: CGFloat?
     let textColor: Color?
+    let detectsLinks: Bool
+
+    func makeCoordinator() -> SelectableTextCoordinator { SelectableTextCoordinator() }
 
     func makeUIView(context: Context) -> UITextView {
         let textView = WrappingTextView()
@@ -82,11 +97,20 @@ struct SelectableTextView_iOS: UIViewRepresentable {
     }
 
     func updateUIView(_ textView: UITextView, context: Context) {
-        if textView.text != text {
-            textView.text = text
+        if detectsLinks {
+            // A non-editable, selectable UITextView opens `.link` runs on tap.
+            let content = LinkDetector.attributedText(text, attributes: [.font: uiFont, .foregroundColor: uiColor])
+            if context.coordinator.appliedContent != content {
+                textView.attributedText = content
+                context.coordinator.appliedContent = content
+            }
+        } else {
+            if textView.text != text {
+                textView.text = text
+            }
+            textView.font = uiFont
+            textView.textColor = uiColor
         }
-        textView.font = uiFont
-        textView.textColor = uiColor
         textView.invalidateIntrinsicContentSize()
     }
 
@@ -134,6 +158,9 @@ struct SelectableTextView_macOS: NSViewRepresentable {
     let isMonospaced: Bool
     let fontSize: CGFloat?
     let textColor: Color?
+    let detectsLinks: Bool
+
+    func makeCoordinator() -> SelectableTextCoordinator { SelectableTextCoordinator() }
 
     func makeNSView(context: Context) -> NSTextView {
         // Bare NSTextView (no NSScrollView wrapper) — the enclosing SwiftUI ScrollView
@@ -158,11 +185,20 @@ struct SelectableTextView_macOS: NSViewRepresentable {
     }
 
     func updateNSView(_ textView: NSTextView, context: Context) {
-        if textView.string != text {
-            textView.string = text
+        if detectsLinks {
+            // A non-editable, selectable NSTextView opens `.link` runs on click.
+            let content = LinkDetector.attributedText(text, attributes: [.font: nsFont, .foregroundColor: nsColor])
+            if context.coordinator.appliedContent != content {
+                textView.textStorage?.setAttributedString(content)
+                context.coordinator.appliedContent = content
+            }
+        } else {
+            if textView.string != text {
+                textView.string = text
+            }
+            textView.font = nsFont
+            textView.textColor = nsColor
         }
-        textView.font = nsFont
-        textView.textColor = nsColor
         textView.invalidateIntrinsicContentSize()
     }
 
