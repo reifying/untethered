@@ -96,7 +96,6 @@ struct ConversationView: View {
     @State private var ghostMode: Bool = false
 
     // Auto-scroll state
-    @State private var hasPerformedInitialScroll = false
     @State private var autoScrollEnabled = true  // Auto-scroll on by default
     @State private var scrollProxy: ScrollViewProxy?
     // Bumped on every scheduled debounced scroll. The debounced closure captures
@@ -235,13 +234,26 @@ struct ConversationView: View {
                         }
                         .listStyle(.plain)
                         .scrollContentBackground(.hidden)
+                        // A different session gets a new List, and so the landing
+                        // scroll below. macOS reuses this view across sidebar
+                        // switches, which would otherwise keep the old offset.
+                        .id(session.id)
                         .onAppear {
                             scrollProxy = proxy
-                            // Perform initial scroll when ScrollViewReader appears with cached messages
-                            // This handles the case where messages are already loaded from CoreData
-                            if !hasPerformedInitialScroll && !messages.isEmpty {
-                                hasPerformedInitialScroll = true
-                                LogManager.shared.log("📨 Initial scroll on ScrollViewReader appear", category: "ConversationView")
+                            // Every List built here opens on the latest message.
+                            // A List is built on first open and on re-entry, but
+                            // also each time it returns from the spinner, the empty
+                            // state or the scenePhase placeholder (backgrounding,
+                            // Control Center, the app switcher), and a new List
+                            // starts at the top, so this runs every time, with no
+                            // once-per-appear flag. It is deferred because in
+                            // onAppear the rows are not laid out yet and the scroll
+                            // does not land (.defaultScrollAnchor(.bottom) had no
+                            // effect on this List either). While the user stays,
+                            // only the gated auto-scroll below moves the list, so
+                            // a deliberate scroll-up survives.
+                            DispatchQueue.main.async {
+                                LogManager.shared.log("📨 New list for session, scrolling to bottom anchor", category: "ConversationView")
                                 proxy.scrollTo(Self.bottomAnchorID, anchor: .bottom)
                             }
                         }
@@ -300,14 +312,6 @@ struct ConversationView: View {
                                         autoScrollEnabled: self.autoScrollEnabled,
                                         isSheetOpen: self.fullMessageSnapshot != nil) else { return }
                                 LogManager.shared.log("📨 Scrolling to bottom anchor (debounced, gen \(scheduled))", category: "ConversationView")
-                                proxy.scrollTo(Self.bottomAnchorID, anchor: .bottom)
-                            }
-                        }
-                        .onChange(of: isLoading) { wasLoading, nowLoading in
-                            // When loading finishes, perform initial scroll to bottom
-                            if wasLoading && !nowLoading && !hasPerformedInitialScroll, !messages.isEmpty {
-                                hasPerformedInitialScroll = true
-                                // Non-animated for immediate positioning
                                 proxy.scrollTo(Self.bottomAnchorID, anchor: .bottom)
                             }
                         }
@@ -747,9 +751,9 @@ struct ConversationView: View {
             .environment(\.managedObjectContext, viewContext)
         }
         .onAppear {
-            // Reset scroll flags when view appears (handles navigation back to session)
+            // Re-enable auto-scroll when the view appears (handles navigation back to
+            // session). Landing on the latest message is done by the List's onAppear.
             LogManager.shared.log("👁️ [AutoScroll] View appeared, resetting state", category: "ConversationView")
-            hasPerformedInitialScroll = false
             autoScrollEnabled = true  // Re-enable auto-scroll on view appear
             LogManager.shared.log("👁️ [AutoScroll] Auto-scroll enabled on view appear", category: "ConversationView")
 
@@ -880,7 +884,7 @@ struct ConversationView: View {
         hasSubscribedThisAppear = true
 
         // If messages already exist in CoreData, skip loading indicator
-        // Initial scroll is handled by ScrollViewReader's .onAppear handler
+        // Landing on the latest message is done by the List's onAppear
         if !messages.isEmpty {
             let elapsedMs = Int(Date().timeIntervalSince(loadStart) * 1000)
             LogManager.shared.log("⏱️ +\(elapsedMs)ms - messages already cached (\(self.messages.count)), skipping loading indicator", category: "ConversationView")

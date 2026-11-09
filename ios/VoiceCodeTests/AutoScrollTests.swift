@@ -190,44 +190,6 @@ final class AutoScrollTests: XCTestCase {
         XCTAssertFalse(shouldScroll, "Should not auto-scroll during initial load (no new messages)")
     }
 
-    // MARK: - Initial Scroll Tests
-
-    func testInitialScroll_PerformedOnlyOnce() {
-        // Test that initial scroll flag prevents multiple scrolls
-        var hasPerformedInitialScroll = false
-        let wasLoading = true
-        let nowLoading = false
-        var scrollCount = 0
-
-        // First time loading finishes
-        if wasLoading && !nowLoading && !hasPerformedInitialScroll {
-            hasPerformedInitialScroll = true
-            scrollCount += 1
-        }
-
-        // Second time (shouldn't scroll)
-        if wasLoading && !nowLoading && !hasPerformedInitialScroll {
-            scrollCount += 1
-        }
-
-        XCTAssertEqual(scrollCount, 1, "Should only perform initial scroll once")
-        XCTAssertTrue(hasPerformedInitialScroll, "Flag should be set after initial scroll")
-    }
-
-    func testInitialScroll_SkippedIfStillLoading() {
-        // Test that scroll doesn't happen if still loading
-        var hasPerformedInitialScroll = false
-        let wasLoading = true
-        let nowLoading = true
-        var shouldScroll = false
-
-        if wasLoading && !nowLoading && !hasPerformedInitialScroll {
-            shouldScroll = true
-        }
-
-        XCTAssertFalse(shouldScroll, "Should not scroll if still loading")
-    }
-
     // MARK: - Integration Tests with CoreData
 
     func testMessageInsertion_IncrementsCount() {
