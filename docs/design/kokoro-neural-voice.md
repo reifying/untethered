@@ -85,6 +85,10 @@ Turn back on, and a Kokoro preview. The Apple picker becomes the fallback voice 
 
 | | Result | Where |
 |---|---|---|
+| **iPhone 15 Pro, iOS 27.2.1: time to speech** | Playback started 0.18 s after the request; the first chunk took 0.10–0.21 s to synthesize | Self-test, through `KokoroPlayback` |
+| **iPhone: speed** | About 17× faster than real time (a 44 s reply synthesized in 2.6 s) | Self-test |
+| **iPhone: memory** | 252 MB footprint once loaded, 436 MB peak while synthesizing, 3.2 GB still available to the app | Self-test |
+| **iPhone: first run** | 91 MB download, load and warm-up in 52 s; Apple's voice reads until then | Self-test |
 | App size, Release arm64 | 7.7 → 27.4 MB installed, 4.2 → 13.7 MB zipped. Of the added code, NeMo text normalization is 8.0 MB and FluidAudio's Swift 5.8 MB. | Link map |
 | Model, first use | 91 MB on disk | Mac, simulator |
 | Speed, warm | 16–40× faster than real time; first line ready in 0.17 s | M4 Max (Neural Engine) |
@@ -93,7 +97,8 @@ Turn back on, and a Kokoro preview. The Apple picker becomes the fallback voice 
 | Memory | Simulator: 343 MB footprint once loaded, 611 MB after synthesis, peak 1.19 GB. Mac: about 1.0 GB resident, peak footprint 2.0 GB | |
 | Length of the listening-test texts | 109 s and 154 s, against 107 s and 150 s for voice E | M4 Max |
 
-The iPhone figures come from the self-test below.
+Not yet measured on the iPhone: synthesis with the app in the background (a reply that arrives while the screen
+is locked). If iOS refuses the Neural Engine there, the router reads with Apple's voice (see Risks).
 
 ## Verification
 
