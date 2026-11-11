@@ -52,7 +52,10 @@ link URLs), then splits like the reference render: one chunk per line, long line
 about 380 characters), with the first sentence on its own so audio starts sooner. Each chunk is synthesized in
 order as fast as the model goes, and played with its own `AVAudioPlayer` (not `AVAudioEngine`, which resets on
 the route changes headset `.playAndRecord` causes), with 0.3 s after a line and 0.12 s after a sentence. The
-whole reply is usually synthesized within seconds, so locking the phone mid-reply does not interrupt it.
+whole reply is usually synthesized within seconds, so locking the phone mid-reply does not interrupt it. A call
+or other interruption pauses the player; playback carries on when the interruption ends (Apple's voice takes
+over if the player will not restart). Kokoro's output is raised about 7 dB, with a soft limiter on the peaks,
+because it measured −25.4 LUFS against −18.0 for Apple's Ava (Premium) on the same reply.
 
 **Explicit Apple speech.** `speakWithAppleVoice` reads one utterance with Apple whatever the setting, for the
 Apple voice preview in Settings.
@@ -77,6 +80,20 @@ Apple voice preview in Settings.
 A **Voice engine** section above the Apple voice picker: *Kokoro (Heart)* or *Apple*, Kokoro's status
 (waiting for Wi-Fi, downloading, loading, ready, failed, turned off after crashes) with Download now / Retry /
 Turn back on, and a Kokoro preview. The Apple picker becomes the fallback voice when Kokoro is selected.
+
+## Measured (2026-11-11)
+
+| | Result | Where |
+|---|---|---|
+| App size, Release arm64 | 7.7 → 27.4 MB installed, 4.2 → 13.7 MB zipped. Of the added code, NeMo text normalization is 8.0 MB and FluidAudio's Swift 5.8 MB. | Link map |
+| Model, first use | 91 MB on disk | Mac, simulator |
+| Speed, warm | 16–40× faster than real time; first line ready in 0.17 s | M4 Max (Neural Engine) |
+| First synthesis after load | 0.8 s, hence the warm-up at load | M4 Max |
+| End to end through `KokoroPlayback` | Audio started 0.82 s after the request and a 44 s reply played to the end; synthesis about 2.5× faster than real time on CPU alone | iOS 18.6 simulator (no Neural Engine) |
+| Memory | Simulator: 343 MB footprint once loaded, 611 MB after synthesis, peak 1.19 GB. Mac: about 1.0 GB resident, peak footprint 2.0 GB | |
+| Length of the listening-test texts | 109 s and 154 s, against 107 s and 150 s for voice E | M4 Max |
+
+The iPhone figures come from the self-test below.
 
 ## Verification
 

@@ -303,6 +303,7 @@ final class KokoroPlayback: NSObject, NeuralSpeechPlayback, AVAudioPlayerDelegat
     private var cancelled = false
     private var paused = false
     private var startReported = false
+    private var interruptionObserver: NSObjectProtocol?
     private let began = Date()
 
     init(manager: KokoroAneManager?, voice: String, chunks: [NeuralSpeechChunk], speed: Float,
@@ -327,6 +328,15 @@ final class KokoroPlayback: NSObject, NeuralSpeechPlayback, AVAudioPlayerDelegat
             return
         }
         armStallTimer(Self.firstAudioTimeout, reason: "first audio not ready in \(Int(Self.firstAudioTimeout))s")
+        // A call or another app's audio pauses the player, and nothing would ever restart it,
+        // leaving the read "speaking" forever. Carry on once the interruption ends.
+        interruptionObserver = NotificationCenter.default.addObserver(
+            forName: AVAudioSession.interruptionNotification, object: nil, queue: .main
+        ) { [weak self] note in
+            guard let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+                  AVAudioSession.InterruptionType(rawValue: raw) == .ended else { return }
+            self?.interruptionEnded()
+        }
         let chunks = self.chunks, voice = self.voice, speed = self.speed, crashGuard = self.crashGuard
         synthesisTask = Task.detached(priority: .userInitiated) { [weak self] in
             for (index, chunk) in chunks.enumerated() {
@@ -380,6 +390,13 @@ final class KokoroPlayback: NSObject, NeuralSpeechPlayback, AVAudioPlayerDelegat
     }
 
     // MARK: - Internals
+
+    private func interruptionEnded() {
+        guard !ended, !paused, let player = player, !player.isPlaying else { return }
+        if !player.play() {
+            fail(at: playIndex, reason: "could not resume after an audio interruption")
+        }
+    }
 
     private func chunkReady(_ index: Int, _ wav: Data, synthesisSeconds: Double, audioSeconds: Double) {
         guard !ended else { return }
@@ -483,6 +500,10 @@ final class KokoroPlayback: NSObject, NeuralSpeechPlayback, AVAudioPlayerDelegat
         player = nil
         cancelStallTimer()
         audio.removeAll()
+        if let observer = interruptionObserver {
+            NotificationCenter.default.removeObserver(observer)
+            interruptionObserver = nil
+        }
         onEnd?(outcome)
         onEnd = nil
     }
@@ -639,6 +660,9 @@ enum KokoroSelfTest {
     private static func playbackCheck(engine: KokoroSpeechEngine, text: String) async -> [String: Any] {
         await withCheckedContinuation { (continuation: CheckedContinuation<[String: Any], Never>) in
             DispatchQueue.main.async {
+                // .ambient mixes with other audio, so a silent check never interrupts what the
+                // phone is playing.
+                try? AVAudioSession.sharedInstance().setCategory(.ambient, mode: .default)
                 KokoroPlayback.playerVolume = 0
                 let began = Date()
                 var events: [String] = []
