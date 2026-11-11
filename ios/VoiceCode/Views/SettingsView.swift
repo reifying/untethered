@@ -44,7 +44,11 @@ struct SettingsView: View {
                     .foregroundColor(.secondary)
             }
 
-            Section(header: Text("Voice Selection")) {
+            #if os(iOS) && canImport(FluidAudio)
+            NeuralVoiceSettingsSection(voiceOutputManager: voiceOutputManager)
+            #endif
+
+            Section(header: Text("Apple Voice")) {
                 Picker("Voice", selection: $settings.selectedVoiceIdentifier) {
                     Text("System Default").tag(nil as String?)
                     if !AppSettings.premiumVoices.isEmpty {
@@ -334,8 +338,8 @@ struct SettingsView: View {
 
         let previewText = "Hello! This is a preview of the selected voice. Premium voices sound more natural and expressive."
 
-        // Use speakWithVoice to preview the specific selected voice
-        manager.speakWithVoice(previewText, voiceIdentifier: settings.selectedVoiceIdentifier)
+        // Preview the selected Apple voice, even when Kokoro reads replies
+        manager.speakWithAppleVoice(previewText, voiceIdentifier: settings.selectedVoiceIdentifier)
 
         // Reset state after a delay (approximate speech duration)
         DispatchQueue.main.asyncAfter(deadline: .now() + 8.0) {

@@ -41,7 +41,10 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
     }
     #endif
 
-    private let synthesizer = AVSpeechSynthesizer()
+    // Same surface as AVSpeechSynthesizer. On iOS it reads with Kokoro when that voice is
+    // selected and loaded, otherwise with Apple's synthesizer, and reports the delegate
+    // callbacks for the utterances handed to it either way. See SpeechSynthesizerRouter.
+    private let synthesizer = SpeechSynthesizerRouter()
     private weak var appSettings: AppSettings?
     var onSpeechComplete: (() -> Void)?
 
@@ -224,6 +227,14 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
     func speak(_ text: String, rate: Float = 0.5, respectSilentMode: Bool = false, workingDirectory: String? = nil, sessionId: UUID? = nil) {
         let voiceIdentifier = appSettings?.resolveVoiceIdentifier(forWorkingDirectory: workingDirectory)
         speakWithVoice(text, rate: rate, voiceIdentifier: voiceIdentifier, respectSilentMode: respectSilentMode, sessionId: sessionId)
+    }
+
+    /// Like `speakWithVoice`, but always with Apple's synthesizer, even when the Kokoro voice
+    /// is selected. For previewing an Apple voice in Settings.
+    func speakWithAppleVoice(_ text: String, rate: Float = 0.5, voiceIdentifier: String? = nil) {
+        synthesizer.forceAppleVoiceForNextUtterance = true
+        defer { synthesizer.forceAppleVoiceForNextUtterance = false }
+        speakWithVoice(text, rate: rate, voiceIdentifier: voiceIdentifier)
     }
 
     /// Read `text` after everything already being read or waiting has been read

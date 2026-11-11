@@ -22,6 +22,13 @@ settings:
     Release:
       BuildIndependentTargetsInParallel: true
 
+packages:
+  # Kokoro neural voice for the iPhone app (Apache-2.0). Pinned exactly: see
+  # docs/design/kokoro-neural-voice.md before changing the version.
+  FluidAudio:
+    url: https://github.com/FluidInference/FluidAudio
+    exactVersion: 0.18.3
+
 targets:
   VoiceCode:
     type: application
@@ -84,12 +91,31 @@ targets:
         Release:
           DEVELOPMENT_TEAM: ${DEVELOPMENT_TEAM}
     preBuildScripts: []
-    postBuildScripts: []
+    postBuildScripts:
+      # FluidAudio's TTS trait bundles LuxTTS lexicon data that FluidAudio documents as derived
+      # from espeak-ng (GPL-3.0-or-later). Kokoro never reads it, and it must not ship in this
+      # MIT app: delete it, and fail the build if any of it is still in the product.
+      # The input file orders this after Xcode copies the package's resource bundle into the app.
+      - name: Strip GPL-derived LuxTTS data
+        basedOnDependencyAnalysis: false
+        inputFiles:
+          - $(TARGET_BUILD_DIR)/$(WRAPPER_NAME)/FluidAudio_LuxTtsG2pResources.bundle
+        script: |
+          set -euo pipefail
+          APP="${TARGET_BUILD_DIR}/${WRAPPER_NAME}"
+          find "$APP" -path "$APP/PlugIns/*.xctest" -prune -o -name '*LuxTtsG2pResources*.bundle' -prune -print -exec rm -rf {} +
+          # Test bundles are embedded only in test builds and never ship.
+          if find "$APP" -path "$APP/PlugIns/*.xctest" -prune -o -iname '*luxtts*' -print | grep -q .; then
+            echo "error: GPL-derived LuxTTS data is still in $APP (see docs/design/kokoro-neural-voice.md)"
+            exit 1
+          fi
     dependencies:
       - target: VoiceCodeShareExtension
         embed: true
       - framework: Frameworks/BPHeadset.xcframework
         embed: true
+      - package: FluidAudio
+        product: FluidAudio
 
   VoiceCodeShareExtension:
     type: app-extension
