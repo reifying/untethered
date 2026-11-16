@@ -22,6 +22,13 @@ class PersistenceController {
             return controller
         }
         #endif
+        // The Mac unit tests run inside the app, in the app's own sandbox, so the
+        // on-disk store here is the real one, with the user's sessions in it. Give a
+        // test run a store of its own: tests then neither read real conversations
+        // nor leave test sessions in the sidebar.
+        if TestingEnvironment.isHostingUnitTests || TestingEnvironment.isUnitTesting {
+            return PersistenceController(inMemory: true)
+        }
         return PersistenceController()
     }()
 

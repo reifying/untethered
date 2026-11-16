@@ -28,6 +28,11 @@ struct VoiceCodeApp: App {
     @StateObject private var headsetManager: HeadsetRemoteCommandManager
 
     init() {
+        #if os(macOS)
+        // Before anything reads a setting: put back the settings a unit-test run
+        // left changed, or (under test) remember them. See TestRunDefaultsGuard.
+        TestRunDefaultsGuard.run()
+        #endif
         // Create instances in correct dependency order
         let settings = AppSettings()
         let voiceManager = VoiceOutputManager(appSettings: settings)

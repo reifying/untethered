@@ -36,4 +36,29 @@ enum TestingEnvironment {
     static var isUnitTesting: Bool {
         NSClassFromString("XCTestCase") != nil && !isUITesting
     }
+
+    /// Environment variables Xcode's test runner sets on the process it runs
+    /// tests in. Any one of them is enough.
+    static let testRunnerEnvironmentKeys = [
+        "XCTestConfigurationFilePath", "XCTestSessionIdentifier", "XCTestBundlePath", "XCInjectBundleInto"
+    ]
+
+    /// Returns true when this process was launched by Xcode's test runner to host
+    /// unit tests. Unlike `isUnitTesting` this is already true while the app is
+    /// starting up: XCTest is loaded into the host only after launch, so during
+    /// `App.init` and the first `onAppear` the class lookup above still says no.
+    /// Use this for decisions made at launch.
+    static var isHostingUnitTests: Bool {
+        isHostingUnitTests(environment: ProcessInfo.processInfo.environment)
+    }
+
+    static func isHostingUnitTests(environment: [String: String]) -> Bool {
+        testRunnerEnvironmentKeys.contains { environment[$0] != nil }
+    }
+
+    /// Returns true in any process that exists to run tests: the unit-test host
+    /// (from its first instruction) or an app launched by a UI test.
+    static var isTestRun: Bool {
+        isHostingUnitTests || isUnitTesting || isUITesting
+    }
 }
