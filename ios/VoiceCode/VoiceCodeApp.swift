@@ -32,6 +32,11 @@ struct VoiceCodeApp: App {
         // Before anything reads a setting: put back the settings a unit-test run
         // left changed, or (under test) remember them. See TestRunDefaultsGuard.
         TestRunDefaultsGuard.run()
+        LogManager.shared.startPersisting()
+        NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification,
+                                               object: nil, queue: .main) { _ in
+            LogManager.shared.markCleanExit()
+        }
         #endif
         // Create instances in correct dependency order
         let settings = AppSettings()
