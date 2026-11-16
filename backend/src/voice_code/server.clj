@@ -4017,7 +4017,7 @@
                :host host
                :default-working-directory default-dir})
 
-    (let [server (http/run-server websocket-handler {:port port :ip host})]
+    (let [server (http/run-server websocket-handler {:port port :ip host :max-body (* 150 1024 1024)})]
       (reset! server-state server)
 
       ;; Add graceful shutdown hook
