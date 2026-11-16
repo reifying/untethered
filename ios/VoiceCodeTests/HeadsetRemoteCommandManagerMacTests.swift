@@ -160,6 +160,123 @@ final class HeadsetRemoteCommandManagerMacTests: XCTestCase {
         drainMainQueue()
     }
 
+    // MARK: - Repeat the last reply, skip a reply
+
+    private func reply(_ text: String) -> RecentReply {
+        RecentReply(id: UUID(), text: text, spokenText: text, timestamp: Date())
+    }
+
+    /// A double press with nothing going on reads the active session's newest reply again.
+    func testDoubleTapWhenIdle_repeatsTheNewestReply() {
+        let f = makeFixture()
+        var askedFor: UUID?
+        f.manager.fetchNewestReply = { [unowned self] id in askedFor = id; return self.reply("The build passed.") }
+
+        f.manager.simulateMediaDoubleTap()
+
+        XCTAssertEqual(askedFor, testSessionId)
+        XCTAssertEqual(f.output.replayedTexts, ["The build passed."])
+        XCTAssertEqual(f.manager.testSessionState, .idle)
+        XCTAssertFalse(f.output.stopCalled)
+    }
+
+    /// The same double press over the real BlueParrott path: raw GATT bytes in, replay out.
+    func testBLE_doubleTapWhenIdle_repeatsTheNewestReply() {
+        let f = makeFixture()
+        f.manager.fetchNewestReply = { [unowned self] _ in self.reply("Tests are green.") }
+
+        for byte: UInt8 in [0x01, 0x00, 0x01, 0x00, 0x03] {       // down, up, down, up, double-tap code
+            f.central.centralDelegate?.bleDidUpdateButtonValue(Data([byte]))
+            drainMainQueue()
+        }
+
+        XCTAssertEqual(f.output.replayedTexts, ["Tests are green."])
+        XCTAssertFalse(f.input.startRecordingCalled, "a double press must not start a recording")
+    }
+
+    /// A press that produced nothing audible is cued as a failure, not left as silence.
+    func testRepeatWithNoReply_cuesError() {
+        let f = makeFixture()
+        f.settings.headsetAudibleCuesEnabled = true
+        f.manager.fetchNewestReply = { _ in nil }
+
+        f.manager.simulateMediaDoubleTap()
+
+        XCTAssertTrue(f.output.replayedTexts.isEmpty)
+        XCTAssertEqual(f.earconSpy.played, [.error])
+    }
+
+    func testRepeatThatSpeechRefuses_cuesError() {
+        let f = makeFixture()
+        f.settings.headsetAudibleCuesEnabled = true
+        f.output.replayResult = false                                  // muted, or the microphone is open
+        f.manager.fetchNewestReply = { [unowned self] _ in self.reply("Unheard") }
+
+        f.manager.simulateMediaPrevious()
+
+        XCTAssertEqual(f.earconSpy.played, [.error])
+    }
+
+    func testRepeatWithNoActiveSession_cuesError() {
+        let f = makeFixture(resolveSession: { nil })
+        f.settings.headsetAudibleCuesEnabled = true
+        var fetched = false
+        f.manager.fetchNewestReply = { _ in fetched = true; return nil }
+
+        f.manager.simulateMediaDoubleTap()
+
+        XCTAssertFalse(fetched)
+        XCTAssertEqual(f.earconSpy.played, [.error])
+    }
+
+    /// Previous-track repeats even while a reply is being read, and leaves the state alone.
+    func testPreviousTrackWhileSpeaking_repeatsWithoutStopping() {
+        let f = makeFixture()
+        f.manager.fetchNewestReply = { [unowned self] _ in self.reply("Say it again.") }
+        f.output.isSpeaking = true
+        drainMainQueue()
+        XCTAssertEqual(f.manager.testSessionState, .speaking)
+
+        f.manager.simulateMediaPrevious()
+
+        XCTAssertEqual(f.output.replayedTexts, ["Say it again."])
+        XCTAssertEqual(f.manager.testSessionState, .speaking)
+        XCTAssertFalse(f.output.stopCalled, "the replay preempts by itself; stop() would discard the waiting replies")
+    }
+
+    /// A double press while a reply is being read skips that reply only. The machine
+    /// stays speaking, and goes idle when speech actually ends.
+    func testDoubleTapWhileSpeaking_skipsOneReply_thenIdlesWhenSpeechEnds() {
+        let f = makeFixture()
+        f.settings.headsetAudibleCuesEnabled = true
+        f.output.isSpeaking = true
+        drainMainQueue()
+
+        f.manager.simulateMediaDoubleTap()
+
+        XCTAssertEqual(f.output.skipCurrentCallCount, 1)
+        XCTAssertFalse(f.output.stopCalled, "a skip is not a stop: the replies still waiting are kept")
+        XCTAssertEqual(f.manager.testSessionState, .speaking)
+        XCTAssertEqual(f.earconSpy.played, [.cancelled])
+        XCTAssertTrue(f.output.replayedTexts.isEmpty)
+
+        f.output.isSpeaking = false                                    // nothing was waiting after all
+        drainMainQueue()
+        XCTAssertEqual(f.manager.testSessionState, .idle)
+    }
+
+    /// With hands-free off a headset press does nothing, but the app's own menu command does.
+    func testRepeat_whenDisengaged_onlyTheAppsOwnCommandActs() {
+        let f = makeFixture(engaged: false)
+        f.manager.fetchNewestReply = { [unowned self] _ in self.reply("From the menu.") }
+
+        f.manager.simulateMediaPrevious()
+        XCTAssertTrue(f.output.replayedTexts.isEmpty)
+
+        f.manager.repeatLastReplyFromUI()
+        XCTAssertEqual(f.output.replayedTexts, ["From the menu."])
+    }
+
     // MARK: - BLE PTT (end-to-end through fake central + recognizer)
 
     /// A BlueParrott hold drives idle → recording (on holdStarted) → finalizing (on

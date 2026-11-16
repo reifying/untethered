@@ -176,10 +176,64 @@ final class HeadsetSessionReducerTests: XCTestCase {
         XCTAssertTrue(fx.contains(.interruptTTS))
     }
 
-    func testSpeaking_doubleTap_dismissesToIdle_interruptsTTS() {
+    // MARK: - Skip a reply, repeat a reply
+
+    /// Replies are read in turn, so a double-tap while one is being read means "next",
+    /// not "stop": it skips that reply and leaves the ones still waiting alone.
+    func testSpeaking_doubleTap_skipsOneReply_staysSpeaking() {
         let (state, fx) = SessionReducer.reduce(.speaking, .doubleTap, source: .blueParrottBLE)
+        XCTAssertEqual(state, .speaking, "more may follow; ttsEnded returns the machine to idle when nothing does")
+        XCTAssertEqual(fx, [.skipReply, .playEarcon(.cancelled)])
+        XCTAssertFalse(fx.contains(.interruptTTS), "a skip must not discard the replies still waiting")
+    }
+
+    /// No strand: when the skipped reply was the last, the executor's skip is a stop and
+    /// the `ttsEnded` that follows takes the machine back to idle.
+    func testSpeaking_doubleTap_thenTtsEnded_returnsToIdle() {
+        let (skipped, _) = SessionReducer.reduce(.speaking, .doubleTap, source: .mediaKey)
+        let (state, fx) = SessionReducer.reduce(skipped, .ttsEnded, source: .mediaKey)
         XCTAssertEqual(state, .idle)
-        XCTAssertTrue(fx.contains(.interruptTTS))
+        XCTAssertEqual(fx, [.updateNowPlaying])
+    }
+
+    /// A double-tap with nothing going on is "say that again".
+    func testIdle_doubleTap_repeatsTheLastReply() {
+        for source in [ButtonSource.blueParrottBLE, .mediaKey, .ui] {
+            let (state, fx) = SessionReducer.reduce(.idle, .doubleTap, source: source)
+            XCTAssertEqual(state, .idle, "the replay starting is a ttsStarted like any other speech")
+            XCTAssertEqual(fx, [.replayLastReply])
+        }
+    }
+
+    /// The previous-track button repeats the last reply whenever the user is listening
+    /// or waiting, and never changes state by itself.
+    func testRepeatRequested_repeatsWithoutChangingState() {
+        for state in [SessionState.idle, .speaking, .awaitingResponse] {
+            let (next, fx) = SessionReducer.reduce(state, .repeatRequested, source: .mediaKey)
+            XCTAssertEqual(next, state)
+            XCTAssertEqual(fx, [.replayLastReply])
+        }
+    }
+
+    /// Speech is suppressed while the microphone is open, so a repeat there does nothing.
+    func testRepeatRequested_ignoredWhileRecordingOrFinalizing() {
+        for state in [SessionState.recording, .finalizing] {
+            let (next, fx) = SessionReducer.reduce(state, .repeatRequested, source: .mediaKey)
+            XCTAssertEqual(next, state)
+            XCTAssertEqual(fx, [])
+        }
+    }
+
+    /// No strand: a repeat while waiting on the agent moves to speaking when it starts
+    /// (cancelling the await backstop) and back to idle when it ends.
+    func testAwaiting_repeat_speaksThenReturnsToIdle() {
+        var (state, _) = SessionReducer.reduce(.awaitingResponse, .repeatRequested, source: .mediaKey)
+        var fx: [SessionEffect]
+        (state, fx) = SessionReducer.reduce(state, .ttsStarted, source: .mediaKey)
+        XCTAssertEqual(state, .speaking)
+        XCTAssertTrue(fx.contains(.cancelTimer(.awaitResponse)))
+        (state, _) = SessionReducer.reduce(state, .ttsEnded, source: .mediaKey)
+        XCTAssertEqual(state, .idle)
     }
 
     // MARK: - Barge-in by hold (F4/F5)
@@ -451,11 +505,13 @@ final class HeadsetSessionReducerTests: XCTestCase {
                        "a dismiss must not sound like a recording start")
     }
 
-    /// A double-tap dismiss of TTS cues `.cancelled` on the same terms as the tap.
-    func testHeadsetDoubleTapDismissSpeaking_emitsCancelledEarcon() {
+    /// A double-tap skip of the reply being read cues `.cancelled`, as the tap that
+    /// stops them all does: the press registered and no recording started.
+    func testHeadsetDoubleTapSkipSpeaking_emitsCancelledEarcon() {
         let (state, fx) = SessionReducer.reduce(.speaking, .doubleTap, source: .blueParrottBLE)
-        XCTAssertEqual(state, .idle)
+        XCTAssertEqual(state, .speaking)
         XCTAssertTrue(fx.contains(.playEarcon(.cancelled)))
+        XCTAssertFalse(fx.contains(.playEarcon(.listening)))
     }
 
     /// Dismissing a pending response is the same user-facing outcome — button pressed,

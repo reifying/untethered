@@ -19,8 +19,10 @@
 //     `.sending` "Processing" could sit forever; here it can't), WITHOUT
 //     cancelling the in-flight prompt — a late response still speaks via
 //     `idle —ttsStarted→ speaking`.
-//   • F5/barge-in: a tap/double dismisses `speaking`/`awaitingResponse`; a hold
-//     interrupts and starts a fresh recording turn in one gesture.
+//   • F5/barge-in: a tap dismisses `speaking`/`awaitingResponse`; a hold
+//     interrupts and starts a fresh recording turn in one gesture. A double-tap
+//     while speaking skips one reply and stays `speaking` only while there is
+//     more to read (`ttsEnded` still returns it to idle).
 //   • F3: a first capture that produces zero audio within the grace window
 //     restarts once.
 //   • Goal #2: capture ending with no `up` (recognizer silence / engine failure
@@ -44,6 +46,7 @@ enum SessionEvent: Equatable {
     case holdEnded             // release after a hold
     case tap                   // quick press-release
     case doubleTap             // (no `longPress` — a hold is PTT; the raw `04` code is dropped)
+    case repeatRequested       // "say that again": the media-key previous-track button
     case captureProducedAudio  // first non-silent buffer arrived (F3 readiness)
     case captureStalled        // grace elapsed with zero buffers (F3)
     case captureEnded          // capture stopped with NO `up` gesture: recognizer silence
@@ -86,6 +89,8 @@ enum SessionEffect: Equatable {
     case stopCapture
     case sendPrompt(String)
     case interruptTTS
+    case replayLastReply       // read the newest reply again (the executor looks it up)
+    case skipReply             // stop the reply being read and go to the next one waiting
     case suspendKeepAlive      // BLE path only (F2)
     case resumeKeepAlive
     case armTimer(SessionTimer)
@@ -175,8 +180,26 @@ enum SessionReducer {
         // is silence-indistinguishable from a dropped press without a tone.
         case (.awaitingResponse, .tap), (.awaitingResponse, .doubleTap):
             return (.idle, [.cancelTimer(.awaitResponse), .playEarcon(.cancelled), .updateNowPlaying])
-        case (.speaking, .tap), (.speaking, .doubleTap):
+        case (.speaking, .tap):
             return (.idle, [.interruptTTS, .playEarcon(.cancelled), .updateNowPlaying])
+
+        // Double-tap while a reply is being read skips THAT reply and goes on to the
+        // next one waiting; a tap (above) stops them all. Replies are queued and read
+        // in turn, so "next" and "stop" are different requests. The state stays
+        // `.speaking`: if nothing was waiting the executor's skip is a stop, and the
+        // `ttsEnded` that follows returns the machine to idle.
+        case (.speaking, .doubleTap):
+            return (.speaking, [.skipReply, .playEarcon(.cancelled)])
+
+        // "Say that again." A double-tap with nothing going on, or the media-key
+        // previous-track button at any time the user is listening or waiting, reads
+        // the newest reply again from the top. No state change here: the replay
+        // starting is a `ttsStarted` like any other speech. Ignored while recording
+        // or finalizing (the default below), where speech is suppressed anyway.
+        case (.idle, .doubleTap),
+             (.idle, .repeatRequested), (.speaking, .repeatRequested),
+             (.awaitingResponse, .repeatRequested):
+            return (s, [.replayLastReply])
 
         // A late response after a timeout still speaks (idle → speaking).
         case (.idle, .ttsStarted):

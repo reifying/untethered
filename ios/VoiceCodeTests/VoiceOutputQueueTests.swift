@@ -122,6 +122,91 @@ final class VoiceOutputQueueTests: XCTestCase {
                        "a cancelled read means stop reading, not skip to the next reply")
     }
 
+    // MARK: - Replay and skip
+
+    func testReplayCutsInAndKeepsTheRepliesStillWaiting() {
+        manager.enqueue(longText)
+        manager.enqueue("Second reply")
+        manager.enqueue("Third reply")
+
+        XCTAssertTrue(manager.replay("An earlier reply, asked for again"))
+
+        XCTAssertEqual(manager.currentUtterance?.speechString, "An earlier reply, asked for again",
+                       "a replay is read now, not after the queue")
+        XCTAssertEqual(manager.pendingSpeechCount, 2,
+                       "asking to hear one reply again must not lose replies not yet heard")
+    }
+
+    func testReplayedReplyIsFollowedByTheWaitingOnes() throws {
+        manager.enqueue(longText)
+        manager.enqueue("Second reply")
+        manager.replay("Replayed")
+        let replayed = try XCTUnwrap(manager.currentUtterance)
+
+        manager.speechSynthesizer(AVSpeechSynthesizer(), didFinish: replayed)
+        drainMain()
+
+        XCTAssertEqual(manager.currentUtterance?.speechString, "Second reply")
+        XCTAssertEqual(manager.pendingSpeechCount, 0)
+    }
+
+    func testBlankReplayStartsNothingAndKeepsWhatIsBeingRead() {
+        manager.enqueue(longText)
+        manager.enqueue("Second reply")
+
+        XCTAssertFalse(manager.replay("   \n"))
+
+        XCTAssertEqual(manager.currentUtterance?.speechString, longText)
+        XCTAssertEqual(manager.pendingSpeechCount, 1)
+    }
+
+    func testReplayWhileRecordingStartsNothing() {
+        manager.isRecordingActive = true
+        XCTAssertFalse(manager.replay("Not now"))
+        XCTAssertNil(manager.currentUtterance)
+    }
+
+    func testSkipGoesStraightToTheNextReply() {
+        manager.enqueue(longText)
+        manager.enqueue("Second reply")
+        manager.enqueue("Third reply")
+
+        manager.skipCurrent()
+
+        XCTAssertEqual(manager.currentUtterance?.speechString, "Second reply")
+        XCTAssertEqual(manager.pendingSpeechCount, 1, "only the reply being read is skipped")
+    }
+
+    /// The skipped reply's cancel callback arrives after the next reply has started.
+    /// It must not end the queue or report that speech stopped.
+    func testSkippedReplysLateCancelDoesNotEndTheQueue() throws {
+        manager.enqueue(longText)
+        let skipped = try XCTUnwrap(manager.currentUtterance)
+        manager.enqueue("Second reply")
+        manager.enqueue("Third reply")
+        manager.skipCurrent()
+        drainMain()
+        var sawSilence = false
+        manager.$isSpeaking.dropFirst().sink { if !$0 { sawSilence = true } }.store(in: &cancellables)
+
+        manager.speechSynthesizer(AVSpeechSynthesizer(), didCancel: skipped)
+        drainMain()
+
+        XCTAssertEqual(manager.currentUtterance?.speechString, "Second reply")
+        XCTAssertEqual(manager.pendingSpeechCount, 1)
+        XCTAssertFalse(sawSilence, "isSpeaking must stay true across a skip to the next reply")
+    }
+
+    func testSkipWithNothingWaitingStopsReading() {
+        manager.enqueue(longText)
+
+        manager.skipCurrent()
+        drainMain()
+
+        XCTAssertNil(manager.currentUtterance)
+        XCTAssertFalse(manager.isSpeaking)
+    }
+
     func testBlankReplyIsNotQueued() {
         manager.enqueue(longText)
         manager.enqueue("  \n ")

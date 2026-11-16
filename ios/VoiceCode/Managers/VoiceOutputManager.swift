@@ -333,6 +333,42 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
                                      respectSilentMode: respectSilentMode, sessionId: sessionId))
     }
 
+    /// Read `text` again now, because the user asked to hear it again: the headset's
+    /// repeat gesture, or a driving-mode replay tile. Whatever is being read is cut
+    /// off. Replies still waiting their turn are kept and follow it, so asking to
+    /// hear one reply again never loses another the user has not heard yet. (`speak`
+    /// discards them; that is for Read Aloud, where the user chose one message.)
+    ///
+    /// Returns false when nothing was started: blank text, muted, or recording.
+    @discardableResult
+    func replay(_ text: String, rate: Float = 0.5, workingDirectory: String? = nil, sessionId: UUID? = nil) -> Bool {
+        if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            LogManager.shared.log("🔇 Replay skipped — nothing to speak", category: "VoiceOutput")
+            return false
+        }
+        LogManager.shared.log("🔊 Replay requested (\(pendingSpeech.count) waiting replies kept)", category: "VoiceOutput")
+        return startUtterance(PendingSpeech(
+            text: text,
+            rate: rate,
+            voiceIdentifier: appSettings?.resolveVoiceIdentifier(forWorkingDirectory: workingDirectory),
+            respectSilentMode: false,
+            sessionId: sessionId))
+    }
+
+    /// Stop reading the current reply and go straight to the next one waiting. With
+    /// nothing waiting, this is `stop()`.
+    ///
+    /// When there is a next reply, `isSpeaking` stays true across the skip, exactly
+    /// as it does when one queued reply follows another: the skipped utterance's
+    /// late cancel callback belongs to a superseded generation and is dropped.
+    func skipCurrent() {
+        if startNextPendingSpeech() {
+            LogManager.shared.log("⏭ Skipped to the next queued reply", category: "VoiceOutput")
+            return
+        }
+        stop()
+    }
+
     /// Hand one utterance to the synthesizer, preempting anything it is still
     /// playing. Returns false when the request was dropped (muted, recording,
     /// or the audio session could not be set up) and nothing is in flight.

@@ -41,10 +41,24 @@ class MockVoiceInputForHeadset: VoiceInputManager {
 
 class MockVoiceOutputForHeadset: VoiceOutputManager {
     var stopCalled = false
+    /// Texts handed to `replay`, in order, and what it reports back.
+    var replayedTexts: [String] = []
+    var replayResult = true
+    var skipCurrentCallCount = 0
 
     override func stop() {
         stopCalled = true
         DispatchQueue.main.async { self.isSpeaking = false }
+    }
+
+    override func replay(_ text: String, rate: Float = 0.5, workingDirectory: String? = nil,
+                         sessionId: UUID? = nil) -> Bool {
+        replayedTexts.append(text)
+        return replayResult
+    }
+
+    override func skipCurrent() {
+        skipCurrentCallCount += 1
     }
 }
 

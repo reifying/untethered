@@ -111,6 +111,13 @@ class HeadsetRemoteCommandManager: ObservableObject {
     /// was issued. This is what unifies the UI mic button and the headset onto one send.
     var sendVoicePrompt: ((String) -> Bool)?
 
+    /// Looks up the newest reply of a session for the repeat gesture ("say that
+    /// again"). Test seam: defaults to the local message store.
+    var fetchNewestReply: (UUID) -> RecentReply? = { sessionId in
+        RecentReplies.fetch(sessionId: sessionId, limit: 1,
+                            in: PersistenceController.shared.container.viewContext).first
+    }
+
     /// Audible-cue player. Test seam: defaults to the headset player; tests inject a spy.
     /// All playback routes through the single gated `playCue` (checks the opt-out setting).
     var earconPlayer: EarconPlaying = HeadsetEarconPlayer()
@@ -505,7 +512,16 @@ class HeadsetRemoteCommandManager: ObservableObject {
             return .success
         }
 
+        #if os(macOS)
+        // Previous-track is "say that again": read the newest reply from the top.
+        center.previousTrackCommand.isEnabled = true
+        center.previousTrackCommand.addTarget { [weak self] _ in
+            self?.handleMediaButton(.repeatRequested)
+            return .success
+        }
+        #else
         center.previousTrackCommand.isEnabled = false
+        #endif
         center.seekForwardCommand.isEnabled = false
         center.seekBackwardCommand.isEnabled = false
         center.skipForwardCommand.isEnabled = false
@@ -523,6 +539,8 @@ class HeadsetRemoteCommandManager: ObservableObject {
         center.pauseCommand.isEnabled = false
         center.nextTrackCommand.removeTarget(nil)
         center.nextTrackCommand.isEnabled = false
+        center.previousTrackCommand.removeTarget(nil)
+        center.previousTrackCommand.isEnabled = false
     }
 
     fileprivate func updateNowPlayingState() {
@@ -1100,6 +1118,12 @@ extension HeadsetRemoteCommandManager {
             }
         case .interruptTTS:
             voiceOutput.stop()
+        case .replayLastReply:
+            // Nothing to repeat (no session, no reply yet, muted) is a press that did
+            // nothing audible, so cue the failure rather than leave silence.
+            if !replayNewestReply() { playCue(.error) }
+        case .skipReply:
+            voiceOutput.skipCurrent()
         case .suspendKeepAlive:
             stopKeepAlive()
             #if DEBUG
@@ -1121,6 +1145,28 @@ extension HeadsetRemoteCommandManager {
         case .log(let message):
             hLog("Session: \(message)")
         }
+    }
+
+    /// Read the active session's newest reply again from the top. Returns false when
+    /// there was nothing to read or speech could not start.
+    private func replayNewestReply() -> Bool {
+        guard let (sessionId, workingDirectory, _, _) = resolveActiveSession() else {
+            hLogWarning("Session: repeat requested but there is no active session")
+            return false
+        }
+        guard let reply = fetchNewestReply(sessionId) else {
+            hLog("Session: repeat requested but session \(sessionId.uuidString.lowercased()) has no reply to read")
+            return false
+        }
+        let started = voiceOutput.replay(reply.spokenText, workingDirectory: workingDirectory, sessionId: sessionId)
+        hLog("Session: repeating reply \(reply.id.uuidString.lowercased()) length=\(reply.spokenText.count) started=\(started)")
+        return started
+    }
+
+    /// The on-screen or keyboard "say that again", through the same reducer as the
+    /// headset so there is one owner of what is being read.
+    func repeatLastReplyFromUI() {
+        handleButtonEvent(.repeatRequested, source: .ui)
     }
 
     /// The ONE gated entry point for audible cues. Quiet on the desktop and when the user
@@ -1428,6 +1474,7 @@ extension HeadsetRemoteCommandManager {
     // inputs) and the injected session timers.
     func simulateMediaTap() { handleButtonEvent(.tap, source: .mediaKey) }
     func simulateMediaDoubleTap() { handleButtonEvent(.doubleTap, source: .mediaKey) }
+    func simulateMediaPrevious() { handleButtonEvent(.repeatRequested, source: .mediaKey) }
     func testFireSessionTimer(_ timer: SessionTimer) { sessionTimerWorkItems[timer]?.perform() }
     func testHasArmedSessionTimer(_ timer: SessionTimer) -> Bool { sessionTimerWorkItems[timer] != nil }
     var testSessionState: SessionState { state }
