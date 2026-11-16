@@ -1941,7 +1941,14 @@ struct GhostModeToggle: View {
                          : "Have the agent author a clean prompt for a task")
                         .font(.caption2)
                         .foregroundColor(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                        // Two lines at most, and NOT a vertically fixed size. On the Mac
+                        // a window's minimum height is its content's height at its
+                        // minimum width. Fixed vertically, this caption wrapped to a
+                        // word per line there and reported about 500 points, which made
+                        // the window's minimum height taller than a laptop screen
+                        // whenever a resumed Claude session was open, and pushed the
+                        // microphone button below the bottom of the screen.
+                        .lineLimit(2)
                 }
             }
         }
@@ -1973,7 +1980,10 @@ struct StalledChainBanner: View {
                 Text("A message in this conversation is too large to load automatically. Older history may be incomplete.")
                     .font(.caption)
                     .foregroundColor(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                    // Bounded rather than vertically fixed, for the same reason as the
+                    // caption in GhostModeToggle: a fixed vertical size at the window's
+                    // minimum width inflates the window's minimum height.
+                    .lineLimit(4)
             }
 
             Spacer(minLength: 0)
@@ -2019,7 +2029,10 @@ struct PrunedGapBanner: View {
                 Text("The server no longer has the earlier part of this conversation. Local history for this session may be incomplete.")
                     .font(.caption)
                     .foregroundColor(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                    // Bounded rather than vertically fixed, for the same reason as the
+                    // caption in GhostModeToggle: a fixed vertical size at the window's
+                    // minimum width inflates the window's minimum height.
+                    .lineLimit(4)
             }
 
             Spacer(minLength: 0)

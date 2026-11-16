@@ -1,8 +1,17 @@
 // ConversationInputAreaHeightTests.swift
-// The conversation view's input area sits below the message list and takes its
-// height from its own content. The live transcript in it had no line limit, so
-// after a long dictation it asked for about a thousand points, at the message
-// list's expense, and on the Mac it stayed there after sending.
+// How tall the conversation view insists on being.
+//
+// On the Mac a window cannot be shorter than its content's minimum height, and
+// SwiftUI works that minimum out at the content's minimum WIDTH. Text with a
+// vertically fixed size wraps to about a word per line there and reports the
+// full height of that. The ghost-task caption did: about 500 points on its own,
+// which made the conversation's minimum height (measured in the running app)
+// 964 to 1,018 points. A 14-inch MacBook Pro has 949. So whenever a resumed
+// Claude session was open the window was forced taller than the screen, and its
+// bottom edge, with the microphone button on it, was below the screen.
+//
+// Also here: the live transcript had no line limit, so after a long dictation
+// the input area asked for about a thousand points at the message list's expense.
 
 #if os(macOS)
 import XCTest
@@ -26,6 +35,72 @@ final class ConversationInputAreaHeightTests: XCTestCase {
             voiceInput: input, voiceOutput: output,
             client: VoiceCodeClient(serverURL: "ws://localhost:8080", setupObservers: false),
             settings: AppSettings())
+    }
+
+    /// The height SwiftUI would use as part of the window's minimum: the view's
+    /// height when offered no room at all.
+    private func minimumHeight<V: View>(of view: V) -> CGFloat {
+        NSHostingController(rootView: view).sizeThatFits(in: .zero).height
+    }
+
+    func testTheGhostToggleDoesNotGrowTallWhenSqueezedNarrow() {
+        // Measured before the fix: 495 points. Two short lines of caption is under 60.
+        XCTAssertLessThan(minimumHeight(of: GhostModeToggle(isOn: .constant(false))), 80)
+        XCTAssertLessThan(minimumHeight(of: GhostModeToggle(isOn: .constant(true))), 80)
+    }
+
+    func testTheWarningBannersDoNotGrowTallWhenSqueezedNarrow() {
+        XCTAssertLessThan(minimumHeight(of: StalledChainBanner(cursor: 12, onDismiss: {})), 160)
+        let gap = SessionHistoryPayload.Gap(requestedLastSeq: 5, minAvailableSeq: 40, reason: "pruned")
+        XCTAssertLessThan(minimumHeight(of: PrunedGapBanner(gap: gap, onDismiss: {})), 160)
+    }
+
+    /// The whole conversation view, for a resumed Claude session (the case that
+    /// shows the ghost toggle) with both warning banners and an error line up at
+    /// once. Its minimum height must fit a laptop screen with room to spare.
+    /// Measured before the fix, without the banners: 685 here, 964 to 1,018 in the app.
+    func testAConversationsMinimumHeightFitsALaptopScreen() throws {
+        let persistence = PersistenceController(inMemory: true)
+        let context = persistence.container.viewContext
+        let session = CDBackendSession(context: context)
+        session.id = UUID()
+        session.backendName = "Resumed"
+        session.workingDirectory = "/tmp"
+        session.lastModified = Date()
+        session.messageCount = 6          // resumed, so the ghost toggle shows
+        session.preview = ""
+        session.unreadCount = 0
+        session.provider = "claude"
+        try context.save()
+
+        let settings = AppSettings()
+        let output = VoiceOutputManager(appSettings: settings)
+        let input = VoiceInputManager(voiceOutputManager: output)
+        input.transcribedText = transcript
+        let client = VoiceCodeClient(
+            serverURL: "ws://localhost:8080", voiceOutputManager: output,
+            sessionSyncManager: SessionSyncManager(persistenceController: persistence, voiceOutputManager: output),
+            appSettings: settings, setupObservers: false)
+        let key = session.id.uuidString.lowercased()
+        client.currentError = String(repeating: "Something went wrong with the connection. ", count: 20)
+        client.stalledChains[key] = 12
+        client.prunedGaps[key] = SessionHistoryPayload.Gap(requestedLastSeq: 5, minAvailableSeq: 40, reason: "pruned")
+        let headset = HeadsetRemoteCommandManager(voiceInput: input, voiceOutput: output, client: client, settings: settings)
+        let driving = DrivingModeController(
+            settings: settings, client: client, voiceOutput: output, voiceInput: input, headset: headset,
+            activeSession: ActiveSessionManager(), viewContext: { context })
+
+        let conversation = ConversationView(session: session, client: client, voiceOutput: output,
+                                            voiceInput: input, settings: settings)
+            .environment(\.managedObjectContext, context)
+            .environment(\.scenePhase, .active)
+            .environmentObject(DraftManager())
+            .environmentObject(headset)
+            .environmentObject(driving)
+
+        // The smallest MacBook screen is about 800 points tall under its menu bar.
+        XCTAssertLessThan(minimumHeight(of: conversation), 600,
+                          "the conversation view would force its window taller than a small laptop screen")
     }
 
     func testALongTranscriptDoesNotMakeTheInputAreaTaller() {
