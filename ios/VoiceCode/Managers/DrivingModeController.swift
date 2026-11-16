@@ -497,7 +497,7 @@ final class DrivingModeController: ObservableObject {
                 return session
             }
         }
-        return (try? CDBackendSession.fetchActiveSessions(context: context))?.first
+        return try? CDBackendSession.mostRecentActiveSession(context: context)
     }
 
     /// A name worth saying aloud. A session nobody named is called by its

@@ -250,6 +250,24 @@ final class DrivingModeControllerTests: XCTestCase {
                        "then the most recently used; an id that no longer exists is skipped")
     }
 
+    func testTheMostRecentSessionSkipsOnesTheUserDeleted() throws {
+        let older = makeSession(name: "Older", modified: Date(timeIntervalSince1970: 100))
+        let newest = makeSession(name: "Newest", modified: Date(timeIntervalSince1970: 300))
+        let middle = makeSession(name: "Middle", modified: Date(timeIntervalSince1970: 200))
+        for id in [newest, middle] {
+            let deleted = CDUserSession(context: context)
+            deleted.id = id
+            deleted.isUserDeleted = true
+            deleted.createdAt = Date()
+        }
+        try context.save()
+
+        XCTAssertEqual(try CDBackendSession.mostRecentActiveSession(context: context)?.id, older)
+        XCTAssertEqual(DrivingModeController.resolveSession(preferred: nil, active: nil, persisted: nil, in: context)?.id, older)
+        XCTAssertEqual(try CDBackendSession.fetchActiveSessions(context: context).map(\.id), [older],
+                       "the full list agrees")
+    }
+
     func testAnUnnamedSessionIsCalledByItsFolder() {
         let session = makeSession(name: UUID().uuidString.lowercased(), directory: "/Users/me/code/voice-code")
         let row = try? context.fetch(CDBackendSession.fetchBackendSession(id: session)).first

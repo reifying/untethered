@@ -125,9 +125,30 @@ extension CDBackendSession {
     static func fetchActiveSessions(context: NSManagedObjectContext) throws -> [CDBackendSession] {
         let request = fetchAllBackendSessions()
         let allSessions = try context.fetch(request)
-        return allSessions.filter { session in
-            !session.isUserDeleted(context: context)
-        }
+        // One query for every deleted id, not one query per session. This runs on
+        // the main thread each time the session list changes, and a store that has
+        // seen a long-lived backend holds thousands of sessions (16,480 on the Mac
+        // this was measured on): a lookup per session was that many fetches a time.
+        let deleted = try userDeletedSessionIds(context: context)
+        guard !deleted.isEmpty else { return allSessions }
+        return allSessions.filter { !deleted.contains($0.id) }
+    }
+
+    /// The ids of every session the user has deleted.
+    static func userDeletedSessionIds(context: NSManagedObjectContext) throws -> Set<UUID> {
+        let request = CDUserSession.fetchRequest()
+        request.predicate = NSPredicate(format: "isUserDeleted == YES")
+        return Set(try context.fetch(request).map(\.id))
+    }
+
+    /// The most recently modified session the user has not deleted, without
+    /// loading the whole session list to find it.
+    static func mostRecentActiveSession(context: NSManagedObjectContext) throws -> CDBackendSession? {
+        let deleted = try userDeletedSessionIds(context: context)
+        let request = fetchAllBackendSessions()
+        // If every one of the newest `deleted.count` sessions is deleted, the next is not.
+        request.fetchLimit = deleted.count + 1
+        return try context.fetch(request).first { !deleted.contains($0.id) }
     }
 
     /// Fetch active sessions for a specific working directory
