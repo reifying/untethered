@@ -1,6 +1,6 @@
 # Driving mode for the Mac app
 
-**Date:** 2026-11-16 · **Status:** on `main`, built, unit-tested. Not yet tried with a real headset or a real microphone (see "What was run").
+**Date:** 2026-11-16 · **Status:** on `main`, built, unit-tested, and entered and left in the real app. Not yet tried with a real headset, a real microphone or a server connection (see "What was run").
 
 Driving mode is a mode of the Mac app you turn on once and then run for hours from the headset.
 The laptop is used for one thing: a click on a large band to hear a recent reply again.
@@ -12,6 +12,11 @@ The laptop is used for one thing: a click on a large band to hear a recent reply
   drove last time, else the most recently used one.
 - **Off:** the same menu item or shortcut, or the Exit Driving Mode button at the top right of the
   driving screen. The window, its level and the settings the mode changed go back to what they were.
+- **Without touching the laptop:** the links `voicecode://driving/on` and `voicecode://driving/off`
+  do the same, so an agent or a shortcut can switch the mode. While the mode is on,
+  `voicecode://session/<id>` changes which session is driven. With more than one copy of the app on
+  the Mac, name the copy that is running, or macOS may start another:
+  `open -a <path to the app> voicecode://driving/on`.
 - **It stays on until you turn it off.** If the app is relaunched mid-drive, after a crash or a
   restart, it comes back in driving mode on the same session. Nothing relaunches the app for you:
   after a crash it takes one click on the Dock icon.
@@ -80,32 +85,36 @@ From iOS, the behaviours asked for were already in the Mac build and needed no p
 and thinking are filtered on the backend for every client, and replies are queued and read in turn
 by code the two apps share. The Kokoro voice is iPhone only and was left that way.
 
-## The microphone button going off-screen
+## Why the microphone button went off-screen
 
-**The cause was not established.** What is known:
+Found, measured in the running app, and fixed.
 
-- The conversation view lays out inside whatever window it has, and nothing in it scrolls except
-  the message list. If the window's bottom edge is below the screen, the microphone button on that
-  edge is out of reach, and there is no way to scroll to it.
-- Two things can put the bottom edge there, and neither was reproduced: a window frame saved on a
-  taller display and restored on the laptop's own screen, and the window growing to fit a taller
-  minimum when rows appear in the input area while the window is short.
-- One suspicion was tested and ruled out as the cause. The live transcript under the microphone
-  button had no line limit, and on the Mac it stays after sending. Measured, a two-minute dictation
-  made the input area ask for 1,052 points instead of 196. But its minimum height did not change,
-  so it squeezes the message list and does not move the window. It is now limited to three lines,
-  and so is the error line, because taking half the window for a sent dictation is its own defect.
+On the Mac a window cannot be shorter than its content's minimum height, and SwiftUI works that
+minimum out at the content's minimum *width*. The caption under the ghost-task switch had a
+vertically fixed size. At that width it wraps to about a word per line and reports the whole
+height of that: 495 points for the switch alone.
 
-What was done about it, since the cause is open:
+- With a resumed Claude session open (the only time the ghost switch shows), the window's minimum
+  height came out at 964 to 1,018 points. This laptop's screen has 949 below the menu bar.
+- The window was therefore forced to 1,018 points tall. Its top cannot go above the menu bar, so
+  its bottom edge went 69 points below the bottom of the screen, with the microphone button on it.
+  Nothing there scrolls, so there was no way to reach it.
+- That is why it was "sometimes": a new session, or one that is not Claude, has no ghost switch.
 
-- The driving screen cannot lay a control outside its window. Its bands are computed from the
-  window's size and nothing is sized by its content. A test checks this with three replies of
-  100,000 characters each and a long dictation in progress.
-- The driving window is put on the visible screen on entry and put back whenever any part of it
-  is found outside, whatever moved it. A test starts from a window taller than the screen with
-  its bottom edge 600 points below it.
-- The ordinary conversation window is not policed this way. If the button goes off-screen there,
-  entering driving mode (⌘⇧D) brings the window back.
+The caption is now limited to two lines, and the two warning banners, which had the same fixed
+size, to four. After the fix the same window, same session, stays at 949. Tests hold the
+conversation view's minimum height under 600 points with the switch, both banners, an error and a
+long dictation all showing.
+
+Two smaller things in the same area:
+
+- The live transcript under the microphone button had no line limit and on the Mac stays after
+  sending. A two-minute dictation made the input area ask for 1,052 points instead of 196, at the
+  message list's expense. It and the error line are limited to three lines.
+- The driving screen cannot do any of this. Its bands are computed from the window's size and
+  nothing is sized by its content. Its minimum is 320 by 240 whatever it shows. A test checks that
+  with three replies of 100,000 characters each. The driving window is also put back on the screen
+  whenever any part of it is found outside.
 
 ## What was found about crashes and long sessions
 
@@ -143,6 +152,15 @@ the crash you have seen is not identified. What was found and fixed:
    deliberately off, so nothing held off idle sleep or App Nap during a drive. This is the most
    likely reason the app faded during long sessions. It is inferred from the code, not observed.
 3. *Replies dropped while the microphone was open* and never read. Handled in driving mode as above.
+4. *One database query per session, on the main thread, every time the session list changed.* The
+   list of sessions was filtered for deleted ones with a lookup each. The Mac app's store on this
+   laptop holds 16,480 sessions, so that was 16,480 queries a time. It is now one. This slows the
+   app as the list grows rather than as the hours pass, and may be much of what felt unstable.
+5. *The app could go on believing it was speaking.* A reply cut off the moment it started (by a
+   recording, a skip or a stop) could be reported as started after it had been stopped. Nothing
+   cleared that, so the headset stayed in SPEAKING and the next press stopped nothing instead of
+   starting a recording. Seen as a test that waited six seconds for a silence that never came.
+   Fixed in the speech code both apps share.
 
 **The tests were changing the real app.** The Mac unit tests run inside the app, in its own
 sandbox. They cleared the headset and BlueParrott switches and the paired headset, could leave
@@ -152,22 +170,43 @@ its settings when launched for a test run and puts them back at the next normal 
 
 ## What was run
 
-- **Mac unit tests: 1,953 pass, none fail, and the test host no longer crashes.** On `main` before
+- **Mac unit tests: 1,961 pass, none fail, and the test host does not crash.** On `main` before
   this work the same suite passed 1,836, failed 9 and crashed its host 8 times in one run.
-- **iOS:** builds, and 1,860 unit tests pass on the simulator. Ten fail, the same ten that failed
-  before: nine in `BlueParrottButtonManagerTests` and
+- **iOS:** builds, and 1,862 unit tests pass on the simulator. Ten fail, the same ten that fail on
+  `main` without this work: nine in `BlueParrottButtonManagerTests` and
   `HeadsetIOSAudioSessionTests.testTTSEnd_reassertsAudioSession`. Two that used to crash the iOS
   test host now pass.
-- The driving screen was laid out in real windows by the tests at several sizes, starting from a
-  window taller than the screen and partly below it. The tests also checked that the window is
-  put back after being pushed off-screen, and that a click target acts on the first click.
+- **The real app, launched on this Mac with the screen locked.** Normal launch and clean quit.
+  Driving mode entered and left by link, several times. Seen from outside the app: one window, on
+  the screen, floating; both power assertions held while the mode was on and gone after; the
+  window back at its earlier frame afterwards; no crash. Seen in the app's log: the session
+  chosen, the announcement made, the BlueParrott and media-key sources switched on at entry and
+  off at exit.
+- The driving screen was also laid out in real windows by the tests, starting from a window
+  taller than the screen and partly below it.
 
-Not run, because this Mac was locked with nobody at it, and launching the app could have taken the
-headset's button away from the phone:
+Not run:
 
-- The app itself, on screen. Nobody has looked at the driving screen.
-- Any real headset button, real microphone or real speech in driving mode.
+- **Nobody has looked at the driving screen.** The Mac was locked; its layout is known from tests
+  and window measurements, not from eyes.
+- Any real headset button, real microphone or audible speech. The Mac's sound was muted.
+- A connection to the server. The Mac app on this laptop has no server address set (see below).
 - A drive.
+
+**Things that happened on this Mac during the work:**
+
+- The Mac app's settings on this laptop are blank: no server address or port, headset switches
+  off, no remembered BlueParrott, and the upload folder holds a leftover test value. The first
+  test run of this work, before the fix for it existed, cleared them, or an earlier test run had.
+  It cannot be told which. The backend is running on this laptop on port 8080, so the address is
+  `localhost` and the port `8080`.
+- Running the real app turned on the Mac's Bluetooth search for the BlueParrott six times, for
+  between five seconds and about a minute each. A headset that was connected to the phone at the
+  time would not have been found.
+- There are 18 crash reports for the Mac app dated today in `~/Library/Logs/DiagnosticReports`.
+  Seventeen are the test host, from before the fixes above. One is from starting the app's program
+  file directly from a shell, which macOS kills over a Bluetooth permission that a normal launch
+  has. None is from the app in use.
 
 ## First real try
 
@@ -183,10 +222,10 @@ Needs you, the headset and five minutes parked.
    on to the next rather than stop.
 7. Leave it alone for fifteen minutes. The screen should stay on and the next reply still be read.
 
-The test runs done during this work reset this Mac's headset switches, and the BlueParrott it
-remembered, before the fix for that was in place. Driving mode turns a button source on by itself.
-Outside it, turn yours back on in Settings ▸ Headset. The first BlueParrott connection may take up
-to a minute, because the headset has to be found again.
+Before step 1, set the server in Settings ▸ Connection (`localhost`, `8080` for the backend on this
+laptop). Driving mode turns a headset button source on by itself; outside it, turn yours back on in
+Settings ▸ Headset. The first BlueParrott connection may take up to a minute, because the headset
+has to be found again.
 
 ## Left alone
 
@@ -208,3 +247,7 @@ to a minute, because the headset has to be found again.
 - `ios/VoiceCode/Utils/RecentReplies.swift`: the replies a replay chooses from.
 - `ios/VoiceCode/Managers/HeadsetSessionReducer.swift`: the button table, with repeat and skip.
 - `ios/VoiceCode/Utils/TestRunDefaultsGuard.swift`, `LogManager.swift`: test isolation and the log file.
+
+To watch a debug build from a shell, launch it with `UNTETHERED_LOG_STDERR` set and a file for
+standard error (`open --env UNTETHERED_LOG_STDERR=1 --stderr <file> <app>`). The log file itself is
+inside the app's sandbox, which another process cannot read without a privacy prompt.

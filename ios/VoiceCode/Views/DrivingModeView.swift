@@ -399,6 +399,9 @@ final class DrivingPinnerNSView: NSView {
         guard window.frame != target else { return }
         log("window \(reason): frame \(Self.describe(window.frame)) → \(Self.describe(target))")
         window.setFrame(target, display: true)
+        if window.frame != target {
+            log("window is at \(Self.describe(window.frame)) after asking for \(Self.describe(target)); min \(window.minSize) max \(window.maxSize)")
+        }
     }
 
     func repinIfNeeded(reason: String) {
@@ -420,7 +423,10 @@ final class DrivingPinnerNSView: NSView {
                 // Back to where the window was, unless that was itself off-screen.
                 let visible = (window.screen ?? NSScreen.main)?.visibleFrame ?? .zero
                 if !DrivingModeLayout.needsRepin(frame: savedFrame, visibleFrame: visible) {
+                    log("window leaving driving mode: frame \(Self.describe(window.frame)) → \(Self.describe(savedFrame))")
                     window.setFrame(savedFrame, display: true)
+                } else {
+                    log("window leaving driving mode: its earlier frame \(Self.describe(savedFrame)) was off-screen, leaving it at \(Self.describe(window.frame))")
                 }
             }
         }

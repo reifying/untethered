@@ -32,8 +32,21 @@ class LogManager {
                 self.logLines.removeFirst(self.logLines.count - self.maxLogLines)
             }
             self.appendToFile(logLine)
+            #if DEBUG
+            if Self.echoToStandardError {
+                FileHandle.standardError.write(Data((logLine + "\n").utf8))
+            }
+            #endif
         }
     }
+
+    #if DEBUG
+    /// Debug builds launched with UNTETHERED_LOG_STDERR set also write every log
+    /// line to standard error. The log file is inside the app's sandbox container,
+    /// which another process cannot read without a privacy prompt, so this is how
+    /// a developer or an agent running the app from a shell watches what it does.
+    static let echoToStandardError = ProcessInfo.processInfo.environment["UNTETHERED_LOG_STDERR"] != nil
+    #endif
 
     // MARK: - Persisting to disk
     //

@@ -93,6 +93,9 @@ struct VoiceCodeApp: App {
             .environmentObject(headsetManager)
             #if os(macOS)
             .environmentObject(drivingMode)
+            // A voicecode:// link goes to the window that is already open. Without
+            // this, WindowGroup opens another window for every link.
+            .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
             #endif
         }
         #if os(macOS)
@@ -334,6 +337,10 @@ struct RootView: View {
                     resourcesManager.processPendingUploads()
                 }
             }
+            // Here, not on the split view, so links work in driving mode too.
+            .onOpenURL { url in
+                handleDeepLink(url)
+            }
             #endif
     }
 
@@ -415,9 +422,6 @@ struct RootView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .selectNextSession)) { _ in
             selectAdjacentSession(direction: 1)
-        }
-        .onOpenURL { url in
-            handleDeepLink(url)
         }
         .task {
             loadSessionsForNavigation()
@@ -521,27 +525,43 @@ struct RootView: View {
         guard let deepLink = DeepLinkURL.parse(url) else { return }
 
         switch deepLink {
+        case .driving(let on):
+            LogManager.shared.log("Deep link: driving mode \(on ? "on" : "off")", category: "RootView")
+            if on {
+                drivingMode.enter(preferred: selectedSessionId)
+            } else {
+                drivingMode.exit()
+            }
         case .session(let sessionId):
-            LogManager.shared.log("Deep link: navigating to session \(sessionId)", category: "RootView")
+            LogManager.shared.log("Deep link: navigating to session \(sessionId.uuidString.lowercased())", category: "RootView")
             do {
                 // First try direct UUID match (CDBackendSession.id)
                 let request = CDBackendSession.fetchBackendSession(id: sessionId)
                 if let session = try viewContext.fetch(request).first {
-                    selectedSessionId = session.id
-                    NSApp.activate(ignoringOtherApps: true)
+                    openSessionFromDeepLink(session.id)
                     return
                 }
                 // Fall back to matching by backendName (Claude session ID as string)
                 let nameRequest = CDBackendSession.fetchBackendSession(backendName: sessionId.uuidString.lowercased())
                 if let match = try viewContext.fetch(nameRequest).first {
-                    selectedSessionId = match.id
-                    NSApp.activate(ignoringOtherApps: true)
+                    openSessionFromDeepLink(match.id)
                     return
                 }
                 LogManager.shared.log("Deep link: session \(sessionId) not found in CoreData", category: "RootView")
             } catch {
                 LogManager.shared.log("Deep link: CoreData fetch failed for session \(sessionId): \(error.localizedDescription)", category: "RootView")
             }
+        }
+    }
+
+    /// Show a session a link named. In driving mode the link changes which session
+    /// is being driven, and the driving screen stays up.
+    private func openSessionFromDeepLink(_ sessionId: UUID) {
+        selectedSessionId = sessionId
+        if drivingMode.isActive {
+            drivingMode.enter(preferred: sessionId)
+        } else {
+            NSApp.activate(ignoringOtherApps: true)
         }
     }
 
@@ -573,9 +593,12 @@ struct RootView: View {
 // MARK: - Deep Link URL Parsing
 
 /// Parses voicecode:// deep link URLs into navigation actions.
-/// Supports: voicecode://session/{uuid}
-enum DeepLinkURL {
+/// Supports: voicecode://session/{uuid}, voicecode://driving/on, voicecode://driving/off
+enum DeepLinkURL: Equatable {
     case session(UUID)
+    /// Turn the Mac app's driving mode on or off, so it can be done without touching
+    /// the laptop (by an agent, a shortcut or a script).
+    case driving(Bool)
 
     /// Parse a voicecode:// URL into a DeepLinkURL action.
     /// Returns nil if the URL is not a valid voicecode deep link.
@@ -583,6 +606,15 @@ enum DeepLinkURL {
         guard url.scheme == "voicecode" else {
             LogManager.shared.log("Deep link ignored: unexpected scheme '\(url.scheme ?? "nil")' in URL: \(url)", category: "RootView")
             return nil
+        }
+        if url.host == "driving" {
+            switch url.lastPathComponent.lowercased() {
+            case "on": return .driving(true)
+            case "off": return .driving(false)
+            default:
+                LogManager.shared.log("Deep link ignored: expected driving/on or driving/off in URL: \(url)", category: "RootView")
+                return nil
+            }
         }
         guard url.host == "session" else {
             LogManager.shared.log("Deep link ignored: unknown host '\(url.host ?? "nil")' in URL: \(url)", category: "RootView")

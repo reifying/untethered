@@ -277,6 +277,19 @@ final class MacOSDesktopTests: XCTestCase {
 
     // MARK: - Deep Link URL Parsing Tests
 
+    func testDeepLinkParseDrivingOnAndOff() {
+        XCTAssertEqual(DeepLinkURL.parse(URL(string: "voicecode://driving/on")!), .driving(true))
+        XCTAssertEqual(DeepLinkURL.parse(URL(string: "voicecode://driving/off")!), .driving(false))
+        XCTAssertEqual(DeepLinkURL.parse(URL(string: "voicecode://driving/ON")!), .driving(true))
+    }
+
+    func testDeepLinkParseDrivingWithoutAStateIsIgnored() {
+        XCTAssertNil(DeepLinkURL.parse(URL(string: "voicecode://driving")!))
+        XCTAssertNil(DeepLinkURL.parse(URL(string: "voicecode://driving/")!))
+        XCTAssertNil(DeepLinkURL.parse(URL(string: "voicecode://driving/sideways")!))
+        XCTAssertNil(DeepLinkURL.parse(URL(string: "https://driving/on")!))
+    }
+
     func testDeepLinkParseValidSessionURL() {
         let uuid = UUID()
         let url = URL(string: "voicecode://session/\(uuid.uuidString.lowercased())")!
@@ -285,8 +298,8 @@ final class MacOSDesktopTests: XCTestCase {
         switch result {
         case .session(let parsedId):
             XCTAssertEqual(parsedId, uuid)
-        case nil:
-            XCTFail("Expected .session, got nil")
+        default:
+            XCTFail("Expected .session, got \(String(describing: result))")
         }
     }
 
@@ -298,8 +311,8 @@ final class MacOSDesktopTests: XCTestCase {
         switch result {
         case .session(let parsedId):
             XCTAssertEqual(parsedId, uuid)
-        case nil:
-            XCTFail("Expected .session, got nil")
+        default:
+            XCTFail("Expected .session, got \(String(describing: result))")
         }
     }
 
