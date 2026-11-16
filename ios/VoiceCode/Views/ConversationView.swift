@@ -407,11 +407,15 @@ struct ConversationView: View {
                     )
                 }
                 
-                // Error display
+                // Error display. Bounded, like the transcript in
+                // ConversationVoiceInputView: an error of any length takes three
+                // lines of the input area, not as many as it has.
                 if let error = client.currentError {
                     Text(error)
                         .font(.caption)
                         .foregroundColor(.red)
+                        .lineLimit(3)
+                        .truncationMode(.tail)
                         .padding(.horizontal)
                         .padding(.vertical, 8)
                         .background(Color.red.opacity(0.1))
@@ -1850,9 +1854,16 @@ struct ConversationVoiceInputView: View {
             }
 
             if !voiceInput.transcribedText.isEmpty {
+                // Three lines, newest words kept. Unbounded, this text asks for as
+                // much height as the whole dictation needs (about a thousand points
+                // for two minutes of speech), which it takes from the message list
+                // above. On the Mac it also stays after sending: nothing clears it
+                // until the next recording.
                 Text(voiceInput.transcribedText)
                     .font(.body)
                     .foregroundColor(.secondary)
+                    .lineLimit(3)
+                    .truncationMode(.head)
                     .padding()
             }
         }
