@@ -167,6 +167,8 @@ final class ShareExtensionAuthTests: XCTestCase {
         // These are hardcoded in both files, so this test documents the requirement
         let expectedService = "dev.910labs.voice-code"
         let expectedAccount = "api-key"
+        XCTAssertEqual(KeychainManager.productionService, expectedService,
+                       "outside a test run the app must use the service the Share Extension reads")
 
         // If KeychainManager changes these, this test will catch it
         // (We can't directly access private properties, but we verify behavior)

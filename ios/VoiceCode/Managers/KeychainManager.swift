@@ -29,7 +29,25 @@ enum KeychainError: Error, Equatable {
 class KeychainManager {
     static let shared = KeychainManager()
 
-    private let service = "dev.910labs.voice-code"
+    /// The service the app's real key is stored under. The Share Extension reads
+    /// the same item.
+    static let productionService = "dev.910labs.voice-code"
+    /// The service used while this process is hosting unit tests.
+    static let unitTestService = "dev.910labs.voice-code.unit-tests"
+
+    /// The service for a process: the real one, except in the unit-test host.
+    ///
+    /// The Mac unit tests run inside the app, with the app's own keychain access.
+    /// Many of them save a made-up key and delete "the API key", and with one
+    /// service name that was the real key: after a test run on the Mac the app is
+    /// used on, the app could no longer authenticate ("No API key available")
+    /// until the key was entered again. Tests now work on an item of their own.
+    static func serviceName(hostingUnitTests: Bool) -> String {
+        hostingUnitTests ? unitTestService : productionService
+    }
+
+    let service = KeychainManager.serviceName(
+        hostingUnitTests: TestingEnvironment.isHostingUnitTests || TestingEnvironment.isUnitTesting)
     private let account = "api-key"
 
     /// Access group for sharing keychain items with app extensions.

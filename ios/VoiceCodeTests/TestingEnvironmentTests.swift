@@ -28,6 +28,16 @@ final class TestingEnvironmentTests: XCTestCase {
         XCTAssertTrue(TestingEnvironment.isTestRun)
     }
 
+    /// Tests save made-up keys and delete "the API key" freely. On the Mac that was
+    /// the app's real key, and a test run left the app unable to authenticate.
+    func testTheUnitTestHostUsesAKeychainItemOfItsOwn() {
+        XCTAssertEqual(KeychainManager.serviceName(hostingUnitTests: false), "dev.910labs.voice-code")
+        XCTAssertEqual(KeychainManager.serviceName(hostingUnitTests: true), KeychainManager.unitTestService)
+        XCTAssertNotEqual(KeychainManager.unitTestService, KeychainManager.productionService)
+        XCTAssertEqual(KeychainManager.shared.service, KeychainManager.unitTestService,
+                       "this test run would be saving and deleting the app's real API key")
+    }
+
     func testTheSharedStoreIsInMemoryInATestRun() {
         let stores = PersistenceController.shared.container.persistentStoreCoordinator.persistentStores
         XCTAssertFalse(stores.isEmpty)
