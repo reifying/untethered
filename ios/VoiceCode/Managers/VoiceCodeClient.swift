@@ -2379,14 +2379,24 @@ class VoiceCodeClient: ObservableObject {
         return await withCheckedContinuation { continuation in
             // Store continuation to be resumed when command_started (or command_error) arrives.
             // disconnect() also drains this dictionary so the Task never hangs.
-            commandExecutionContinuations[commandId] = continuation
+            //
+            // On the main queue, where every other access to the dictionary happens
+            // (the message handler and disconnect()). This function is async and not
+            // tied to an actor, so its body runs on whatever thread the caller's task
+            // is on: a command started from a view's Task wrote the dictionary from a
+            // background thread while the main thread was reading it. Two commands at
+            // once crashed in Dictionary's setter (a segmentation fault, seen in
+            // CommandExecutionIntegrationTests.testExecuteMultipleCommandsConcurrently).
+            DispatchQueue.main.async { [self] in
+                commandExecutionContinuations[commandId] = continuation
 
-            let message: [String: Any] = [
-                "type": "execute_command",
-                "command_id": commandId,
-                "working_directory": workingDirectory
-            ]
-            sendMessage(message)
+                let message: [String: Any] = [
+                    "type": "execute_command",
+                    "command_id": commandId,
+                    "working_directory": workingDirectory
+                ]
+                sendMessage(message)
+            }
         }
     }
 
