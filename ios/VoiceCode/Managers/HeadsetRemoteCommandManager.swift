@@ -239,6 +239,7 @@ class HeadsetRemoteCommandManager: ObservableObject {
 
         #if os(iOS)
         voiceOutput.$isSpeaking
+            .removeDuplicates()
             .receive(on: DispatchQueue.main)
             .sink { [weak self] isSpeaking in
                 guard let self = self, self.stateMachineEngaged else { return }
@@ -253,6 +254,12 @@ class HeadsetRemoteCommandManager: ObservableObject {
                     // TTS ended but state wasn't .speaking — e.g. session-history replay TTS
                     // or other out-of-band speech. Re-assert only if TTS actually changed our
                     // category (avoids 187 redundant rebuilds when session history is replayed).
+                    //
+                    // Safe to act on because VoiceOutputManager suppresses the entire
+                    // end-of-utterance callback for a PREEMPTED utterance (its generation
+                    // check), so a false here means the newest utterance really ended.
+                    // Without that, this line re-asserts .playAndRecord under a live
+                    // .ambient utterance and speaks it aloud on vibrate.
                     let s = AVAudioSession.sharedInstance()
                     if s.category != .playAndRecord || !s.categoryOptions.contains(.allowBluetoothA2DP) {
                         hLog("Headset: isSpeaking→false — session changed (was \(s.category.rawValue)/opts=\(s.categoryOptions.rawValue)), re-asserting")

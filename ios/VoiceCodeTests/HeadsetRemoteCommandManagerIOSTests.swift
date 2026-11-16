@@ -165,6 +165,107 @@ final class HeadsetIOSAudioSessionTests: XCTestCase {
         XCTAssertTrue(session.categoryOptions.contains(.allowBluetoothA2DP))
     }
 
+    // MARK: - Stale-stop race (vibrate-speech bug, 2026-09-22)
+
+    /// Spins the main queue until `condition` holds, instead of sleeping a fixed amount.
+    /// The synthesizer's start/cancel latency is unbounded on a cold simulator — the run
+    /// log shows multi-second voice-asset loads — so any fixed wait is a coin flip in one
+    /// direction or the other.
+    /// Spins the run loop directly rather than round-tripping through an expectation per
+    /// tick: the audio stack stalls the main queue for seconds at a time on a cold
+    /// simulator, which blows a per-tick expectation timeout even though the condition is
+    /// about to become true.
+    @discardableResult
+    private func waitUntil(_ description: String,
+                           timeout: TimeInterval = 15.0,
+                           _ condition: () -> Bool) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if condition() { return true }
+            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.02))
+        }
+        if condition() { return true }
+        XCTFail("Timed out waiting for: \(description)")
+        return false
+    }
+
+    /// Leaves the shared AVAudioSession and the shared synthesizer clean. Without this a
+    /// still-speaking utterance runs on into whichever test sorts next and mutates the
+    /// session from its delegate callbacks. Note `MockVoiceOutputForHeadset` overrides
+    /// `stop()` WITHOUT calling super, so these tests must use `stop(completion:)`.
+    private func quiesce(_ voiceOutput: VoiceOutputManager) {
+        voiceOutput.stop(completion: nil)
+        waitUntil("synthesizer idle") { !voiceOutput.hasUtteranceInFlight }
+    }
+
+    /// Two replies land back-to-back. The second preempts the first, and the first's
+    /// didCancel reaches main AFTER the second is already speaking under `.ambient`.
+    /// Acting on that stale stop re-asserts `.playAndRecord` underneath a live utterance —
+    /// the reply is spoken out loud on vibrate, which is the exact bug the silent-switch
+    /// fix exists to prevent.
+    func testPreemptedUtteranceDoesNotReassertSessionUnderLiveSpeech() {
+        let (manager, mocks) = makeManager()
+        mocks.settings.respectSilentMode = true
+        mocks.settings.headsetModeEnabled = true
+        mocks.voiceOutput.outputIsPrivateListening = { false }
+        drainMainQueue()
+        manager.activate()
+
+        let session = AVAudioSession.sharedInstance()
+        XCTAssertEqual(session.category, .playAndRecord, "precondition: headset owns the session")
+
+        mocks.voiceOutput.speak("The first reply, long enough to still be speaking when the next one lands",
+                                respectSilentMode: true)
+        waitUntil("first utterance starts") { mocks.voiceOutput.isSynthesizerSpeakingForTests }
+
+        let droppedBefore = mocks.voiceOutput.staleUtteranceEndsDropped
+
+        // Second reply preempts the first (SessionSyncManager speaks once per message).
+        mocks.voiceOutput.speak("The second reply, which must stay quiet", respectSilentMode: true)
+        XCTAssertEqual(session.category, .ambient, "the new utterance chose quiet")
+
+        // Wait for the preempted utterance's end callback to actually arrive and be
+        // dropped. Without this the test would pass on a simulator where the first
+        // utterance never started and no cancel was ever delivered — i.e. for the wrong
+        // reason, having exercised nothing.
+        waitUntil("preempted utterance's end callback is dropped") {
+            mocks.voiceOutput.staleUtteranceEndsDropped > droppedBefore
+        }
+
+        XCTAssertEqual(session.category, .ambient,
+                       "A preempted utterance's didCancel must not re-assert .playAndRecord under live speech")
+        XCTAssertTrue(mocks.voiceOutput.hasUtteranceInFlight,
+                      "The replacement utterance should still be considered in flight")
+
+        quiesce(mocks.voiceOutput)
+    }
+
+    /// The other half: once speech genuinely ends, the re-assert must still happen, or the
+    /// headset loses `.playAndRecord` and with it the mic and the Now Playing slot. Lets a
+    /// short utterance run to didFinish rather than cancelling it, so this exercises the
+    /// path the generation check has to let THROUGH.
+    func testGenuineSpeechEndStillReassertsSession() {
+        let (manager, mocks) = makeManager()
+        mocks.settings.respectSilentMode = true
+        mocks.settings.headsetModeEnabled = true
+        mocks.voiceOutput.outputIsPrivateListening = { false }
+        drainMainQueue()
+        manager.activate()
+
+        let session = AVAudioSession.sharedInstance()
+        mocks.voiceOutput.speak("Hi", respectSilentMode: true)
+        XCTAssertEqual(session.category, .ambient, "the utterance chose quiet")
+
+        waitUntil("utterance runs to completion") { !mocks.voiceOutput.hasUtteranceInFlight }
+        drainMainQueue()
+
+        XCTAssertEqual(session.category, .playAndRecord,
+                       "A real speech end must restore the headset session")
+        XCTAssertTrue(session.categoryOptions.contains(.allowBluetoothA2DP))
+        XCTAssertEqual(mocks.voiceOutput.staleUtteranceEndsDropped, 0,
+                       "Nothing was preempted, so nothing should have been dropped")
+    }
+
     func testTTSEnd_reassertsAudioSession() {
         let (manager, mocks) = makeManager()
         // Drain the initial headsetModeEnabled=false Combine delivery so it fires as a

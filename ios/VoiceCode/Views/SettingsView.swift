@@ -101,9 +101,9 @@ struct SettingsView: View {
 
             #if os(iOS)
             Section(header: Text("Audio Playback")) {
-                Toggle("Silence speech when phone is on vibrate", isOn: $settings.respectSilentMode)
+                Toggle("Keep quiet when phone is on vibrate", isOn: $settings.respectSilentMode)
 
-                Text("When enabled, speech will not play when your phone's ringer switch is on silent/vibrate")
+                Text("When enabled, responses aren't spoken out of the phone's own speaker while the ringer switch is on silent/vibrate. Headphones, a Bluetooth headset or car audio still speak — the switch silences the room, not your ear. Tapping Read Aloud yourself always speaks. iOS can't tell a headset from a Bluetooth speaker, so a paired speaker counts as \"your ear\" too.")
                     .font(.caption)
                     .foregroundColor(.secondary)
 

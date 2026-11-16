@@ -41,6 +41,7 @@ final class VoiceOutputManagerTests: XCTestCase {
     func testAudioSessionConfigurationWithRespectSilentModeEnabled() {
         // Set respectSilentMode to true (default)
         settings.respectSilentMode = true
+        manager.outputIsPrivateListening = { false }
 
         // Trigger AUTOMATIC speech with respectSilentMode flag (simulates automatic reading)
         manager.speakWithVoice("Test", rate: 0.5, voiceIdentifier: nil, respectSilentMode: true)
@@ -56,6 +57,7 @@ final class VoiceOutputManagerTests: XCTestCase {
     func testAudioSessionConfigurationWithRespectSilentModeDisabled() {
         // Set respectSilentMode to false
         settings.respectSilentMode = false
+        manager.outputIsPrivateListening = { false }
 
         // Trigger AUTOMATIC speech with respectSilentMode flag
         manager.speakWithVoice("Test", rate: 0.5, voiceIdentifier: nil, respectSilentMode: true)
@@ -70,6 +72,7 @@ final class VoiceOutputManagerTests: XCTestCase {
 
     func testAudioSessionConfigurationSwitching() {
         // Start with respectSilentMode enabled
+        manager.outputIsPrivateListening = { false }
         settings.respectSilentMode = true
         manager.speakWithVoice("Test 1", rate: 0.5, voiceIdentifier: nil, respectSilentMode: true)
         XCTAssertEqual(AVAudioSession.sharedInstance().category, .ambient)
@@ -105,6 +108,7 @@ final class VoiceOutputManagerTests: XCTestCase {
 
     func testAutomaticSpeechRespectsSilentMode() {
         // Automatic speech (respectSilentMode=true) should respect the setting
+        manager.outputIsPrivateListening = { false }
         settings.respectSilentMode = true
 
         // Call speak() with respectSilentMode=true flag (automatic action)
@@ -114,6 +118,172 @@ final class VoiceOutputManagerTests: XCTestCase {
         XCTAssertEqual(audioSession.category, .ambient, "Automatic speech should respect silent mode when enabled")
 
         manager.stop()
+    }
+
+    // MARK: - Headset Mode vs Silent Switch (vibrate-speech bug, 2026-09-22)
+
+    /// Regression: headset mode used to skip the silent-mode branch outright, so the
+    /// session stayed in whatever category it was already in — .playAndRecord under
+    /// headset control, which ignores the ringer switch. The simulator's output route
+    /// is the built-in speaker, i.e. not private listening, so an automatic response
+    /// must still land on .ambient.
+    func testHeadsetModeDoesNotBypassSilentModeOnBuiltInOutput() throws {
+        settings.respectSilentMode = true
+        settings.headsetModeEnabled = true
+
+        // Put the session somewhere the ringer switch is ignored first, so passing
+        // the assertion requires the speak call to actually move it.
+        try DeviceAudioSessionManager().configureAudioSessionForForcedPlayback()
+        XCTAssertEqual(AVAudioSession.sharedInstance().category, .playback)
+
+        manager.speak("Test message", respectSilentMode: true)
+
+        XCTAssertEqual(AVAudioSession.sharedInstance().category, .ambient,
+                       "Headset mode must not bypass the silent switch when audio would come out of the phone itself")
+
+        manager.stop()
+    }
+
+    /// The opt-out still works with headset mode on: nothing is allowed to switch the
+    /// category out from under HeadsetRemoteCommandManager once we've decided to speak.
+    /// Starts from .playAndRecord — the state headset mode actually holds — so that
+    /// "untouched" is distinguishable from "moved to .ambient" and from "did nothing".
+    func testHeadsetSessionIsKeptWhenSilentModeRespectIsOff() throws {
+        settings.respectSilentMode = false
+        settings.headsetModeEnabled = true
+
+        let session = AVAudioSession.sharedInstance()
+        try session.setCategory(.playAndRecord, mode: .default, options: [.allowBluetoothA2DP])
+        try session.setActive(true)
+
+        manager.speak("Test message", respectSilentMode: true)
+
+        XCTAssertEqual(session.category, .playAndRecord,
+                       "Headset mode should leave the session untouched, not force .playback")
+
+        manager.stop()
+    }
+
+    /// Headset control on, but the session is NOT .playAndRecord — the launch window, or
+    /// right after an .ambient utterance. Leaving it alone would leave us mute in a
+    /// silenced category, so the headset session is rebuilt. Regression for the caption
+    /// promising "Tapping Read Aloud yourself always speaks."
+    func testReadAloudUnderHeadsetModeSpeaksWhenSessionHasDrifted() throws {
+        settings.respectSilentMode = true
+        settings.headsetModeEnabled = true
+
+        try DeviceAudioSessionManager().configureAudioSessionForSilentMode()
+        XCTAssertEqual(AVAudioSession.sharedInstance().category, .ambient)
+
+        // Manual Read Aloud: respectSilentMode defaults to false.
+        manager.speak("Test message")
+
+        XCTAssertEqual(AVAudioSession.sharedInstance().category, .playAndRecord,
+                       "Read Aloud must not be left mute in a category the switch silences")
+
+        manager.stop()
+    }
+
+    /// Headset mode with a headset in the route, but the category has drifted. Falling
+    /// through to .playback here would drop the Bluetooth output options and re-trigger
+    /// the Now Playing re-evaluation that e4dbb860 exists to avoid.
+    func testHeadsetModeOnPrivateRouteRebuildsHeadsetSessionRatherThanPlayback() throws {
+        settings.respectSilentMode = true
+        settings.headsetModeEnabled = true
+        manager.outputIsPrivateListening = { true }
+
+        try DeviceAudioSessionManager().configureAudioSessionForSilentMode()
+
+        manager.speak("Test message", respectSilentMode: true)
+
+        let session = AVAudioSession.sharedInstance()
+        XCTAssertEqual(session.category, .playAndRecord)
+        XCTAssertTrue(session.categoryOptions.contains(.allowBluetoothA2DP))
+
+        manager.stop()
+    }
+
+    // MARK: - Output route drives the decision
+
+    /// Headphones in, ringer on vibrate: the response plays in-ear. This is the case the
+    /// whole route rule exists for, and it is unreachable on a simulator without the seam.
+    func testPrivateListeningRouteOverrulesSilentSwitch() {
+        settings.respectSilentMode = true
+        settings.headsetModeEnabled = false
+        manager.outputIsPrivateListening = { true }
+
+        manager.speak("Test message", respectSilentMode: true)
+
+        XCTAssertEqual(AVAudioSession.sharedInstance().category, .playback,
+                       "A deliberately-connected headset should speak regardless of the switch")
+
+        manager.stop()
+    }
+
+    func testBuiltInRouteHonorsSilentSwitch() {
+        settings.respectSilentMode = true
+        settings.headsetModeEnabled = false
+        manager.outputIsPrivateListening = { false }
+
+        manager.speak("Test message", respectSilentMode: true)
+
+        XCTAssertEqual(AVAudioSession.sharedInstance().category, .ambient)
+
+        manager.stop()
+    }
+
+    /// Headset mode with the headset actually in the route: the category is never
+    /// changed, which is what keeps AVRCP stem presses alive (the property e4dbb860
+    /// added), and the headset manager's options survive.
+    func testHeadsetSessionWithHeadsetRouteKeepsCategoryAndOptions() throws {
+        settings.respectSilentMode = true
+        settings.headsetModeEnabled = true
+        manager.outputIsPrivateListening = { true }
+
+        let session = AVAudioSession.sharedInstance()
+        try session.setCategory(.playAndRecord, mode: .default,
+                                options: [.allowBluetoothA2DP, .allowBluetoothHFP])
+        try session.setActive(true)
+
+        manager.speak("Test message", respectSilentMode: true)
+
+        XCTAssertEqual(session.category, .playAndRecord)
+        XCTAssertTrue(session.categoryOptions.contains(.allowBluetoothA2DP),
+                      "Options must survive too — the keep-alive player depends on A2DP")
+        XCTAssertTrue(session.categoryOptions.contains(.allowBluetoothHFP),
+                      "HFP must survive — without it the BlueParrott mic captures nothing")
+
+        manager.stop()
+    }
+
+    /// With the seam left nil — the production path — the live route is read and the
+    /// simulator's built-in output classifies as "the room".
+    func testLiveRouteReaderIsUsedWhenSeamIsNil() throws {
+        settings.respectSilentMode = true
+        settings.headsetModeEnabled = false
+        XCTAssertNil(manager.outputIsPrivateListening, "precondition: production path")
+
+        try DeviceAudioSessionManager().configureAudioSessionForForcedPlayback()
+        manager.speak("Test message", respectSilentMode: true)
+
+        XCTAssertEqual(AVAudioSession.sharedInstance().category, .ambient,
+                       "The simulator's built-in output is not private listening")
+        manager.stop()
+    }
+
+    /// No AppSettings retained: the `?? true` defaults must land on the quiet side.
+    func testMissingAppSettingsDefaultsToHonoringSilentSwitch() throws {
+        let orphan = VoiceOutputManager(appSettings: nil)
+        orphan.outputIsPrivateListening = { false }
+
+        try DeviceAudioSessionManager().configureAudioSessionForForcedPlayback()
+
+        orphan.speak("Test message", respectSilentMode: true)
+
+        XCTAssertEqual(AVAudioSession.sharedInstance().category, .ambient,
+                       "With no settings to read, automatic speech should default to quiet")
+
+        orphan.stop()
     }
 
     // MARK: - Speech Control Tests
