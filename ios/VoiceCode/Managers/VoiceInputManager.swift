@@ -284,6 +284,18 @@ class VoiceInputManager: NSObject, ObservableObject {
         let recordingFormat = inputNode.outputFormat(forBus: 0)
 
         log("VoiceInput: input device=\(currentInputDescription()) format=\(Int(recordingFormat.sampleRate))Hz/\(recordingFormat.channelCount)ch")
+        // An input route that is missing or mid-switch (a Bluetooth headset moving
+        // between A2DP and HFP, a device unplugged) reports 0 Hz or 0 channels.
+        // installTap raises an Objective-C exception for that format, which Swift
+        // cannot catch: the app dies. Refuse it here instead. The caller treats a
+        // false return as a capture that did not start, and the headset session's
+        // capture-grace timer retries a cold route.
+        guard Self.isUsableCaptureFormat(sampleRate: recordingFormat.sampleRate,
+                                         channelCount: recordingFormat.channelCount) else {
+            log("❌ VoiceInput: input format is not usable (\(recordingFormat.sampleRate)Hz/\(recordingFormat.channelCount)ch) — not starting capture")
+            audioEngine = nil
+            return false
+        }
         let monitor = AudioCaptureMonitor(startTime: CFAbsoluteTimeGetCurrent()) { [weak self] in
             self?.handleCaptureProducedAudio()
         }
@@ -349,19 +361,7 @@ class VoiceInputManager: NSObject, ObservableObject {
     }
 
     func stopRecording() {
-        audioEngine?.stop()
-        audioEngine?.inputNode.removeTap(onBus: 0)
-        recognitionRequest?.endAudio()
-
-        // Observability: report what the mic actually delivered this recording
-        // (buffers / silent% / peak / firstAudio). "buffers=0" or a "never"/late
-        // firstAudio measures a dead route or a Bluetooth HFP/SCO warm-up dead zone
-        // directly. Snapshot-then-clear keeps stopRecording() idempotent — a second
-        // call finds no monitor and logs no duplicate summary. See findings F2/F3.
-        if let stats = captureMonitor?.snapshot() {
-            log("VoiceInput: capture summary — \(stats.summary)")
-            captureMonitor = nil
-        }
+        tearDownCapture()
 
         #if os(iOS)
         // Do NOT deactivate the audio session here. HeadsetRemoteCommandManager re-asserts
@@ -372,13 +372,40 @@ class VoiceInputManager: NSObject, ObservableObject {
         #endif
 
         log("VoiceInput: recording stopped")
-        DispatchQueue.main.async {
+        // Weak, so the block is harmless if the manager is gone by the time it runs.
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
             self.isRecording = false
             // Gate down — allow TTS to resume now that the mic is closed.
             self.voiceOutputManager?.isRecordingActive = false
             self.didRaiseRecordingGate = false
             // Note: onTranscriptionComplete callback is never set - handled by view layer instead
         }
+    }
+
+    /// Stop the engine and close the recognition request, synchronously. The part of
+    /// stopping that is safe from `deinit`: it schedules nothing and touches no
+    /// published state.
+    private func tearDownCapture() {
+        audioEngine?.stop()
+        audioEngine?.inputNode.removeTap(onBus: 0)
+        recognitionRequest?.endAudio()
+
+        // Observability: report what the mic actually delivered this recording
+        // (buffers / silent% / peak / firstAudio). "buffers=0" or a "never"/late
+        // firstAudio measures a dead route or a Bluetooth HFP/SCO warm-up dead zone
+        // directly. Snapshot-then-clear keeps this idempotent — a second call finds
+        // no monitor and logs no duplicate summary. See findings F2/F3.
+        if let stats = captureMonitor?.snapshot() {
+            log("VoiceInput: capture summary — \(stats.summary)")
+            captureMonitor = nil
+        }
+    }
+
+    /// Whether an input format can be handed to `installTap`. Pure, so the guard
+    /// against the uncatchable invalid-format exception is testable without a route.
+    static func isUsableCaptureFormat(sampleRate: Double, channelCount: UInt32) -> Bool {
+        sampleRate > 0 && channelCount > 0
     }
 
     // MARK: - Cleanup
@@ -397,9 +424,14 @@ class VoiceInputManager: NSObject, ObservableObject {
         if didRaiseRecordingGate {
             voiceOutputManager?.isRecordingActive = false
         }
-        if isRecording {
-            stopRecording()
-        }
+        // Tear the capture down directly. Do NOT call stopRecording() from here: it
+        // (and any subclass override of it) schedules a main-queue block that
+        // captures self, and capturing an object that is already deallocating does
+        // not keep it alive. The block then runs against freed memory. That was a
+        // segmentation fault in the app whenever a manager went away mid-recording
+        // (seen as the Mac and iOS test hosts crashing in
+        // "closure #1 in VoiceInputManager.stopRecording()").
+        tearDownCapture()
     }
 }
 
