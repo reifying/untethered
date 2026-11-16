@@ -26,6 +26,9 @@ struct VoiceCodeApp: App {
     @StateObject private var resourcesManager: ResourcesManager
     @StateObject private var voiceInput: VoiceInputManager
     @StateObject private var headsetManager: HeadsetRemoteCommandManager
+    #if os(macOS)
+    @StateObject private var drivingMode: DrivingModeController
+    #endif
 
     init() {
         #if os(macOS)
@@ -60,23 +63,27 @@ struct VoiceCodeApp: App {
         _resourcesManager = StateObject(wrappedValue: resManager)
         let sharedVoiceInput = VoiceInputManager(voiceOutputManager: voiceManager)
         _voiceInput = StateObject(wrappedValue: sharedVoiceInput)
-        _headsetManager = StateObject(wrappedValue: HeadsetRemoteCommandManager(
+        let headset = HeadsetRemoteCommandManager(
             voiceInput: sharedVoiceInput,
             voiceOutput: voiceManager,
             client: voiceClient,
             settings: settings
+        )
+        _headsetManager = StateObject(wrappedValue: headset)
+        #if os(macOS)
+        _drivingMode = StateObject(wrappedValue: DrivingModeController(
+            settings: settings,
+            client: voiceClient,
+            voiceOutput: voiceManager,
+            voiceInput: sharedVoiceInput,
+            headset: headset
         ))
+        #endif
     }
 
     var body: some Scene {
         WindowGroup {
-            RootView(
-                settings: settings,
-                voiceOutput: voiceOutput,
-                client: client,
-                resourcesManager: resourcesManager,
-                voiceInput: voiceInput
-            )
+            rootView
             .environment(\.managedObjectContext, persistenceController.container.viewContext)
             .environmentObject(draftManager)
             // Injected on BOTH platforms: macOS ConversationView / ConversationVoiceInputView
@@ -84,9 +91,28 @@ struct VoiceCodeApp: App {
             // session reducer). Without this the macOS window tree lacks it and rendering a
             // selected session traps with "No ObservableObject of type … found".
             .environmentObject(headsetManager)
+            #if os(macOS)
+            .environmentObject(drivingMode)
+            #endif
         }
         #if os(macOS)
         .commands {
+            CommandMenu("Driving") {
+                // With no session named, driving mode takes the conversation on
+                // screen, else the one it drove last, else the most recent.
+                Button(drivingMode.isActive ? "Exit Driving Mode" : "Enter Driving Mode") {
+                    drivingMode.toggle()
+                }
+                .keyboardShortcut("d", modifiers: [.command, .shift])
+
+                Divider()
+
+                Button("Repeat Last Reply") {
+                    headsetManager.repeatLastReplyFromUI()
+                }
+                .keyboardShortcut("r", modifiers: [.command, .option])
+            }
+
             // Edit menu additions
             CommandGroup(after: .textEditing) {
                 Button("Stop Speaking") {
@@ -177,12 +203,34 @@ struct VoiceCodeApp: App {
                 .environmentObject(client)
                 .environmentObject(voiceOutput)
                 .environmentObject(headsetManager)
+                .environmentObject(drivingMode)
         }
 
         VoiceCodeMenuBarExtra(
             client: client,
             settings: settings,
             voiceOutput: voiceOutput,
+            voiceInput: voiceInput
+        )
+        #endif
+    }
+
+    private var rootView: RootView {
+        #if os(macOS)
+        RootView(
+            settings: settings,
+            voiceOutput: voiceOutput,
+            client: client,
+            resourcesManager: resourcesManager,
+            voiceInput: voiceInput,
+            drivingMode: drivingMode
+        )
+        #else
+        RootView(
+            settings: settings,
+            voiceOutput: voiceOutput,
+            client: client,
+            resourcesManager: resourcesManager,
             voiceInput: voiceInput
         )
         #endif
@@ -199,6 +247,8 @@ struct RootView: View {
     @ObservedObject var voiceInput: VoiceInputManager
     #if os(iOS)
     @EnvironmentObject private var headsetManager: HeadsetRemoteCommandManager
+    #else
+    @ObservedObject var drivingMode: DrivingModeController
     #endif
     @State private var showingSettings = false
     @State private var navigationPath = NavigationPath()
@@ -257,6 +307,15 @@ struct RootView: View {
                 // Process pending uploads after connection
                 LogManager.shared.log("📂 Checking for pending resource uploads...", category: "RootView")
                 resourcesManager.updatePendingCount()
+
+                #if os(macOS)
+                // The app was in driving mode when it last ran (it crashed, or was
+                // quit mid-drive): come back in it, on the same session.
+                if settings.drivingModeEnabled, !drivingMode.isActive, !TestingEnvironment.isTestRun {
+                    LogManager.shared.log("🚗 Driving mode was on at last exit, resuming it", category: "RootView")
+                    drivingMode.enter()
+                }
+                #endif
             }
             #if os(iOS)
             .onReceive(NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)) { _ in
@@ -283,6 +342,21 @@ struct RootView: View {
     @ViewBuilder
     private var navigationContent: some View {
         #if os(macOS)
+        // Driving mode replaces the whole window. The sidebar and conversation are
+        // not just covered, they are not built: nothing in them renders, lays out
+        // or sizes the window for the length of a drive.
+        if drivingMode.isActive {
+            DrivingModeView(controller: drivingMode, client: client, settings: settings, voiceInput: voiceInput)
+        } else {
+            macSplitView
+        }
+        #else
+        iosNavigationStack
+        #endif
+    }
+
+    #if os(macOS)
+    private var macSplitView: some View {
         NavigationSplitView(columnVisibility: $sidebarVisibility) {
             SessionSidebarView(
                 client: client,
@@ -351,7 +425,15 @@ struct RootView: View {
         .onReceive(NotificationCenter.default.publisher(for: .sessionListDidUpdate)) { _ in
             loadSessionsForNavigation()
         }
-        #else
+        .onAppear {
+            // Back from driving mode: show the session that was being driven.
+            if selectedSessionId == nil, let driven = drivingMode.sessionId {
+                selectedSessionId = driven
+            }
+        }
+    }
+    #else
+    private var iosNavigationStack: some View {
         NavigationStack(path: $navigationPath) {
             DirectoryListView(client: client, settings: settings, voiceOutput: voiceOutput, showingSettings: $showingSettings, recentSessions: $recentSessions, navigationPath: $navigationPath, resourcesManager: resourcesManager)
                 .navigationDestination(for: String.self) { workingDirectory in
@@ -385,8 +467,8 @@ struct RootView: View {
         .sheet(isPresented: $showingSettings) {
             settingsView
         }
-        #endif
     }
+    #endif
 
     // MARK: - Shared Settings View
 

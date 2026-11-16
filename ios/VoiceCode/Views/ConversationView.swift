@@ -56,6 +56,7 @@ struct ConversationView: View {
     // injects its rich send (`sendPromptText`) so the reducer's finalize sends through
     // one path. See `wireVoiceSend()`.
     @EnvironmentObject private var headsetManager: HeadsetRemoteCommandManager
+    @EnvironmentObject private var drivingMode: DrivingModeController
     #endif
 
     @State private var isLoading = false
@@ -541,6 +542,13 @@ struct ConversationView: View {
             #else
             ToolbarItem(placement: .automatic) {
                 HStack(spacing: 16) {
+                    // Driving mode: this session, driven from the headset
+                    Button(action: { drivingMode.enter(preferred: session.id) }) {
+                        Image(systemName: "car.fill")
+                    }
+                    .help("Driving mode (Cmd+Shift+D)")
+                    .accessibilityIdentifier("enterDrivingModeButton")
+
                     // Stop speech button (only visible when speaking)
                     if voiceOutput.isSpeaking {
                         Button(action: { voiceOutput.stop() }) {

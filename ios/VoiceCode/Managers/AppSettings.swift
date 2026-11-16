@@ -116,6 +116,41 @@ class AppSettings: ObservableObject {
         }
         recentDirectories = dirs
     }
+
+    /// Whether the Mac app is in driving mode (see notes/mac-driving-mode.md).
+    /// Persisted, so an app that is relaunched mid-drive, after a crash or a
+    /// restart, comes back in the mode without anyone touching the screen.
+    @Published var drivingModeEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(drivingModeEnabled, forKey: "drivingModeEnabled")
+        }
+    }
+
+    /// How many recent replies the driving screen offers for replay (1 to 5).
+    @Published var drivingReplayCount: Int {
+        didSet {
+            UserDefaults.standard.set(drivingReplayCount, forKey: "drivingReplayCount")
+        }
+    }
+
+    /// The session driving mode last drove, so a relaunch resumes the same one.
+    @Published var drivingSessionId: UUID? {
+        didSet {
+            if let id = drivingSessionId {
+                UserDefaults.standard.set(id.uuidString.lowercased(), forKey: "drivingSessionId")
+            } else {
+                UserDefaults.standard.removeObject(forKey: "drivingSessionId")
+            }
+        }
+    }
+
+    /// Whether the driving window floats above other apps' windows, so nothing
+    /// can cover the replay tiles during a drive.
+    @Published var drivingKeepOnTop: Bool {
+        didSet {
+            UserDefaults.standard.set(drivingKeepOnTop, forKey: "drivingKeepOnTop")
+        }
+    }
     #endif
 
     /// When true, registers with MPRemoteCommandCenter so headset buttons control recording.
@@ -372,6 +407,11 @@ class AppSettings: ObservableObject {
         #if os(macOS)
         self.lastUsedDirectory = UserDefaults.standard.string(forKey: "lastUsedDirectory")
         self.recentDirectories = UserDefaults.standard.stringArray(forKey: "recentDirectories") ?? []
+        self.drivingModeEnabled = UserDefaults.standard.bool(forKey: "drivingModeEnabled")
+        self.drivingReplayCount = DrivingModeLayout.clampedReplayCount(
+            UserDefaults.standard.object(forKey: "drivingReplayCount") as? Int ?? DrivingModeLayout.defaultReplayCount)
+        self.drivingSessionId = UserDefaults.standard.string(forKey: "drivingSessionId").flatMap { UUID(uuidString: $0) }
+        self.drivingKeepOnTop = UserDefaults.standard.object(forKey: "drivingKeepOnTop") as? Bool ?? true
         #endif
         self.headsetModeEnabled = UserDefaults.standard.bool(forKey: "headsetModeEnabled")
         self.headsetAutoSend = UserDefaults.standard.object(forKey: "headsetAutoSend") as? Bool ?? true

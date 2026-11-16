@@ -43,6 +43,11 @@ struct MacSettingsView: View {
                 .tabItem {
                     Label("Headset", systemImage: "headphones")
                 }
+
+            DrivingSettingsTab()
+                .tabItem {
+                    Label("Driving", systemImage: "car.fill")
+                }
         }
         .frame(width: 500, height: 450)
     }
@@ -442,6 +447,54 @@ struct HeadsetSettingsTab: View {
         .formStyle(.grouped)
         .padding()
     }
+}
+
+// MARK: - Driving Settings Tab
+
+struct DrivingSettingsTab: View {
+    @EnvironmentObject var settings: AppSettings
+    @EnvironmentObject var drivingMode: DrivingModeController
+
+    var body: some View {
+        Form {
+            Section("Driving Mode") {
+                Toggle("Driving mode", isOn: Binding(
+                    get: { drivingMode.isActive },
+                    set: { on in
+                        if on { drivingMode.enter() } else { drivingMode.exit() }
+                    }
+                ))
+                Text("Fills the screen with one large band per recent reply. Click a band to hear that reply again. Everything else is done from the headset. Stays on, across restarts, until you turn it off (⌘⇧D).")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+
+                Stepper("Replies offered for replay: \(settings.drivingReplayCount)",
+                        value: $settings.drivingReplayCount,
+                        in: DrivingModeLayout.minReplayCount...DrivingModeLayout.maxReplayCount)
+
+                Toggle("Keep the driving window above other windows", isOn: $settings.drivingKeepOnTop)
+            }
+
+            Section("Headset buttons") {
+                ForEach(Self.buttonMap, id: \.0) { gesture, action in
+                    LabeledContent(gesture) {
+                        Text(action)
+                            .multilineTextAlignment(.trailing)
+                    }
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .padding()
+    }
+
+    /// What each headset gesture does. The same on the driving screen and off it.
+    static let buttonMap: [(String, String)] = [
+        ("Hold", "Talk while held; release sends"),
+        ("Press", "Start talking, or stop and send. While a reply is read: stop reading"),
+        ("Double press", "While a reply is read: skip to the next. Otherwise: repeat the last reply"),
+        ("Triple press (previous track)", "Repeat the last reply")
+    ]
 }
 
 // MARK: - Helpers
