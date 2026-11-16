@@ -636,6 +636,16 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
     func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didStart utterance: AVSpeechUtterance) {
         LogManager.shared.log("🔊 Speech STARTED: \(utterance.speechString.prefix(50))...", category: "VoiceOutput")
         DispatchQueue.main.async {
+            // The synthesizer can report a start after the utterance has already been
+            // stopped or replaced (a reply that begins and is at once cut off by a
+            // recording, a skip or a stop). Marking speech as running for it would
+            // never be undone: its end was already handled. `isSpeaking` then stuck
+            // at true, which the Mac headset machine reads as "speaking" until the
+            // next press. Only the utterance in flight may raise it.
+            guard utterance === self.currentUtterance else {
+                LogManager.shared.log("🔊 Ignoring a late start report for an utterance no longer in flight", category: "VoiceOutput")
+                return
+            }
             self.isSpeaking = true
         }
         #if os(iOS)

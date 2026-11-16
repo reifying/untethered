@@ -197,14 +197,50 @@ final class VoiceOutputQueueTests: XCTestCase {
         XCTAssertFalse(sawSilence, "isSpeaking must stay true across a skip to the next reply")
     }
 
+    /// The synthesizer can report that a reply started after that reply was stopped.
+    /// Nothing would ever clear the flag again, so the report must be ignored.
+    func testALateStartReportForAStoppedReplyDoesNotMarkSpeechAsRunning() throws {
+        manager.enqueue(longText)
+        let stopped = try XCTUnwrap(manager.currentUtterance)
+        manager.stop()
+        drainMain(0.5)
+        XCTAssertFalse(manager.isSpeaking)
+
+        manager.speechSynthesizer(AVSpeechSynthesizer(), didStart: stopped)
+        drainMain()
+
+        XCTAssertFalse(manager.isSpeaking, "a stopped reply's late start report left speech marked as running")
+    }
+
+    func testAStartReportForTheReplyInFlightMarksSpeechAsRunning() throws {
+        manager.enqueue(longText)
+        let current = try XCTUnwrap(manager.currentUtterance)
+
+        manager.speechSynthesizer(AVSpeechSynthesizer(), didStart: current)
+        drainMain()
+
+        XCTAssertTrue(manager.isSpeaking)
+    }
+
     func testSkipWithNothingWaitingStopsReading() {
         manager.enqueue(longText)
 
         manager.skipCurrent()
-        drainMain()
 
         XCTAssertNil(manager.currentUtterance)
-        XCTAssertFalse(manager.isSpeaking)
+        XCTAssertEqual(manager.pendingSpeechCount, 0)
+        // The real synthesizer reports the stop in its own time, and a start it
+        // had already queued can land first. Wait for it to settle on silence.
+        let silent = expectation(description: "speech stopped")
+        func check(_ attemptsLeft: Int) {
+            if !manager.isSpeaking && !manager.hasUtteranceInFlight {
+                silent.fulfill()
+            } else if attemptsLeft > 0 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { check(attemptsLeft - 1) }
+            }
+        }
+        check(100)
+        wait(for: [silent], timeout: 6)
     }
 
     func testBlankReplyIsNotQueued() {
