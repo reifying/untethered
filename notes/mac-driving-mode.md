@@ -163,14 +163,15 @@ the crash you have seen is not identified. What was found and fixed:
    Fixed in the speech code both apps share.
 
 **The tests were changing the real app.** The Mac unit tests run inside the app, in its own
-sandbox. They cleared the headset and BlueParrott switches and the paired headset, could leave
-speech muted, and read and wrote the real message store. Anyone running the tests on the Mac you
-use reset the app's headset settings. Now a test run gets an in-memory store, and the app saves
+sandbox. They cleared the server address, the headset and BlueParrott switches and the remembered
+headset, could leave speech muted, read and wrote the real message store, and deleted the app's
+API key from the keychain. Anyone running the tests on the Mac you use left the app unable to
+connect. Now a test run gets an in-memory store and a keychain item of its own, and the app saves
 its settings when launched for a test run and puts them back at the next normal launch.
 
 ## What was run
 
-- **Mac unit tests: 1,961 pass, none fail, and the test host does not crash.** On `main` before
+- **Mac unit tests: 1,962 pass, none fail, and the test host does not crash.** On `main` before
   this work the same suite passed 1,836, failed 9 and crashed its host 8 times in one run.
 - **iOS:** builds, and 1,862 unit tests pass on the simulator. Ten fail, the same ten that fail on
   `main` without this work: nine in `BlueParrottButtonManagerTests` and
@@ -190,17 +191,24 @@ Not run:
 - **Nobody has looked at the driving screen.** The Mac was locked; its layout is known from tests
   and window measurements, not from eyes.
 - Any real headset button, real microphone or audible speech. The Mac's sound was muted.
-- A connection to the server. The Mac app on this laptop has no server address set (see below).
+- A working connection to the server. The app reaches the backend on this laptop and gets its
+  greeting, then stops for want of an API key (see below).
 - A drive.
 
 **Things that happened on this Mac during the work:**
 
-- The Mac app's settings on this laptop are blank: no server address or port, headset switches
-  off, no remembered BlueParrott, and the upload folder holds a leftover test value. The first
-  test run of this work, before the fix for it existed, cleared them, or an earlier test run had.
-  It cannot be told which. The backend is running on this laptop on port 8080, so the address is
-  `localhost` and the port `8080`.
-- Running the real app turned on the Mac's Bluetooth search for the BlueParrott six times, for
+- The Mac app's settings on this laptop were found blank, and its API key gone from the keychain.
+  Test runs did that: the first ones of this work, before the fixes for it existed, or earlier
+  ones. It cannot be told which, and nothing records what the settings were.
+- Put back afterwards, from inside the app's sandbox: the server address `localhost` and port
+  `8080` (the one backend running on this laptop), the BlueParrott button switched on, and the
+  upload folder returned to its default from a test's leftover value. With those, a normal launch
+  connects to the backend by itself and receives its greeting.
+- Not put back, because only you can: the API key. See "First real try".
+- Left at their defaults, because nothing says what they were: "Enable headset control" (media
+  keys, for AirPods-style headsets) and audible cues outside driving mode. Driving mode turns the
+  cues on while it is on.
+- Running the real app turned on the Mac's Bluetooth search for the BlueParrott seven times, for
   between five seconds and about a minute each. A headset that was connected to the phone at the
   time would not have been found.
 - There are 18 crash reports for the Mac app dated today in `~/Library/Logs/DiagnosticReports`.
@@ -222,10 +230,17 @@ Needs you, the headset and five minutes parked.
    on to the next rather than stop.
 7. Leave it alone for fifteen minutes. The screen should stay on and the next reply still be read.
 
-Before step 1, set the server in Settings ▸ Connection (`localhost`, `8080` for the backend on this
-laptop). Driving mode turns a headset button source on by itself; outside it, turn yours back on in
-Settings ▸ Headset. The first BlueParrott connection may take up to a minute, because the headset
-has to be found again.
+Before step 1, three things only you can do:
+
+1. **Give the app its API key.** Run `make show-key` in the voice-code checkout to print it. In the
+   app open Settings ▸ Connection. Under Authentication it says "API Key Required": paste the key
+   and press Save Key. The app then connects.
+2. **Switch the headset on near the Mac and wait up to a minute.** The app no longer remembers
+   which BlueParrott is yours, so it has to find it again. There is nothing to pair in the app. If
+   macOS asks whether Untethered may use Bluetooth, allow it.
+3. **Decide the two switches left at their defaults** in Settings ▸ Headset: "Enable headset
+   control" if you use an AirPods-style headset, and "Audible cues" if you want the tones outside
+   driving mode.
 
 ## Left alone
 
