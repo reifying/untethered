@@ -51,11 +51,34 @@ final class DrivingModeLayoutTests: XCTestCase {
         }
     }
 
-    func testTheTilesGetMostOfANormalScreen() {
+    /// The talk bar is the button a driver has to hit without looking, so it is as
+    /// tall as each reply tile rather than a thin strip under them.
+    func testTheTalkBarIsAsTallAsEachReplyTile() {
+        for size in sizes {
+            for count in DrivingModeLayout.minReplayCount...DrivingModeLayout.maxReplayCount {
+                let bands = DrivingModeLayout.bands(in: size, replayCount: count)
+                for tile in bands.tiles {
+                    XCTAssertEqual(bands.talk.height, tile.height, accuracy: 0.001,
+                                   "the talk bar and a tile differ in height at \(size), \(count) tiles")
+                }
+            }
+        }
+    }
+
+    func testTheTalkBarStaysAsTallAsATileWhateverTheReplayCount() {
+        let size = CGSize(width: 1512, height: 944)
+        let one = DrivingModeLayout.bands(in: size, replayCount: 1).talk.height
+        let five = DrivingModeLayout.bands(in: size, replayCount: 5).talk.height
+        XCTAssertGreaterThan(one, five, "fewer tiles means each, and the talk bar, gets taller")
+        XCTAssertGreaterThan(five, 100, "even with five tiles the talk bar is a large target")
+    }
+
+    func testTheTilesAndTalkBarGetMostOfANormalScreen() {
         let bands = DrivingModeLayout.bands(in: CGSize(width: 1512, height: 944), replayCount: 3)
-        let tiles = bands.tiles.reduce(0) { $0 + $1.height }
-        XCTAssertGreaterThan(tiles / 944, 0.75, "the replay tiles are the point of the screen")
+        let body = bands.tiles.reduce(0) { $0 + $1.height } + bands.talk.height
+        XCTAssertGreaterThan(body / 944, 0.85, "the replay tiles and the talk bar are the point of the screen")
         XCTAssertGreaterThan(bands.tiles[0].height, 200, "each one is a target that is hard to miss")
+        XCTAssertGreaterThan(bands.talk.height, 200, "the talk bar is as easy to hit as a tile")
     }
 
     func testAZeroOrNegativeSizeDoesNotProduceNegativeBands() {

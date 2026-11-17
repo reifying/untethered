@@ -32,9 +32,10 @@ band, each the full width of the window:
 |---|---|
 | Status strip (top, thin) | Nothing. Shows connection, state (READY, LISTENING, SENDING, WAITING, SPEAKING), the session, and the exit button. |
 | Reply bands, three by default | Reads that reply again from the top. The top band is always the newest reply, the next one the reply before it, and so on. |
-| Talk bar (bottom) | Starts talking, or stops and sends. The same action as a press of the headset button. |
+| Talk bar (bottom) | Starts talking, or stops and sends. The same action as a press of the headset button. As tall as one reply band, so it is as easy to hit. |
 
-- The number of reply bands is a setting, 1 to 5 (Settings ▸ Driving).
+- The number of reply bands is a setting, 1 to 5 (Settings ▸ Driving). Everything under the status
+  strip is split into equal rows: one per reply band and one for the talk bar.
 - Keys work too, with no pointer to aim: `1` to `5` replay that band, Space is the talk bar.
 - A click works the first time even when another app is in front.
 - Replaying cuts off whatever is being read. Replies that have not been read yet are kept and are

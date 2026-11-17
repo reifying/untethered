@@ -213,12 +213,14 @@ private struct DrivingTalkBar: View {
 
     var body: some View {
         let recording = state == .recording
-        let labelSize = max(min(size.height * 0.34, 34), 12)
+        // The bar is as tall as a reply tile now, so its label may grow with it.
+        let labelSize = max(min(size.height * 0.34, 56), 12)
         HStack(spacing: 16) {
             Image(systemName: recording ? "mic.fill" : "mic")
                 .font(.system(size: labelSize * 1.2, weight: .bold))
             Text(recording ? "LISTENING — CLICK OR PRESS SPACE TO SEND" : "CLICK OR PRESS SPACE TO TALK")
                 .font(.system(size: labelSize, weight: .bold))
+                .minimumScaleFactor(0.4)   // a big label shrinks to fit a narrow window instead of cutting off
             if recording, !voiceInput.transcribedText.isEmpty {
                 // One line, newest words kept. A long dictation cannot grow the bar.
                 Text(voiceInput.transcribedText.suffix(120))
