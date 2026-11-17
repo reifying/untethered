@@ -399,6 +399,147 @@ final class VoiceInputManagerTests: XCTestCase {
         XCTAssertNil(manager.captureMonitor)
     }
 
+    // MARK: - Final transcript (the end of the sentence must not be dropped)
+
+    /// Nothing in flight: the caller gets the current text on the next main-queue hop.
+    func testAwaitFinalTranscription_nothingInFlight_completesWithCurrentText() {
+        manager.transcribedText = "already here"
+        let done = expectation(description: "completes")
+        manager.awaitFinalTranscription { text in
+            XCTAssertEqual(text, "already here")
+            done.fulfill()
+        }
+        wait(for: [done], timeout: 1.0)
+    }
+
+    /// The bug: the prompt went out with the partial "…working" while the recognizer's
+    /// final result "…working that well" was still on its way. The waiter must hold until
+    /// the final result is applied and then receive THAT text.
+    func testAwaitFinalTranscription_waitsForFinalResult_returnsFinalNotPartial() {
+        let generation = manager.beginRecognitionForTesting()
+        manager.transcribedText = "Right this microphone hasn't been working"   // the partial at stop time
+
+        var received: String?
+        manager.awaitFinalTranscription(timeout: 5.0) { received = $0 }
+        drainMain()
+        XCTAssertNil(received, "must not complete on the partial text while the recognizer is still working")
+
+        manager.applyRecognitionUpdate(generation: generation,
+                                       transcription: "Right this microphone hasn't been working that well",
+                                       settles: true)
+        XCTAssertEqual(received, "Right this microphone hasn't been working that well")
+        XCTAssertTrue(manager.recognitionSettled)
+    }
+
+    /// A partial update (not final) updates the text but must not release the waiter.
+    func testAwaitFinalTranscription_partialUpdate_doesNotComplete() {
+        let generation = manager.beginRecognitionForTesting()
+        var received: String?
+        manager.awaitFinalTranscription(timeout: 5.0) { received = $0 }
+        drainMain()
+
+        manager.applyRecognitionUpdate(generation: generation, transcription: "so far", settles: false)
+        XCTAssertNil(received)
+        XCTAssertEqual(manager.transcribedText, "so far")
+        XCTAssertFalse(manager.recognitionSettled)
+    }
+
+    /// No final result ever arrives: the waiter is released with the text so far, so a
+    /// caller waiting on it (the headset's `.finalizing` state) can never strand.
+    func testAwaitFinalTranscription_timesOut_withTextSoFar() {
+        manager.beginRecognitionForTesting()
+        manager.transcribedText = "text so far"
+        let done = expectation(description: "completes on timeout")
+        manager.awaitFinalTranscription(timeout: 0.1) { text in
+            XCTAssertEqual(text, "text so far")
+            done.fulfill()
+        }
+        wait(for: [done], timeout: 2.0)
+    }
+
+    /// Final result and timeout both fire: the completion still runs exactly once.
+    func testAwaitFinalTranscription_completesExactlyOnce() {
+        let generation = manager.beginRecognitionForTesting()
+        var calls = 0
+        manager.awaitFinalTranscription(timeout: 0.1) { _ in calls += 1 }
+        drainMain()
+        manager.applyRecognitionUpdate(generation: generation, transcription: "final", settles: true)
+        XCTAssertEqual(calls, 1)
+
+        let later = expectation(description: "past the timeout")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { later.fulfill() }
+        wait(for: [later], timeout: 2.0)
+        XCTAssertEqual(calls, 1, "the timeout must not fire the completion a second time")
+    }
+
+    /// A late callback from an earlier recognition task must not rewrite the current
+    /// recording's text or release its waiter.
+    func testRecognitionUpdate_fromStaleGeneration_isIgnored() {
+        let stale = manager.beginRecognitionForTesting()
+        let current = manager.beginRecognitionForTesting()
+        manager.transcribedText = "current"
+        var received: String?
+        manager.awaitFinalTranscription(timeout: 5.0) { received = $0 }
+        drainMain()
+
+        manager.applyRecognitionUpdate(generation: stale, transcription: "old task", settles: true)
+        XCTAssertNil(received)
+        XCTAssertEqual(manager.transcribedText, "current")
+
+        manager.applyRecognitionUpdate(generation: current, transcription: "current done", settles: true)
+        XCTAssertEqual(received, "current done")
+    }
+
+    // MARK: - Recording that cannot start
+
+    /// Not authorized: the owner is told right away (so it can leave `.recording` instead
+    /// of waiting out capture retries), the reason names the status, and the PREVIOUS
+    /// recording's text is cleared so a failed attempt can't resend it.
+    func testStartRecording_notAuthorized_reportsFailureAndClearsStaleText() {
+        manager.authorizationStatus = .denied
+        manager.transcribedText = "the previous message"
+        let failed = expectation(description: "start failure reported")
+        var reason: String?
+        manager.onCaptureStartFailed = { r in
+            reason = r
+            failed.fulfill()
+        }
+
+        manager.startRecording()
+        wait(for: [failed], timeout: 1.0)
+
+        XCTAssertTrue(reason?.contains("not authorized") == true, "reason was: \(reason ?? "nil")")
+        XCTAssertTrue(reason?.contains("denied") == true, "reason should carry the status, was: \(reason ?? "nil")")
+        XCTAssertEqual(manager.transcribedText, "", "stale text from the previous recording must be cleared")
+        XCTAssertFalse(manager.isRecording)
+    }
+
+    // MARK: - Who stopped the mic
+
+    func testCallerSummary_keepsSymbolsAboveTheAskingFrame() {
+        let frames = [
+            "0   VoiceCode   0x0000000100001000 $s9VoiceCode0A12InputManagerC13stopRecordingyyF + 100",
+            "1   VoiceCode   0x0000000100002000 $s9VoiceCode0A22HeadsetRemoteCommandManagerC4stopyyF + 20",
+            "2   VoiceCode   0x0000000100003000 $s9VoiceCode3appyyF + 8",
+            "3   VoiceCode   0x0000000100004000 main + 1",
+            "4   dyld        0x0000000100005000 start + 2",
+        ]
+        XCTAssertEqual(VoiceInputManager.callerSummary(frames),
+                       "$s9VoiceCode0A22HeadsetRemoteCommandManagerC4stopyyF <- $s9VoiceCode3appyyF <- main")
+    }
+
+    func testCallerSummary_emptyOrMalformed() {
+        XCTAssertEqual(VoiceInputManager.callerSummary([]), "unknown")
+        XCTAssertEqual(VoiceInputManager.callerSummary(["only-frame-zero"]), "unknown")
+        XCTAssertEqual(VoiceInputManager.callerSummary(["0 x", "weird"]), "weird")
+    }
+
+    private func drainMain() {
+        let e = expectation(description: "main-queue drain")
+        DispatchQueue.main.async { e.fulfill() }
+        wait(for: [e], timeout: 1.0)
+    }
+
     // MARK: - Capture audio-session options (BlueParrott HFP mic vs built-in mic)
 
     #if os(iOS)

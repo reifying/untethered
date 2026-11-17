@@ -381,6 +381,80 @@ final class HeadsetRemoteCommandManagerMacTests: XCTestCase {
         XCTAssertEqual(f.manager.testSessionState, .idle, "UI recording finalizes; system events flow when not engaged")
     }
 
+    // MARK: - Final transcript before send (the end of the sentence must not be dropped)
+
+    /// The bug from the field log: the prompt went out as "…hasn't been working" while the
+    /// recognizer's final result, "…hasn't been working that well", was 76ms away. Stopping
+    /// must hold `.finalizing` until the final result lands, then send THAT text.
+    func testStop_holdsFinalizingUntilFinalTranscript_thenSendsTheFullText() {
+        let f = makeFixture()
+        f.input.transcribedText = ""
+        let generation = f.input.beginRecognitionForTesting()          // recognizer still working
+
+        f.manager.handleButtonEvent(.tap, source: .blueParrottBLE)     // idle → recording
+        f.input.transcribedText = "Right this microphone hasn't been working"   // partial at stop time
+        f.manager.handleButtonEvent(.tap, source: .blueParrottBLE)     // recording → finalizing
+        drainMainQueue()
+        drainMainQueue()
+
+        XCTAssertEqual(f.manager.testSessionState, .finalizing,
+                       "must wait for the final transcript, not read the partial")
+        XCTAssertNil(f.client.lastSentMessage, "nothing may be sent from the partial text")
+
+        f.input.applyRecognitionUpdate(generation: generation,
+                                       transcription: "Right this microphone hasn't been working that well",
+                                       settles: true)
+        drainMainQueue()
+
+        XCTAssertEqual(f.manager.testSessionState, .awaitingResponse)
+        XCTAssertEqual(f.client.lastSentMessage?["text"] as? String,
+                       "Right this microphone hasn't been working that well")
+    }
+
+    /// The final transcript never arrives: `.finalizing` still resolves (here to a send of
+    /// the text so far) after the timeout — the no-strand invariant holds.
+    func testStop_finalTranscriptNeverArrives_stillResolvesAfterTimeout() {
+        let f = makeFixture()
+        f.input.beginRecognitionForTesting()                           // in flight, never settles
+        f.manager.handleButtonEvent(.tap, source: .blueParrottBLE)
+        f.input.transcribedText = "text so far"
+        f.manager.handleButtonEvent(.tap, source: .blueParrottBLE)
+        drainMainQueue()
+        XCTAssertEqual(f.manager.testSessionState, .finalizing)
+
+        let timedOut = expectation(description: "finalizing resolves after the transcript timeout")
+        DispatchQueue.main.asyncAfter(deadline: .now() + VoiceInputManager.finalTranscriptionTimeout + 0.5) {
+            timedOut.fulfill()
+        }
+        wait(for: [timedOut], timeout: VoiceInputManager.finalTranscriptionTimeout + 3.0)
+
+        XCTAssertEqual(f.manager.testSessionState, .awaitingResponse)
+        XCTAssertEqual(f.client.lastSentMessage?["text"] as? String, "text so far")
+    }
+
+    // MARK: - Mic that cannot start (speech recognition not authorized)
+
+    /// Not authorized used to play "listening" and then spend ~3s on capture-grace retries
+    /// of an engine that never started. Now the start failure finalizes at once: no send,
+    /// back to idle, `.error` cue.
+    func testCaptureStartFailed_finalizesAtOnce_idleWithErrorCue_noSend() {
+        let f = makeFixture()
+        f.settings.headsetAudibleCuesEnabled = true
+        f.input.transcribedText = ""
+
+        f.manager.handleButtonEvent(.tap, source: .blueParrottBLE)     // → recording, .listening
+        XCTAssertEqual(f.manager.testSessionState, .recording)
+
+        f.input.onCaptureStartFailed?("speech recognition not authorized (status=denied)")
+        drainMainQueue()
+        drainMainQueue()
+
+        XCTAssertEqual(f.manager.testSessionState, .idle, "must not wait out capture-grace retries")
+        XCTAssertNil(f.client.lastSentMessage, "a failed start must send nothing")
+        XCTAssertEqual(f.earconSpy.played, [.listening, .stopped, .error])
+        XCTAssertEqual(f.input.restartCaptureCallCount, 0, "no point restarting an engine that never started")
+    }
+
     // MARK: - F3: capture readiness (restart up to maxRestarts, then finalize — never loop)
 
     func testCaptureStalled_restartsUpToMax_thenFinalizes_F3() {
@@ -439,6 +513,31 @@ final class HeadsetRemoteCommandManagerMacTests: XCTestCase {
                           "recording must not strand when the headset disconnects mid-capture")
         XCTAssertEqual(f.client.lastSentMessage?["text"] as? String, "partial utterance",
                        "the partial capture finalizes and sends")
+    }
+
+    /// The bug from the field logs ("the mic turns off before I'm done speaking", also
+    /// outside driving mode): with BlueParrott enabled but NOT connected, the BLE manager
+    /// re-publishes `isConnected = false` on every scan/retry step, and every one of those
+    /// re-publications was read as a disconnect and ended the recording at a random moment
+    /// (0.1s, 2.9s, 4.6s, 6.0s in the logs, with no button event). Only a real
+    /// connected → disconnected edge may end a capture.
+    func testBLENeverConnected_scanEvents_doNotEndARecording() {
+        let f = makeFixture()                                         // BLE started, never connected
+        f.input.transcribedText = ""
+
+        f.manager.handleButtonEvent(.tap, source: .ui)                // → recording
+        XCTAssertEqual(f.manager.testSessionState, .recording)
+
+        // Scan/retry steps while no headset is connected: each re-publishes isConnected=false.
+        f.central.centralDelegate?.bleDidDiscoverAdvertisement()      // scanning → connecting
+        f.central.centralDelegate?.bleDidDisconnect()                 // connecting → scanning again
+        drainMainQueue()
+        drainMainQueue()
+        drainMainQueue()
+
+        XCTAssertEqual(f.manager.testSessionState, .recording,
+                       "a link that was never connected cannot disconnect mid-recording")
+        XCTAssertFalse(f.input.stopRecordingCalled, "the mic must stay open")
     }
 
     /// The recognizer-silence auto-finalize path: `voiceInput.isRecording → false` with

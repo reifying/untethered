@@ -356,6 +356,16 @@ class HeadsetRemoteCommandManager: ObservableObject {
                 self.handleSystemEvent(.captureEnded)
             }
             .store(in: &cancellables)
+
+        // The mic could not start at all (speech recognition not authorized). Finalize now
+        // — `isRecording` never went true, so the sink above never fires — rather than
+        // playing "listening" and burning the capture-grace retries on an engine that was
+        // never started. `.captureEnded` → finalizing → no text → idle + the error cue.
+        voiceInput.onCaptureStartFailed = { [weak self] reason in
+            guard let self = self else { return }
+            hLogWarning("Session: capture could not start (\(reason)) — finalizing")
+            self.handleSystemEvent(.captureEnded)
+        }
         #endif
 
         setupKeepAlive()
@@ -807,13 +817,13 @@ extension HeadsetRemoteCommandManager {
         state = .sending
         updateNowPlayingState()
 
-        // Defer reading transcribedText by one run-loop tick. stopRecording()
-        // triggers the final recognition callback on the main queue — reading
-        // synchronously here would miss that final result.
-        DispatchQueue.main.async { [weak self] in
+        // Wait for the recognizer's FINAL result. stopRecording() ends the audio, but the
+        // final transcript lands a little later; reading `transcribedText` one run-loop
+        // tick after the stop sent the partial text and dropped the end of the sentence.
+        // Bounded by a timeout, so `.sending` can't strand.
+        voiceInput.awaitFinalTranscription { [weak self] finalText in
             guard let self = self else { return }
-            let text = self.voiceInput.transcribedText
-                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let text = finalText.trimmingCharacters(in: .whitespacesAndNewlines)
 
             // No audio captured ⇒ any text is stale (last message) — never resend it.
             // Empty text ⇒ nothing recognized. Either way, return to ready without sending.
@@ -1248,12 +1258,13 @@ extension HeadsetRemoteCommandManager {
         // silenced the mic (rapid A2DP↔built-in cycling). Back-to-back recordings stay on
         // built-in so the mic keeps working.
         // ALWAYS emit transcription after stopCapture so `.finalizing` can't strand
-        // (nil when nothing was recognized / on error). Deferred one run-loop hop so
-        // the final recognition callback lands first.
-        DispatchQueue.main.async { [weak self] in
+        // (nil when nothing was recognized / on error). Wait for the recognizer's FINAL
+        // result — a one-hop deferral read the partial text and dropped the last words
+        // ("…working that well" went out as "…working"). The wait is bounded by
+        // `VoiceInputManager.finalTranscriptionTimeout`, so this always completes.
+        voiceInput.awaitFinalTranscription { [weak self] finalText in
             guard let self = self else { return }
-            let text = self.voiceInput.transcribedText
-                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let text = finalText.trimmingCharacters(in: .whitespacesAndNewlines)
             self.handleSystemEvent(.transcription(text.isEmpty ? nil : text))
         }
     }
@@ -1376,9 +1387,13 @@ extension HeadsetRemoteCommandManager {
             recognizer?.feed(signal)
         }
         // A disconnect WHILE recording feeds `captureEnded` so `.recording` can't
-        // strand on an out-of-range mid-recording (Goal #2). `dropFirst` skips the
-        // initial `isConnected == false`.
+        // strand on an out-of-range mid-recording (Goal #2). `removeDuplicates` is
+        // essential: `@Published` emits on every assignment, and the BLE manager
+        // re-assigns `isConnected = false` on every scan/retry step while no headset is
+        // connected — without it each of those looked like a disconnect and ended the
+        // recording at a random moment. `dropFirst` skips the initial `false`.
         bleDisconnectCancellable = ble.$isConnected
+            .removeDuplicates()
             .receive(on: DispatchQueue.main)
             .dropFirst()
             .sink { [weak self] connected in

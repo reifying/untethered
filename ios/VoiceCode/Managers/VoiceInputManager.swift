@@ -61,6 +61,24 @@ class VoiceInputManager: NSObject, ObservableObject {
 
     var onTranscriptionComplete: ((String) -> Void)?
 
+    /// Fired on the main queue when `startRecording` gives up for a reason a retry cannot
+    /// fix (speech recognition not authorized), with `transcribedText` already cleared. The
+    /// headset session uses it to leave `.recording` at once instead of waiting out the
+    /// capture-grace retries on an engine that never started.
+    var onCaptureStartFailed: ((String) -> Void)?
+
+    /// How long `awaitFinalTranscription` waits for the recognizer's final result, after
+    /// the audio ends, before it settles for the text it already has.
+    static let finalTranscriptionTimeout: TimeInterval = 2.0
+
+    /// Bumped for each recognition task so a late callback from an earlier task can't
+    /// change the current recording's text or settle its waiters.
+    private var recognitionGeneration = 0
+    /// False from the moment a recognition task starts until its final result (or error)
+    /// has been applied to `transcribedText`. True when nothing is in flight.
+    private(set) var recognitionSettled = true
+    private var transcriptWaiters: [(String) -> Void] = []
+
     #if os(iOS)
     /// When this returns true, the recording audio session adds `.allowBluetoothHFP`
     /// (the HFP/SCO profile), engaging a Bluetooth headset's mic for input instead
@@ -172,7 +190,9 @@ class VoiceInputManager: NSObject, ObservableObject {
 
         // Check authorization
         guard authorizationStatus == .authorized else {
-            log("Speech recognition not authorized")
+            let status = Self.describe(authorizationStatus)
+            log("Speech recognition not authorized (status=\(status))")
+            reportCaptureStartFailed("speech recognition not authorized (status=\(status))")
             return
         }
 
@@ -180,6 +200,8 @@ class VoiceInputManager: NSObject, ObservableObject {
         if recognitionTask != nil {
             recognitionTask?.cancel()
             recognitionTask = nil
+            // Nobody will hear from the cancelled task; release anyone still waiting on it.
+            settleRecognition()
         }
 
         #if os(iOS)
@@ -229,14 +251,18 @@ class VoiceInputManager: NSObject, ObservableObject {
         guard startCaptureEngine() else { return }
 
         // Start recognition task
+        recognitionGeneration += 1
+        let generation = recognitionGeneration
+        recognitionSettled = false
         recognitionTask = speechRecognizer?.recognitionTask(with: recognitionRequest) { [weak self] result, error in
             guard let self = self else { return }
 
-            if let result = result {
-                let transcription = result.bestTranscription.formattedString
-                DispatchQueue.main.async {
-                    self.transcribedText = transcription
-                }
+            // Apply the text first, then settle: anyone waiting in awaitFinalTranscription
+            // gets the final transcript, not the partial one that was current at stop time.
+            let transcription = result?.bestTranscription.formattedString
+            let settles = error != nil || result?.isFinal == true
+            DispatchQueue.main.async {
+                self.applyRecognitionUpdate(generation: generation, transcription: transcription, settles: settles)
             }
 
             if let error = error {
@@ -248,6 +274,9 @@ class VoiceInputManager: NSObject, ObservableObject {
             }
         }
 
+        // No recognizer means no task and no callback to wait for.
+        if recognitionTask == nil { recognitionSettled = true }
+
         recordingStarted = true
         log("VoiceInput: recording started — engine running, route=\(audioEngine?.inputNode.outputFormat(forBus: 0).sampleRate ?? 0)Hz")
         DispatchQueue.main.async {
@@ -258,6 +287,75 @@ class VoiceInputManager: NSObject, ObservableObject {
             self.voiceOutputManager?.isRecordingActive = true
             self.didRaiseRecordingGate = true
             self.transcribedText = ""
+        }
+    }
+
+    // MARK: - Final transcript
+
+    /// Apply a recognizer callback to the current recording. Runs on the main queue.
+    /// Ignored when `generation` is not the current task's. Internal so tests can drive
+    /// the recognizer's results without a live audio route.
+    func applyRecognitionUpdate(generation: Int, transcription: String?, settles: Bool) {
+        guard generation == recognitionGeneration else { return }
+        if let transcription { transcribedText = transcription }
+        if settles { settleRecognition() }
+    }
+
+    private func settleRecognition() {
+        recognitionSettled = true
+        let waiters = transcriptWaiters
+        transcriptWaiters = []
+        for waiter in waiters { waiter(transcribedText) }
+    }
+
+    /// Mark a recognition task as in flight and return its generation. Test seam for
+    /// `applyRecognitionUpdate`; the real task start does the same inline.
+    @discardableResult
+    func beginRecognitionForTesting() -> Int {
+        recognitionGeneration += 1
+        recognitionSettled = false
+        return recognitionGeneration
+    }
+
+    /// Hand `completion` the transcript once the recognizer has delivered its final result
+    /// for the recording that just stopped, on the main queue, exactly once.
+    ///
+    /// Call after `stopRecording()`. Stopping ends the audio, but the recognizer's final
+    /// result — which can carry words the partial results did not yet have — arrives a
+    /// little later. Reading `transcribedText` straight after the stop drops the end of
+    /// the sentence. If nothing is in flight this completes on the next main-queue hop; if
+    /// the final result never comes it completes after `timeout` with the text so far, so
+    /// a caller waiting on it can never be stranded.
+    func awaitFinalTranscription(timeout: TimeInterval = VoiceInputManager.finalTranscriptionTimeout,
+                                 completion: @escaping (String) -> Void) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            if self.recognitionSettled {
+                completion(self.transcribedText)
+                return
+            }
+            var done = false
+            let finish: (String) -> Void = { text in
+                guard !done else { return }
+                done = true
+                completion(text)
+            }
+            self.transcriptWaiters.append(finish)
+            DispatchQueue.main.asyncAfter(deadline: .now() + timeout) { [weak self] in
+                guard let self = self, !done else { return }
+                self.log("VoiceInput: no final transcript within \(timeout)s — using the text so far (length=\(self.transcribedText.count))")
+                finish(self.transcribedText)
+            }
+        }
+    }
+
+    /// Tell the owner that recording could not start for a reason a retry cannot fix.
+    /// Clears the previous recording's text first so the failed attempt can't resend it.
+    private func reportCaptureStartFailed(_ reason: String) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            self.transcribedText = ""
+            self.onCaptureStartFailed?(reason)
         }
     }
 
@@ -371,7 +469,7 @@ class VoiceInputManager: NSObject, ObservableObject {
         log("VoiceInput: stopRecording — session left active, category=\(AVAudioSession.sharedInstance().category.rawValue)")
         #endif
 
-        log("VoiceInput: recording stopped")
+        log("VoiceInput: recording stopped (called from \(Self.callerSummary(Thread.callStackSymbols)))")
         // Weak, so the block is harmless if the manager is gone by the time it runs.
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
@@ -400,6 +498,31 @@ class VoiceInputManager: NSObject, ObservableObject {
             log("VoiceInput: capture summary — \(stats.summary)")
             captureMonitor = nil
         }
+    }
+
+    /// Readable name for an authorization status — the default description of this
+    /// Objective-C enum is `SFSpeechRecognizerAuthorizationStatus(rawValue: 1)`.
+    static func describe(_ status: SFSpeechRecognizerAuthorizationStatus) -> String {
+        switch status {
+        case .notDetermined: return "notDetermined"
+        case .denied: return "denied"
+        case .restricted: return "restricted"
+        case .authorized: return "authorized"
+        @unknown default: return "unknown(\(status.rawValue))"
+        }
+    }
+
+    /// The symbols of the frames above the current function, nearest first, for the log
+    /// line that says who stopped the mic. `callStackSymbols` rows look like
+    /// `"3   Image   0x00000001 $s9VoiceCode… + 123"`; this keeps just the symbol (still
+    /// mangled — pipe through `swift demangle`). Frame 0 is the function that asked, so
+    /// it is skipped.
+    static func callerSummary(_ symbols: [String], skip: Int = 1, count: Int = 3) -> String {
+        let frames = symbols.dropFirst(skip).prefix(count).map { frame -> String in
+            let parts = frame.split(separator: " ", omittingEmptySubsequences: true)
+            return parts.count >= 4 ? String(parts[3]) : frame
+        }
+        return frames.isEmpty ? "unknown" : frames.joined(separator: " <- ")
     }
 
     /// Whether an input format can be handed to `installTap`. Pure, so the guard

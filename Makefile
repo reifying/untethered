@@ -13,7 +13,7 @@ WRAP := ./scripts/wrap-command
 .PHONY: help test test-verbose test-quiet test-class test-method test-ui test-ui-crash test-ui-autoscroll build clean setup-simulator deploy-device deploy-iphone15 deploy-iphone14 deploy-device-old generate-project show-destinations check-sdk xcode-add-files list-simulators
 .PHONY: backend-test backend-test-manual-startup backend-test-manual-protocol backend-test-manual-watcher-new backend-test-manual-prompt-new backend-test-manual-prompt-resume backend-test-manual-broadcast backend-test-manual-errors backend-test-manual-real-data backend-test-manual-resources backend-test-manual-free backend-test-manual-all backend-clean backend-run backend-stop backend-stop-all backend-restart backend-nrepl backend-nrepl-stop recipe-sync tmux-clean
 .PHONY: bump-build bump-build-simple archive export-ipa upload-testflight deploy-testflight
-.PHONY: build-mac test-mac test-mac-class test-mac-method test-mac-ui test-mac-ui-settings run-mac clean-mac list-schemes
+.PHONY: build-mac test-mac test-mac-class test-mac-method test-mac-ui test-mac-ui-settings run-mac mac-sign-check clean-mac list-schemes
 .PHONY: release-mac release-mac-build release-mac-notarize release-mac-package
 .PHONY: rn-deps rn-watch rn-test rn-test-watch rn-release rn-repl rn-clean
 
@@ -42,6 +42,7 @@ help:
 	@echo "macOS targets:"
 	@echo "  build-mac         - Build the macOS project"
 	@echo "  run-mac           - Build and run the macOS app"
+	@echo "  mac-sign-check    - Show whether the built macOS app has a stable signature (permissions survive rebuilds)"
 	@echo "  test-mac          - Run macOS unit tests"
 	@echo "  test-mac-ui       - Run macOS UI tests"
 	@echo "  test-mac-ui-settings - Run Settings dialog UI test with screenshots"
@@ -430,9 +431,24 @@ regenerate-key:
 
 # macOS targets
 
+# Signing identity for the macOS debug build (build-mac, run-mac). Empty (the default)
+# leaves the project's ad-hoc "Sign to Run Locally" signing, whose identity is the hash of
+# the binary: every rebuild looks like a new app to macOS, so it asks for the microphone,
+# speech recognition and notification permissions again. A named identity (an Apple
+# Development certificate, or a self-signed Code Signing certificate from Keychain Access)
+# keeps the identity — bundle ID + certificate — the same across builds, so grants stick.
+# Usage: make run-mac MAC_SIGN_IDENTITY="Apple Development: Your Name (TEAMID)"
+# List what is installed: security find-identity -v -p codesigning
+# Hardened runtime is turned off for these local builds (as ad-hoc signing already does):
+# its library validation refuses the debug dylib when the certificate has no team ID.
+# Check which kind the built app has: make mac-sign-check
+MAC_SIGN_IDENTITY ?=
+MAC_SIGN_ARGS := $(if $(MAC_SIGN_IDENTITY),CODE_SIGN_STYLE=Manual ENABLE_HARDENED_RUNTIME=NO CODE_SIGN_IDENTITY='$(MAC_SIGN_IDENTITY)' $(if $(DEVELOPMENT_TEAM),DEVELOPMENT_TEAM=$(DEVELOPMENT_TEAM)))
+MAC_APP := $(IOS_DIR)/build/Build/Products/Debug/VoiceCodeMac.app
+
 # Build the macOS project
 build-mac: generate-project
-	$(WRAP) bash -c "cd $(IOS_DIR) && xcodebuild build -scheme VoiceCodeMac -destination 'platform=macOS'"
+	$(WRAP) bash -c "cd $(IOS_DIR) && xcodebuild build -scheme VoiceCodeMac -destination 'platform=macOS' $(MAC_SIGN_ARGS)"
 
 # Run macOS unit tests
 test-mac: generate-project
@@ -465,8 +481,24 @@ test-mac-ui-settings: generate-project
 
 # Run the macOS app
 run-mac: generate-project
-	$(WRAP) bash -c "cd $(IOS_DIR) && xcodebuild build -scheme VoiceCodeMac -destination 'platform=macOS' -derivedDataPath build"
-	@open $(IOS_DIR)/build/Build/Products/Debug/VoiceCodeMac.app
+	$(WRAP) bash -c "cd $(IOS_DIR) && xcodebuild build -scheme VoiceCodeMac -destination 'platform=macOS' -derivedDataPath build $(MAC_SIGN_ARGS)"
+	@open $(MAC_APP)
+
+# Show how the built macOS app is signed, and whether macOS will keep its permissions
+# across rebuilds. A designated requirement of `cdhash H"..."` is ad hoc: it changes with
+# every build, so every build prompts again. `identifier "..." and certificate leaf = H"..."`
+# (or an anchor on a named certificate) is stable: grants carry over.
+mac-sign-check:
+	@test -d $(MAC_APP) || { echo "No built app at $(MAC_APP) - run: make run-mac"; exit 1; }
+	@echo "App: $(MAC_APP)"
+	@codesign -dv $(MAC_APP) 2>&1 | grep -E '^(Identifier|Signature|Authority|TeamIdentifier)' || true
+	@dr=$$(codesign -d -r- $(MAC_APP) 2>&1 | sed -n 's/^#* *designated => //p'); \
+	echo "Designated requirement: $$dr"; \
+	case "$$dr" in \
+	  *cdhash*) echo "RESULT: ad hoc - macOS will ask for permissions again after every rebuild. Set MAC_SIGN_IDENTITY (see the comment above build-mac in the Makefile)." ;; \
+	  *certificate*|*anchor*) echo "RESULT: stable identity - permission grants survive rebuilds." ;; \
+	  *) echo "RESULT: could not read the designated requirement." ;; \
+	esac
 
 # Clean macOS build artifacts
 clean-mac:
