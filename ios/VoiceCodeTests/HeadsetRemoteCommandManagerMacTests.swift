@@ -605,13 +605,14 @@ final class HeadsetRemoteCommandManagerMacTests: XCTestCase {
         XCTAssertEqual(f.manager.suspendKeepAliveCount, 1, "the BLE path suspends the keep-alive (F2)")
     }
 
-    /// The A2DP-vs-HFP fix: while BlueParrott is enabled, the keep-alive must never actually
+    /// The A2DP-vs-HFP fix: while a BlueParrott is CONNECTED, the keep-alive must never actually
     /// stream — its continuous A2DP output pins the headset radio and starves the HFP mic
     /// (confirmed on hardware: capture works the instant the keep-alive stops reaching the
     /// headset). The `.resumeKeepAlive` effect still FIRES after a recording finalizes, but
     /// `startKeepAlive` suppresses the actual playback when BlueParrott is the active source.
-    func testBlueParrottActive_keepAliveNeverStreams_evenOnResume() {
+    func testBlueParrottConnected_keepAliveNeverStreams_evenOnResume() {
         let f = makeFixture()                                        // engaged: blueParrottEnabled = true
+        driveBLELive(f.central)                                      // the BlueParrott is actually connected
         f.input.transcribedText = ""                                 // empty → finalize back to idle
 
         f.manager.handleButtonEvent(.tap, source: .blueParrottBLE)   // idle → recording (suspends keep-alive)
@@ -623,6 +624,30 @@ final class HeadsetRemoteCommandManagerMacTests: XCTestCase {
                                     "the .resumeKeepAlive effect still fires on finalize")
         XCTAssertEqual(f.manager.keepAliveStartedCount, 0,
                        "but the keep-alive never actually streams while BlueParrott is active (A2DP would starve the HFP mic)")
+    }
+
+    /// The bug from the field log: the BlueParrott setting is on but no BlueParrott is connected
+    /// (the driver is using AirPods). The keep-alive was suppressed anyway, so the app was not
+    /// the Now Playing app and macOS never delivered the AirPods click that should stop the
+    /// recording: starting worked, stopping did nothing. Suppress only for a connected headset.
+    func testBlueParrottEnabledButNotConnected_keepAliveStreams_soAirPodsClicksArrive() {
+        let f = makeFixture()                                        // blueParrottEnabled = true, BLE never connected
+        f.manager.startKeepAlive()
+        XCTAssertEqual(f.manager.keepAliveStartedCount, 1,
+                       "with no BlueParrott connected the keep-alive must hold the Now Playing slot for media keys")
+    }
+
+    /// The same, through a whole media-key turn: after the recording finalizes, the resumed
+    /// keep-alive streams again so the NEXT AirPods click is delivered too.
+    func testMediaKeyTurn_withBlueParrottEnabledButAbsent_resumesTheKeepAlive() {
+        let f = makeFixture()
+        f.input.transcribedText = ""
+        f.manager.simulateMediaTap()                                 // AirPods click → recording
+        f.manager.simulateMediaTap()                                 // AirPods click → finalize + resumeKeepAlive
+        drainMainQueue()
+        XCTAssertGreaterThanOrEqual(f.manager.resumeKeepAliveCount, 1)
+        XCTAssertGreaterThanOrEqual(f.manager.keepAliveStartedCount, 1,
+                                    "the resumed keep-alive must actually stream when no BlueParrott is connected")
     }
 
     /// Without BlueParrott, the keep-alive behaves normally (media-key / AirPods path needs

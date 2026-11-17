@@ -870,13 +870,18 @@ extension HeadsetRemoteCommandManager {
         // The keep-alive is a CONTINUOUS A2DP output stream — it exists only to hold the
         // Now Playing slot for MEDIA-KEY routing (AirPods stem / system keys). The
         // BlueParrott's buttons arrive over BLE/GATT and don't need it. When BlueParrott is
-        // the active source, streaming the keep-alive to the headset pins it in A2DP and
+        // connected, streaming the keep-alive to the headset pins it in A2DP and
         // starves the HFP mic (confirmed on the B450-XT: capture dies at ~3 silent buffers
         // while the keep-alive streams to the headset, and works the instant output leaves
-        // it). So suppress the keep-alive entirely while BlueParrott is enabled.
-        if settings.blueParrottEnabled {
+        // it). So suppress the keep-alive while a BlueParrott is actually CONNECTED.
+        //
+        // "Enabled in settings" is not enough: with the setting on but no BlueParrott
+        // present (the driver is wearing AirPods) the keep-alive was suppressed anyway,
+        // the app stopped being the Now Playing app, and macOS never delivered the AirPods
+        // click that should stop a recording. Starting worked, stopping did nothing.
+        if settings.blueParrottEnabled, blueParrottBLEManager?.isConnected == true {
             keepAlivePlayer?.stop()
-            hLog("Headset: keep-alive suppressed — BlueParrott BLE active (A2DP output would starve the HFP mic)")
+            hLog("Headset: keep-alive suppressed — BlueParrott connected (A2DP output would starve the HFP mic)")
             return
         }
         #endif
