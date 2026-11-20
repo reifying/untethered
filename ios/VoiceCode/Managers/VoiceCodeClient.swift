@@ -543,6 +543,19 @@ class VoiceCodeClient: ObservableObject {
         }
     }
 
+    /// Resume every `executeCommand` caller still waiting for `command_started` with
+    /// nil, the same result as `command_error`. Called whenever the socket goes away,
+    /// deliberately or not, so a caller's Task (and the spinner it drives) cannot
+    /// wait for ever. Main queue only.
+    private func failPendingCommandLaunches() {
+        let pending = commandExecutionContinuations
+        commandExecutionContinuations.removeAll()
+        for (commandId, continuation) in pending {
+            LogManager.shared.log("Command launch abandoned, the socket closed before command_started: \(commandId)", category: "VoiceCodeClient")
+            continuation.resume(returning: nil)
+        }
+    }
+
     func disconnect() {
         // Stop keepalive ping timer
         stopPingTimer()
@@ -552,13 +565,7 @@ class VoiceCodeClient: ObservableObject {
         webSocket?.cancel(with: .goingAway, reason: nil)
         webSocket = nil
 
-        // Drain any in-flight executeCommand callers so their Tasks don't hang
-        // after the socket closes. They receive nil, same as command_error.
-        let pendingCommandContinuations = commandExecutionContinuations
-        commandExecutionContinuations.removeAll()
-        for continuation in pendingCommandContinuations.values {
-            continuation.resume(returning: nil)
-        }
+        failPendingCommandLaunches()
 
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
@@ -841,6 +848,9 @@ class VoiceCodeClient: ObservableObject {
         // Clear WebSocket reference to enable reconnection
         webSocket?.cancel(with: .goingAway, reason: nil)
         webSocket = nil
+
+        // The answer to a command sent on this socket will never come.
+        failPendingCommandLaunches()
 
         LogManager.shared.log("🔄 VoiceCodeClient updating: isConnected=false (failure)", category: "VoiceCodeClient")
         isConnected = false
