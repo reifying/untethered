@@ -151,6 +151,10 @@ class VoiceInputManager: NSObject, ObservableObject {
     /// engine starts. This lets the caller (e.g. `HeadsetRemoteCommandManager`)
     /// restart any audio-output keep-alive player in the correct session context,
     /// so it doesn't lose the Now Playing slot mid-recording.
+    /// Test seam: stands in for starting the audio engine, so a capture that cannot
+    /// start (no usable input device) can be driven without audio hardware.
+    var startCaptureEngineOverride: (() -> Bool)?
+
     func startRecording(onSessionReady: (() -> Void)? = nil) {
         // Gate up FIRST — blocks any new speech (e.g. WebSocket-delivered
         // assistant messages auto-spoken by SessionSyncManager) from being
@@ -248,7 +252,14 @@ class VoiceInputManager: NSObject, ObservableObject {
         // Build the engine + diagnostic tap + capture monitor and start the input
         // route. Shared with restartCapture() so the F3 recovery path stands up an
         // identical capture.
-        guard startCaptureEngine() else { return }
+        guard startCaptureEngineOverride?() ?? startCaptureEngine() else {
+            // Nothing was recorded. The previous recording's text is still in
+            // `transcribedText` (on the Mac nothing clears it after a send) and the
+            // recognizer counts as settled, so whoever finalizes this failed attempt
+            // was handed the previous prompt, and sent it to the agent a second time.
+            DispatchQueue.main.async { [weak self] in self?.transcribedText = "" }
+            return
+        }
 
         // Start recognition task
         recognitionGeneration += 1
