@@ -13,6 +13,35 @@ import XCTest
 
 final class AutoScrollDecisionTests: XCTestCase {
 
+    // MARK: - shouldAutoScroll by newest message
+
+    func testShouldAutoScroll_whenTheNewestMessageChanged() {
+        XCTAssertTrue(AutoScrollDecision.shouldAutoScroll(
+            oldLastID: UUID(), newLastID: UUID(), autoScrollEnabled: true, isSheetOpen: false))
+        XCTAssertTrue(AutoScrollDecision.shouldAutoScroll(
+            oldLastID: UUID?.none, newLastID: UUID(), autoScrollEnabled: true, isSheetOpen: false),
+            "the first message of an empty conversation")
+    }
+
+    func testShouldNotAutoScroll_whenTheNewestMessageIsTheSame() {
+        // Older messages pruned or paged in above; nothing new at the bottom.
+        let last = UUID()
+        XCTAssertFalse(AutoScrollDecision.shouldAutoScroll(
+            oldLastID: last, newLastID: last, autoScrollEnabled: true, isSheetOpen: false))
+    }
+
+    func testShouldNotAutoScroll_whenTheListBecameEmpty() {
+        XCTAssertFalse(AutoScrollDecision.shouldAutoScroll(
+            oldLastID: UUID(), newLastID: UUID?.none, autoScrollEnabled: true, isSheetOpen: false))
+    }
+
+    func testShouldNotAutoScroll_onANewNewestMessage_whenDisabledOrSheetOpen() {
+        XCTAssertFalse(AutoScrollDecision.shouldAutoScroll(
+            oldLastID: UUID(), newLastID: UUID(), autoScrollEnabled: false, isSheetOpen: false))
+        XCTAssertFalse(AutoScrollDecision.shouldAutoScroll(
+            oldLastID: UUID(), newLastID: UUID(), autoScrollEnabled: true, isSheetOpen: true))
+    }
+
     // MARK: - shouldAutoScroll (schedule-time gate)
 
     func testShouldAutoScroll_onGrowthWhenEnabledAndSheetClosed() {

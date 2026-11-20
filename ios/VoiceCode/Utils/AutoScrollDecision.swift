@@ -23,6 +23,19 @@ enum AutoScrollDecision {
         return shouldStillScroll(autoScrollEnabled: autoScrollEnabled, isSheetOpen: isSheetOpen)
     }
 
+    /// Schedule-time gate on the newest message rather than the count. The list
+    /// keeps a bounded window, so a save that adds a message can prune older
+    /// ones in the same step: the count stays the same or falls while a new
+    /// message has arrived. A different newest message means one did. A list
+    /// that became empty has nothing to scroll to.
+    static func shouldAutoScroll<ID: Equatable>(oldLastID: ID?,
+                                                newLastID: ID?,
+                                                autoScrollEnabled: Bool,
+                                                isSheetOpen: Bool) -> Bool {
+        guard let newLastID, newLastID != oldLastID else { return false }
+        return shouldStillScroll(autoScrollEnabled: autoScrollEnabled, isSheetOpen: isSheetOpen)
+    }
+
     /// Fire-time re-gate (no counts): growth was already established at schedule
     /// time; by the time the debounced closure runs the user may have toggled
     /// auto-scroll off or opened the "View Full" sheet, so re-check just those.
