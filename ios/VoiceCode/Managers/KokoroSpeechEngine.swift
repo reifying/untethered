@@ -244,12 +244,18 @@ final class KokoroSpeechEngine: ObservableObject, NeuralSpeechEngine {
         pathMonitor = monitor
     }
 
-    /// FluidAudio's cache folders under Application Support (`fluidaudio` for TTS models,
-    /// `FluidAudio` for others), matched without regard to case.
+    /// FluidAudio's cache folders, matched without regard to case: under Application Support on
+    /// the iPhone (`fluidaudio` for TTS models, `FluidAudio` for others), and under `.cache` in
+    /// the app's sandbox home on the Mac.
     static func modelDirectories() -> [URL] {
-        guard let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first,
-              let entries = try? FileManager.default.contentsOfDirectory(at: support, includingPropertiesForKeys: nil) else { return [] }
-        return entries.filter { $0.lastPathComponent.lowercased() == "fluidaudio" }
+        var parents = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)
+        #if os(macOS)
+        parents.append(URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".cache", isDirectory: true))
+        #endif
+        return parents.flatMap { parent in
+            ((try? FileManager.default.contentsOfDirectory(at: parent, includingPropertiesForKeys: nil)) ?? [])
+                .filter { $0.lastPathComponent.lowercased() == "fluidaudio" }
+        }
     }
 
     /// Application Support is backed up to iCloud by default; the model is re-downloadable.
