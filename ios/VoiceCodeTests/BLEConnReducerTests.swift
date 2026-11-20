@@ -302,4 +302,19 @@ final class BLEConnReducerTests: XCTestCase {
         (state, _) = ConnReducer.reduce(state, .subscribed, savedID: id)
         XCTAssertEqual(state, .live)
     }
+
+    // MARK: - reconnecting: a refused reconnect must not strand the machine
+
+    /// `.reconnecting` holds one pending connect and no timer. If CoreBluetooth
+    /// reports that connect as failed, nothing is left that could bring the headset
+    /// back, so the machine has to start scanning again.
+    func testReconnecting_connectFailed_fallsBackToScanning() {
+        for retryable in [true, false] {
+            let (state, fx) = ConnReducer.reduce(.reconnecting, .connectFailed(retryable: retryable), savedID: UUID())
+            XCTAssertEqual(state, .scanning(attempt: 1),
+                           "a failed held reconnect (retryable=\(retryable)) must go back to scanning, not stay in .reconnecting")
+            XCTAssertTrue(fx.contains(.startContinuousScan))
+            XCTAssertTrue(fx.contains(.armTimer(.scanTick)))
+        }
+    }
 }
