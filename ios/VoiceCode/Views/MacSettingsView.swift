@@ -99,6 +99,7 @@ struct GeneralSettingsTab: View {
 
 struct ConnectionSettingsTab: View {
     @EnvironmentObject var settings: AppSettings
+    @EnvironmentObject var client: VoiceCodeClient
 
     let onServerChange: (String) -> Void
     let onAPIKeyChanged: () -> Void
@@ -110,12 +111,14 @@ struct ConnectionSettingsTab: View {
     @State private var apiKeyError: String?
     @State private var hasKey: Bool = false
     @State private var showingDeleteConfirmation = false
-    @State private var savedServerURL: String = ""
-    @State private var savedServerPort: String = ""
+    /// The address last applied from this tab. Nil until Apply is pressed; until
+    /// then the address the client is using is the one to compare with.
+    @State private var appliedServerURL: String?
 
-    /// Whether the current server fields differ from the last-applied values
+    /// Whether the address typed here differs from the one the client is using.
     private var serverSettingsChanged: Bool {
-        settings.serverURL != savedServerURL || settings.serverPort != savedServerPort
+        MacSettingsView.serverNeedsApply(entered: settings.fullServerURL,
+                                         inUse: appliedServerURL ?? client.currentServerURL)
     }
 
     var body: some View {
@@ -135,8 +138,7 @@ struct ConnectionSettingsTab: View {
                     Spacer()
                     if serverSettingsChanged {
                         Button("Apply") {
-                            savedServerURL = settings.serverURL
-                            savedServerPort = settings.serverPort
+                            appliedServerURL = settings.fullServerURL
                             onServerChange(settings.fullServerURL)
                         }
                         .buttonStyle(.borderedProminent)
@@ -211,8 +213,11 @@ struct ConnectionSettingsTab: View {
         .padding()
         .onAppear {
             hasKey = KeychainManager.shared.hasAPIKey()
-            savedServerURL = settings.serverURL
-            savedServerPort = settings.serverPort
+            // Not the typed values: this runs again each time the tab is shown, and
+            // taking them as "applied" hid the Apply button for an address that was
+            // typed but never applied. The client went on using the old address
+            // with nothing on screen to say so.
+            appliedServerURL = nil
         }
         .alert("Delete API Key?", isPresented: $showingDeleteConfirmation) {
             Button("Cancel", role: .cancel) {}
@@ -500,6 +505,12 @@ struct DrivingSettingsTab: View {
 // MARK: - Helpers
 
 extension MacSettingsView {
+    /// Whether the Apply button should show: the address typed differs from the one
+    /// the client is connected (or connecting) to.
+    static func serverNeedsApply(entered: String, inUse: String) -> Bool {
+        entered != inUse
+    }
+
     static func maskedKey(_ key: String) -> String {
         guard key.count > 8 else { return key }
         let prefix = String(key.prefix(4))

@@ -596,6 +596,10 @@ class VoiceCodeClient: ObservableObject {
         connect(sessionId: sessionId)
     }
 
+    /// The server address this client connects to. Settings compares it with what
+    /// is typed to know whether there is a change left to apply.
+    var currentServerURL: String { serverURL }
+
     func updateServerURL(_ url: String) {
         LogManager.shared.log("🔄 [VoiceCodeClient] Updating server URL from \(serverURL) to \(url)", category: "VoiceCodeClient")
 

@@ -88,6 +88,26 @@ final class MacSettingsViewTests: XCTestCase {
         XCTAssertNotNil(wrapper)
     }
 
+    /// An address typed but not applied must still count as unapplied after the
+    /// tab is left and shown again: the comparison is with the address the client
+    /// is using, not with whatever was in the fields when the tab appeared.
+    func testAnUnappliedServerAddressStillNeedsApplyAgainstTheClientsAddress() {
+        let settings = AppSettings()
+        settings.serverURL = "127.0.0.1"
+        settings.serverPort = "1"
+        let client = VoiceCodeClient(serverURL: settings.fullServerURL, setupObservers: false)
+        XCTAssertFalse(MacSettingsView.serverNeedsApply(entered: settings.fullServerURL, inUse: client.currentServerURL))
+
+        settings.serverURL = "localhost"        // typed, never applied
+        XCTAssertTrue(MacSettingsView.serverNeedsApply(entered: settings.fullServerURL, inUse: client.currentServerURL),
+                      "the client still uses \(client.currentServerURL); Apply must be offered")
+
+        client.updateServerURL(settings.fullServerURL)   // Apply
+        XCTAssertEqual(client.currentServerURL, settings.fullServerURL)
+        XCTAssertFalse(MacSettingsView.serverNeedsApply(entered: settings.fullServerURL, inUse: client.currentServerURL))
+        client.disconnect()
+    }
+
     func testConnectionSettingsTabCompiles() {
         struct TestWrapper: View {
             let settings: AppSettings
