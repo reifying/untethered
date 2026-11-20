@@ -772,7 +772,12 @@ class VoiceCodeClient: ObservableObject {
     // MARK: - Message Handling
 
     private func receiveMessage() {
-        webSocket?.receive { [weak self] result in
+        // The socket this receive belongs to. A deliberate reconnect (disconnect()
+        // then connect(), as after a new server address or API key) cancels the old
+        // socket and creates the new one in the same turn; the old socket's pending
+        // receive then fails. That failure is about the old socket only.
+        guard let socket = webSocket else { return }
+        socket.receive { [weak self] result in
             guard let self = self else { return }
 
             switch result {
@@ -793,8 +798,12 @@ class VoiceCodeClient: ObservableObject {
                 @unknown default:
                     break
                 }
-                // Continue receiving
-                self.receiveMessage()
+                // Continue receiving, on the main queue where `webSocket` is owned,
+                // and only while this is still the client's socket.
+                DispatchQueue.main.async { [weak self] in
+                    guard let self = self, self.webSocket === socket else { return }
+                    self.receiveMessage()
+                }
 
             case .failure(let error):
                 // Log the error details for debugging
@@ -803,7 +812,7 @@ class VoiceCodeClient: ObservableObject {
                 // Clear WebSocket reference inside main queue to ensure thread safety
                 // Both connect() and this failure handler must access webSocket on main thread
                 DispatchQueue.main.async { [weak self] in
-                    self?.handleSocketFailure(errorDescription: error.localizedDescription)
+                    self?.handleSocketFailure(errorDescription: error.localizedDescription, failedSocket: socket)
                 }
             }
         }
@@ -815,7 +824,17 @@ class VoiceCodeClient: ObservableObject {
     ///
     /// Must run on the main queue. Internal so tests can drive a socket loss
     /// without standing up a real server to kill.
-    internal func handleSocketFailure(errorDescription: String) {
+    ///
+    /// `failedSocket` is the socket the failure came from. When it is no longer the
+    /// client's socket the failure is stale and is ignored: acting on it cancelled
+    /// the socket that had just replaced it, so every deliberate reconnect killed
+    /// its own new connection once and showed "cancelled" as the error.
+    internal func handleSocketFailure(errorDescription: String, failedSocket: URLSessionWebSocketTask? = nil) {
+        if let failedSocket = failedSocket, failedSocket !== webSocket {
+            LogManager.shared.log("Ignoring failure of a socket that was already replaced: \(errorDescription)", category: "VoiceCodeClient")
+            return
+        }
+
         // Stop keepalive ping timer
         stopPingTimer()
 
