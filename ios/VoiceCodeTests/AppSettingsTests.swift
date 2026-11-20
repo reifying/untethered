@@ -956,4 +956,27 @@ final class AppSettingsTests: XCTestCase {
         settings.blueParrottPeripheralID = nil
         XCTAssertNil(UserDefaults.standard.string(forKey: "blueParrottPeripheralID"))
     }
+
+    // MARK: - Test Connection reports once
+
+    /// A test whose answer arrives before the timeout must not be overwritten by
+    /// "Connection timeout" when the timeout passes. Nothing listens on port 1, so
+    /// the refusal arrives at once; the wait runs past the timeout.
+    func testTestConnectionReportsItsResultOnlyOnce() {
+        let settings = AppSettings()
+        settings.serverURL = "127.0.0.1"
+        settings.serverPort = "1"
+
+        var results: [(Bool, String)] = []
+        settings.testConnection { success, message in results.append((success, message)) }
+
+        let waited = expectation(description: "past the timeout")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 6) { waited.fulfill() }
+        wait(for: [waited], timeout: 10)
+
+        XCTAssertEqual(results.count, 1, "one test, one result; got \(results.map(\.1))")
+        XCTAssertEqual(results.first?.0, false)
+        XCTAssertNotEqual(results.last?.1, "Connection timeout",
+                          "the real failure must not be replaced by the timeout message")
+    }
 }
