@@ -23,7 +23,9 @@ final class DrivingModeLayoutTests: XCTestCase {
         for size in sizes {
             for count in DrivingModeLayout.minReplayCount...DrivingModeLayout.maxReplayCount {
                 let bands = DrivingModeLayout.bands(in: size, replayCount: count)
-                let all = [bands.status] + bands.tiles + [bands.talk]
+                // The bottom row is the talk and silence buttons side by side.
+                let bottomRow = bands.talk.union(bands.silence)
+                let all = [bands.status] + bands.tiles + [bottomRow]
                 let container = CGRect(origin: .zero, size: size)
 
                 XCTAssertEqual(bands.tiles.count, count)
@@ -35,6 +37,12 @@ final class DrivingModeLayoutTests: XCTestCase {
                                   "a band is outside the window at \(size), \(count) tiles")
                     y = band.maxY
                 }
+                XCTAssertEqual(bands.talk.minX, 0)
+                XCTAssertEqual(bands.talk.maxX, bands.silence.minX, accuracy: 0.001, "talk and silence meet with no gap or overlap")
+                XCTAssertEqual(bands.silence.maxX, size.width, accuracy: 0.001)
+                XCTAssertEqual(bands.talk.minY, bands.silence.minY)
+                XCTAssertEqual(bands.talk.height, bands.silence.height)
+                XCTAssertEqual(bands.talk.width, bands.silence.width, accuracy: 0.001, "the two buttons are the same size")
                 XCTAssertEqual(y, size.height, accuracy: 0.001, "the bands must use the whole height at \(size)")
             }
         }
@@ -79,12 +87,14 @@ final class DrivingModeLayoutTests: XCTestCase {
         XCTAssertGreaterThan(body / 944, 0.85, "the replay tiles and the talk bar are the point of the screen")
         XCTAssertGreaterThan(bands.tiles[0].height, 200, "each one is a target that is hard to miss")
         XCTAssertGreaterThan(bands.talk.height, 200, "the talk bar is as easy to hit as a tile")
+        XCTAssertGreaterThan(bands.silence.height, 200, "the silence button is as tall as a tile")
+        XCTAssertGreaterThan(bands.silence.width, 700, "and half the screen wide: a big button")
     }
 
     func testAZeroOrNegativeSizeDoesNotProduceNegativeBands() {
         for size in [CGSize.zero, CGSize(width: -10, height: -10)] {
             let bands = DrivingModeLayout.bands(in: size, replayCount: 3)
-            for band in [bands.status] + bands.tiles + [bands.talk] {
+            for band in [bands.status] + bands.tiles + [bands.talk, bands.silence] {
                 XCTAssertGreaterThanOrEqual(band.width, 0)
                 XCTAssertGreaterThanOrEqual(band.height, 0)
             }

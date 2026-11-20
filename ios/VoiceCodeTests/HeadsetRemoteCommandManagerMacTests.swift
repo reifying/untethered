@@ -277,6 +277,102 @@ final class HeadsetRemoteCommandManagerMacTests: XCTestCase {
         XCTAssertEqual(f.output.replayedTexts, ["From the menu."])
     }
 
+    // MARK: - Silence and Space (driving mode's button and keys)
+
+    /// Silence stops the one reply being read: a skip, not a stop and not mute.
+    func testSilenceFromUI_whileSpeaking_skipsOneReplyAndDoesNotMute() {
+        let f = makeFixture()
+        f.output.isSpeaking = true
+        drainMainQueue()
+        XCTAssertEqual(f.manager.testSessionState, .speaking)
+
+        XCTAssertTrue(f.manager.silenceCurrentReplyFromUI())
+
+        XCTAssertEqual(f.output.skipCurrentCallCount, 1)
+        XCTAssertFalse(f.output.stopCalled, "the replies still waiting are kept")
+        XCTAssertFalse(f.output.isMuted, "silencing one reply must not leave speech muted")
+        XCTAssertTrue(f.output.replayedTexts.isEmpty)
+    }
+
+    /// With nothing being read the silence button does nothing at all.
+    func testSilenceFromUI_whenNothingIsPlaying_doesNothing() {
+        let f = makeFixture()
+        f.manager.fetchNewestReply = { [unowned self] _ in self.reply("Not asked for.") }
+
+        XCTAssertFalse(f.manager.silenceCurrentReplyFromUI())
+
+        XCTAssertEqual(f.output.skipCurrentCallCount, 0)
+        XCTAssertFalse(f.output.stopCalled)
+        XCTAssertTrue(f.output.replayedTexts.isEmpty)
+        XCTAssertFalse(f.input.startRecordingCalled)
+        XCTAssertEqual(f.manager.testSessionState, .idle)
+    }
+
+    /// The app's own button works with hands-free off, when the machine is not
+    /// tracking speech.
+    func testSilenceFromUI_whenDisengagedAndSpeaking_stillSilences() {
+        let f = makeFixture(engaged: false)
+        f.output.isSpeaking = true
+        drainMainQueue()
+
+        XCTAssertTrue(f.manager.silenceCurrentReplyFromUI())
+        XCTAssertEqual(f.output.skipCurrentCallCount, 1)
+    }
+
+    /// Space while a reply is being read silences it and does not replay.
+    func testSpace_whileSpeaking_silences() {
+        let f = makeFixture()
+        f.manager.fetchNewestReply = { [unowned self] _ in self.reply("Last reply.") }
+        f.output.isSpeaking = true
+        drainMainQueue()
+
+        f.manager.silenceOrRepeatFromUI()
+
+        XCTAssertEqual(f.output.skipCurrentCallCount, 1)
+        XCTAssertTrue(f.output.replayedTexts.isEmpty)
+        XCTAssertFalse(f.input.startRecordingCalled, "Space no longer opens the microphone")
+    }
+
+    /// Space with nothing playing reads the last reply again.
+    func testSpace_whenNothingIsPlaying_replaysTheLastReply() {
+        let f = makeFixture()
+        f.manager.fetchNewestReply = { [unowned self] _ in self.reply("Last reply.") }
+
+        f.manager.silenceOrRepeatFromUI()
+
+        XCTAssertEqual(f.output.replayedTexts, ["Last reply."])
+        XCTAssertEqual(f.output.skipCurrentCallCount, 0)
+        XCTAssertFalse(f.input.startRecordingCalled, "Space no longer opens the microphone")
+    }
+
+    /// Space, then Space again: the replay it started is silenced by the second press.
+    func testSpace_twice_replaysThenSilences() {
+        let f = makeFixture()
+        f.manager.fetchNewestReply = { [unowned self] _ in self.reply("Last reply.") }
+
+        f.manager.silenceOrRepeatFromUI()
+        f.output.isSpeaking = true                                     // the replay started
+        drainMainQueue()
+        f.manager.silenceOrRepeatFromUI()
+
+        XCTAssertEqual(f.output.replayedTexts, ["Last reply."])
+        XCTAssertEqual(f.output.skipCurrentCallCount, 1)
+    }
+
+    /// Space while the microphone is open stops and sends, as the talk key does.
+    func testSpace_whileRecording_stopsAndSends() {
+        let f = makeFixture()
+        f.manager.fetchNewestReply = { [unowned self] _ in self.reply("Last reply.") }
+        f.manager.toggleRecordingFromUI()
+        XCTAssertEqual(f.manager.testSessionState, .recording)
+
+        f.manager.silenceOrRepeatFromUI()
+
+        XCTAssertNotEqual(f.manager.testSessionState, .recording)
+        XCTAssertTrue(f.output.replayedTexts.isEmpty)
+        XCTAssertEqual(f.output.skipCurrentCallCount, 0)
+    }
+
     // MARK: - BLE PTT (end-to-end through fake central + recognizer)
 
     /// A BlueParrott hold drives idle → recording (on holdStarted) → finalizing (on

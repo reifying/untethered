@@ -39,11 +39,17 @@ struct DrivingModeView: View {
                     .frame(width: bands.tiles[index].width, height: bands.tiles[index].height)
                 }
 
-                DrivingTalkBar(voiceInput: voiceInput,
-                               state: headsetManager.state,
-                               size: bands.talk.size,
-                               action: { headsetManager.toggleRecordingFromUI() })
-                    .frame(width: bands.talk.width, height: bands.talk.height)
+                HStack(spacing: 0) {
+                    DrivingTalkBar(voiceInput: voiceInput,
+                                   state: headsetManager.state,
+                                   size: bands.talk.size,
+                                   action: { headsetManager.toggleRecordingFromUI() })
+                        .frame(width: bands.talk.width, height: bands.talk.height)
+                    DrivingSilenceButton(state: headsetManager.state,
+                                         size: bands.silence.size,
+                                         action: { headsetManager.silenceCurrentReplyFromUI() })
+                        .frame(width: bands.silence.width, height: bands.silence.height)
+                }
             }
         }
         // A tiny minimum, and nothing inside with a size of its own: the window is
@@ -60,8 +66,10 @@ struct DrivingModeView: View {
         .onAppear { controller.assertWiring() }
     }
 
-    /// Keys that work without aiming a pointer: a digit replays that tile, Space
-    /// is the talk bar. Returns whether the key was used.
+    /// Keys that work without aiming a pointer, each a single bare key: a digit
+    /// replays that tile, T is the talk bar, S silences the reply being read, R
+    /// reads the last reply again, and Space is S while a reply is being read and
+    /// R otherwise. Returns whether the key was used.
     private func handleKey(_ key: DrivingKey) -> Bool {
         switch key {
         case .replay(let index):
@@ -70,6 +78,15 @@ struct DrivingModeView: View {
             return true
         case .talk:
             headsetManager.toggleRecordingFromUI()
+            return true
+        case .silence:
+            headsetManager.silenceCurrentReplyFromUI()
+            return true
+        case .repeatLast:
+            headsetManager.repeatLastReplyFromUI()
+            return true
+        case .silenceOrRepeat:
+            headsetManager.silenceOrRepeatFromUI()
             return true
         }
     }
@@ -218,7 +235,7 @@ private struct DrivingTalkBar: View {
         HStack(spacing: 16) {
             Image(systemName: recording ? "mic.fill" : "mic")
                 .font(.system(size: labelSize * 1.2, weight: .bold))
-            Text(recording ? "LISTENING — CLICK OR PRESS SPACE TO SEND" : "CLICK OR PRESS SPACE TO TALK")
+            Text(recording ? "LISTENING — T SENDS" : "TALK — T")
                 .font(.system(size: labelSize, weight: .bold))
                 .minimumScaleFactor(0.4)   // a big label shrinks to fit a narrow window instead of cutting off
             if recording, !voiceInput.transcribedText.isEmpty {
@@ -241,6 +258,51 @@ private struct DrivingTalkBar: View {
                            identifier: "drivingTalkBar",
                            action: action)
         )
+    }
+}
+
+// MARK: - Silence button
+
+/// Stops the reply being read, and only that one: replies still waiting are read
+/// next and later replies are read as usual. Lit while something is being read,
+/// dim otherwise, when a click does nothing.
+private struct DrivingSilenceButton: View {
+    let state: SessionState
+    let size: CGSize
+    let action: () -> Void
+
+    var body: some View {
+        let speaking = state == .speaking
+        let labelSize = max(min(size.height * 0.34, 56), 12)
+        HStack(spacing: 16) {
+            Image(systemName: speaking ? "speaker.slash.fill" : "speaker.slash")
+                .font(.system(size: labelSize * 1.2, weight: .bold))
+            Text(DrivingSilenceLabel.text(speaking: speaking))
+                .font(.system(size: labelSize, weight: .bold))
+                .minimumScaleFactor(0.4)
+            Spacer(minLength: 0)
+        }
+        .lineLimit(1)
+        .foregroundColor(.white.opacity(speaking ? 1 : 0.45))
+        .padding(.horizontal, 20)
+        .frame(width: size.width, height: size.height, alignment: .leading)
+        .clipped()
+        .background(speaking ? Color.orange.opacity(0.8) : Color(white: 0.18))
+        .overlay(alignment: .leading) {
+            Rectangle().fill(Color.white.opacity(0.15)).frame(width: 1)
+        }
+        .overlay(
+            FirstClickArea(label: "Silence this reply",
+                           identifier: "drivingSilenceButton",
+                           action: action)
+        )
+    }
+}
+
+/// What the silence button says. Space does what the label says in either state.
+enum DrivingSilenceLabel {
+    static func text(speaking: Bool) -> String {
+        speaking ? "SILENCE — S OR SPACE" : "SPACE REPLAYS LAST"
     }
 }
 
@@ -293,14 +355,24 @@ final class FirstClickNSView: NSView {
 /// A key the driving screen acts on.
 enum DrivingKey: Equatable {
     case replay(Int)   // zero-based tile
-    case talk
+    case talk              // T
+    case silence           // S: stop the reply being read, only that one
+    case repeatLast        // R: read the newest reply again
+    case silenceOrRepeat   // Space: silence while a reply is being read, else repeat
 
     /// Map a key press to a driving key. Only bare keys count: with Command,
-    /// Control or Option held the press belongs to a menu shortcut.
+    /// Control or Option held the press belongs to a menu shortcut. Letters are
+    /// taken in either case, so Caps Lock or a held Shift changes nothing.
     static func from(characters: String?, modifiers: NSEvent.ModifierFlags) -> DrivingKey? {
         guard modifiers.intersection([.command, .control, .option]).isEmpty,
               let characters, characters.count == 1, let character = characters.first else { return nil }
-        if character == " " { return .talk }
+        switch character.lowercased() {
+        case " ": return .silenceOrRepeat
+        case "t": return .talk
+        case "s": return .silence
+        case "r": return .repeatLast
+        default: break
+        }
         if let digit = character.wholeNumberValue, (1...9).contains(digit) { return .replay(digit - 1) }
         return nil
     }

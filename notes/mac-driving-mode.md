@@ -32,11 +32,22 @@ band, each the full width of the window:
 |---|---|
 | Status strip (top, thin) | Nothing. Shows connection, state (READY, LISTENING, SENDING, WAITING, SPEAKING), the session, and the exit button. |
 | Reply bands, three by default | Reads that reply again from the top. The top band is always the newest reply, the next one the reply before it, and so on. |
-| Talk bar (bottom) | Starts talking, or stops and sends. The same action as a press of the headset button. As tall as one reply band, so it is as easy to hit. |
+| Talk bar (bottom row, left half) | Starts talking, or stops and sends. The same action as a press of the headset button. As tall as one reply band, so it is as easy to hit. |
+| Silence button (bottom row, right half) | Stops the reply being read, and only that one. Replies still waiting are read next, and later replies are read as usual: it is not mute. Lit while a reply is being read; dim, and a click does nothing, otherwise. |
 
 - The number of reply bands is a setting, 1 to 5 (Settings ▸ Driving). Everything under the status
-  strip is split into equal rows: one per reply band and one for the talk bar.
-- Keys work too, with no pointer to aim: `1` to `5` replay that band, Space is the talk bar.
+  strip is split into equal rows: one per reply band and one for the talk bar and silence button.
+- Keys work too, with no pointer to aim. Each is one bare key, in either case:
+
+  | Key | What it does |
+  |---|---|
+  | `1` to `5` | Replay that band. |
+  | `R` | Read the last reply again. |
+  | `S` | Silence the reply being read (the silence button). |
+  | `T` | Talk, or stop and send (the talk bar). |
+  | Space | While a reply is being read: silence it. With nothing playing: read the last reply again. While the microphone is open: stop and send. |
+
+  Space was the talk bar until 2026-11-19; it no longer opens the microphone.
 - A click works the first time even when another app is in front.
 - Replaying cuts off whatever is being read. Replies that have not been read yet are kept and are
   read after the replay.

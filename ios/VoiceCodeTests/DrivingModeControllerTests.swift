@@ -685,7 +685,13 @@ final class DrivingModeControllerTests: XCTestCase {
     func testDrivingKeys() {
         XCTAssertEqual(DrivingKey.from(characters: "1", modifiers: []), .replay(0))
         XCTAssertEqual(DrivingKey.from(characters: "3", modifiers: []), .replay(2))
-        XCTAssertEqual(DrivingKey.from(characters: " ", modifiers: []), .talk)
+        XCTAssertEqual(DrivingKey.from(characters: " ", modifiers: []), .silenceOrRepeat)
+        XCTAssertEqual(DrivingKey.from(characters: "t", modifiers: []), .talk)
+        XCTAssertEqual(DrivingKey.from(characters: "s", modifiers: []), .silence)
+        XCTAssertEqual(DrivingKey.from(characters: "r", modifiers: []), .repeatLast)
+        XCTAssertEqual(DrivingKey.from(characters: "R", modifiers: [.shift]), .repeatLast, "Shift or Caps Lock changes nothing")
+        XCTAssertEqual(DrivingKey.from(characters: "S", modifiers: [.capsLock]), .silence)
+        XCTAssertNil(DrivingKey.from(characters: "r", modifiers: [.command]), "Command+R is not the repeat key")
         XCTAssertEqual(DrivingKey.from(characters: "2", modifiers: [.shift]), .replay(1))
         XCTAssertNil(DrivingKey.from(characters: "0", modifiers: []))
         XCTAssertNil(DrivingKey.from(characters: "d", modifiers: []))
@@ -693,6 +699,11 @@ final class DrivingModeControllerTests: XCTestCase {
         XCTAssertNil(DrivingKey.from(characters: " ", modifiers: [.option]), "Option+Space is push-to-talk elsewhere")
         XCTAssertNil(DrivingKey.from(characters: nil, modifiers: []))
         XCTAssertNil(DrivingKey.from(characters: "12", modifiers: []))
+    }
+
+    func testSilenceButtonLabelSaysWhatSpaceDoes() {
+        XCTAssertEqual(DrivingSilenceLabel.text(speaking: true), "SILENCE — S OR SPACE")
+        XCTAssertEqual(DrivingSilenceLabel.text(speaking: false), "SPACE REPLAYS LAST")
     }
 
     func testStateLabels() {
@@ -785,17 +796,25 @@ final class DrivingModeControllerTests: XCTestCase {
             let bounds = host.view.bounds
             XCTAssertEqual(bounds.height, size.height, accuracy: 1, "the content does not make the window taller")
             let targets = Self.descendants(of: host.view).compactMap { $0 as? FirstClickNSView }
-            XCTAssertEqual(targets.count, 4, "three replay tiles and the talk bar at \(size)")
-            var covered: CGFloat = 0
+            XCTAssertEqual(targets.count, 5, "three replay tiles, the talk bar and the silence button at \(size)")
+            var coveredArea: CGFloat = 0
+            var halfWidthTargets = 0
             for target in targets {
                 let frame = target.convert(target.bounds, to: host.view)
                 XCTAssertTrue(bounds.insetBy(dx: -1, dy: -1).contains(frame),
                               "'\(target.label)' is outside the window at \(size): \(frame)")
-                XCTAssertEqual(frame.width, size.width, accuracy: 1, "every target spans the full width")
-                covered += frame.height
+                // A reply tile spans the full width; talk and silence share the bottom row.
+                if abs(frame.width - size.width / 2) <= 1 {
+                    halfWidthTargets += 1
+                } else {
+                    XCTAssertEqual(frame.width, size.width, accuracy: 1, "'\(target.label)' spans the full width")
+                }
+                coveredArea += frame.width * frame.height
             }
+            XCTAssertEqual(halfWidthTargets, 2, "talk and silence are each half the bottom row at \(size)")
             let bands = DrivingModeLayout.bands(in: size, replayCount: 3)
-            XCTAssertEqual(covered, size.height - bands.status.height, accuracy: 2,
+            XCTAssertEqual(coveredArea, size.width * (size.height - bands.status.height),
+                           accuracy: 4 * size.width,
                            "the targets cover everything below the status strip at \(size)")
         }
 

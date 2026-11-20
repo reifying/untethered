@@ -1184,6 +1184,36 @@ extension HeadsetRemoteCommandManager {
         handleButtonEvent(.repeatRequested, source: .ui)
     }
 
+    /// The on-screen or keyboard "be quiet": cut off the reply being read, and only
+    /// that one. Replies still waiting are read next and later replies are read as
+    /// usual; this is not mute. Returns false when nothing was being read.
+    @discardableResult
+    func silenceCurrentReplyFromUI() -> Bool {
+        if state == .speaking {
+            handleButtonEvent(.doubleTap, source: .ui)   // the reducer's skip-one-reply
+            return true
+        }
+        if voiceOutput.isSpeaking {
+            // Speech the machine is not tracking (it started while disengaged).
+            hLog("Session: silence from UI in state=\(state), speech was playing untracked")
+            voiceOutput.skipCurrent()
+            return true
+        }
+        hLog("Session: silence from UI ignored — nothing is being read (state=\(state))")
+        return false
+    }
+
+    /// One key for the two things a listener wants: quiet when a reply is being
+    /// read, the last reply again when nothing is. While recording it is the talk
+    /// toggle (stop and send), because nothing is read with the microphone open.
+    func silenceOrRepeatFromUI() {
+        if state == .recording {
+            toggleRecordingFromUI()
+        } else if !silenceCurrentReplyFromUI() {
+            repeatLastReplyFromUI()
+        }
+    }
+
     /// The ONE gated entry point for audible cues. Quiet on the desktop and when the user
     /// opted out; every call site (reducer `.playEarcon` effects, the confirmed-send `.sent`,
     /// the not-connected guard) routes through here so no play site can forget the gate.
