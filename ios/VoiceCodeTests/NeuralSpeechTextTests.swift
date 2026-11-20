@@ -168,4 +168,83 @@ final class NeuralVoiceCrashGuardTests: XCTestCase {
         XCTAssertEqual(next.consecutiveCrashes, 1)
         XCTAssertFalse(NeuralVoiceCrashGuard(defaults: defaults).recordLaunch())
     }
+
+    func testQuittingMidSynthesisIsNotACrash() {
+        let running = NeuralVoiceCrashGuard(defaults: defaults)
+        running.synthesisWillStart()
+        running.appWillTerminate()
+
+        let next = NeuralVoiceCrashGuard(defaults: defaults)
+        XCTAssertFalse(next.recordLaunch(), "an orderly quit clears the in-flight flag")
+        XCTAssertEqual(next.consecutiveCrashes, 0)
+    }
+
+    func testASynthesisEndingAfterQuitDoesNotGoNegative() {
+        let guardian = NeuralVoiceCrashGuard(defaults: defaults)
+        guardian.synthesisWillStart()
+        guardian.appWillTerminate()
+        guardian.synthesisDidEnd(succeeded: false)
+        guardian.synthesisWillStart() // would not set the flag if the count had gone to -1
+        XCTAssertTrue(NeuralVoiceCrashGuard(defaults: defaults).recordLaunch())
+    }
+}
+
+final class NeuralVoiceAvailabilityTests: XCTestCase {
+    func testNeedsTheModelAndTheSetting() {
+        for restricted in [true, false] {
+            XCTAssertFalse(NeuralVoiceAvailability.isReadyToSpeak(
+                modelLoaded: false, selected: true, failedInBackground: false, appIsActive: true, backgroundRestricted: restricted))
+            XCTAssertFalse(NeuralVoiceAvailability.isReadyToSpeak(
+                modelLoaded: true, selected: false, failedInBackground: false, appIsActive: true, backgroundRestricted: restricted))
+            XCTAssertTrue(NeuralVoiceAvailability.isReadyToSpeak(
+                modelLoaded: true, selected: true, failedInBackground: false, appIsActive: true, backgroundRestricted: restricted))
+        }
+    }
+
+    func testOnTheMacAnAppThatIsNotInFrontStillReads() {
+        // Driving mode on the Mac reads replies with another app in front.
+        XCTAssertTrue(NeuralVoiceAvailability.isReadyToSpeak(
+            modelLoaded: true, selected: true, failedInBackground: false, appIsActive: false, backgroundRestricted: false))
+        XCTAssertTrue(NeuralVoiceAvailability.isReadyToSpeak(
+            modelLoaded: true, selected: true, failedInBackground: true, appIsActive: false, backgroundRestricted: false))
+        XCTAssertFalse(NeuralVoiceAvailability.shouldStandDownAfterFailure(appIsActive: false, backgroundRestricted: false))
+    }
+
+    func testOnTheIPhoneABackgroundFailureStandsDownUntilActive() {
+        XCTAssertTrue(NeuralVoiceAvailability.shouldStandDownAfterFailure(appIsActive: false, backgroundRestricted: true))
+        XCTAssertFalse(NeuralVoiceAvailability.shouldStandDownAfterFailure(appIsActive: true, backgroundRestricted: true))
+        XCTAssertFalse(NeuralVoiceAvailability.isReadyToSpeak(
+            modelLoaded: true, selected: true, failedInBackground: true, appIsActive: false, backgroundRestricted: true))
+        XCTAssertTrue(NeuralVoiceAvailability.isReadyToSpeak(
+            modelLoaded: true, selected: true, failedInBackground: true, appIsActive: true, backgroundRestricted: true))
+        XCTAssertTrue(NeuralVoiceAvailability.isReadyToSpeak(
+            modelLoaded: true, selected: true, failedInBackground: false, appIsActive: false, backgroundRestricted: true))
+    }
+
+    func testThePlatformDefault() {
+        #if os(macOS)
+        XCTAssertFalse(NeuralVoiceAvailability.backgroundSynthesisIsRestricted)
+        XCTAssertEqual(NeuralVoiceSettingsText.deviceName, "Mac")
+        #else
+        XCTAssertTrue(NeuralVoiceAvailability.backgroundSynthesisIsRestricted)
+        XCTAssertEqual(NeuralVoiceSettingsText.deviceName, "iPhone")
+        #endif
+        XCTAssertTrue(NeuralVoiceSettingsText.kokoroFooter(device: "Mac").contains("runs on this Mac."))
+    }
+
+    func testBothAppsHaveTheKokoroEngineAndTestsNeverLoadIt() {
+        let engine = SpeechSynthesizerRouter.defaultNeuralEngine
+        XCTAssertNotNil(engine, "the Mac app has the neural voice too")
+        XCTAssertEqual(engine?.isReadyToSpeak, false, "no model is loaded under test, so Apple's voice reads")
+    }
+
+    func testKokoroIsTheDefaultEngineUnlessAppleWasChosen() {
+        let suite = "NeuralVoiceAvailabilityTests"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.removePersistentDomain(forName: suite)
+        defer { defaults.removePersistentDomain(forName: suite) }
+        XCTAssertTrue(NeuralVoiceSettings.isKokoroSelected(defaults))
+        defaults.set(NeuralVoiceSettings.apple, forKey: NeuralVoiceSettings.engineKey)
+        XCTAssertFalse(NeuralVoiceSettings.isKokoroSelected(defaults))
+    }
 }

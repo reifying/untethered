@@ -1,6 +1,6 @@
 // SpeechSynthesizerRouter.swift
 // Stands in for AVSpeechSynthesizer inside VoiceOutputManager, so a neural voice
-// (Kokoro, on iOS) can read an utterance, with Apple's voice as the fallback.
+// (Kokoro) can read an utterance, with Apple's voice as the fallback.
 // Design: docs/design/kokoro-neural-voice.md
 
 import Foundation
@@ -90,9 +90,9 @@ final class SpeechSynthesizerRouter: NSObject, AVSpeechSynthesizerDelegate {
         apple.delegate = self
     }
 
-    /// Kokoro on iOS; none on macOS, where the app keeps Apple's voice.
+    /// Kokoro, on the iPhone and the Mac.
     static var defaultNeuralEngine: NeuralSpeechEngine? {
-        #if os(iOS) && canImport(FluidAudio)
+        #if canImport(FluidAudio)
         return KokoroSpeechEngine.shared
         #else
         return nil

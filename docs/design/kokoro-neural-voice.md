@@ -1,7 +1,8 @@
-# Kokoro voice on the iPhone
+# Kokoro voice on the iPhone and the Mac
 
 The iPhone app reads replies with Kokoro-82M (voice `af_heart`) instead of `AVSpeechSynthesizer`.
-Apple's voice stays as the fallback, and Settings can switch back to it. The Mac app is unchanged.
+Apple's voice stays as the fallback, and Settings can switch back to it. The Mac app does the same,
+with the same code (see "On the Mac" below).
 
 Why Kokoro: in a blind listening test (2026-11-09) of five voices reading five real replies, Travis
 picked Kokoro `af_heart` first, ahead of Ming 0.5B, Phonon 31m, Pocket TTS and Apple's Ava (Premium).
@@ -80,6 +81,28 @@ Apple voice preview in Settings.
 A **Voice engine** section above the Apple voice picker: *Kokoro (Heart)* or *Apple*, Kokoro's status
 (waiting for Wi-Fi, downloading, loading, ready, failed, turned off after crashes) with Download now / Retry /
 Turn back on, and a Kokoro preview. The Apple picker becomes the fallback voice when Kokoro is selected.
+
+## On the Mac
+
+The Mac app links the same FluidAudio package and runs the same engine, router, fallback and crash guard.
+Kokoro is the default there too. Settings > Voice has the Voice Engine section above the Apple voice picker,
+and Preview Voice previews the Apple voice whichever engine reads. What differs:
+
+- **Not in front is normal.** The Mac has no background limit on the Neural Engine, and in driving mode the
+  app reads replies with another app in front. So a failed read never makes Kokoro stand down until the app
+  is active again (`NeuralVoiceAvailability`).
+- **The model stays loaded.** There is no memory-warning unload: nothing kills a Mac app for its memory, and
+  a reload waits for the app to come to the front.
+- **Quit is not a crash.** Quitting while a reply is being synthesized clears the crash guard's flag.
+- **No audio session.** Interruption handling is iPhone only.
+- **Where the model lives.** In the app's sandbox, at
+  `~/Library/Containers/dev.910labs.voice-code-mac/Data/.cache/fluidaudio`. The sandbox's outgoing-network
+  entitlement is all the download needs.
+
+Measured on a Mac16,6, macOS 26.6.2, debug build, sandboxed, with `-KokoroSelfTest` (2026-11-19): first run
+(download, load, warm-up) ready in 38 s; first audio 0.10-0.63 s after the request; a 44 s reply synthesized
+in 1.3 s; read through `KokoroPlayback` at volume 0, started at 0.14 s and finished at 45.6 s; footprint
+359 MB once loaded, 1.46 GB peak while synthesizing. Not checked by ear.
 
 ## Measured (2026-11-11)
 

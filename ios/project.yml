@@ -23,7 +23,7 @@ settings:
       BuildIndependentTargetsInParallel: true
 
 packages:
-  # Kokoro neural voice for the iPhone app (Apache-2.0). Pinned exactly: see
+  # Kokoro neural voice for the iPhone and Mac apps (Apache-2.0). Pinned exactly: see
   # docs/design/kokoro-neural-voice.md before changing the version.
   FluidAudio:
     url: https://github.com/FluidInference/FluidAudio
@@ -206,6 +206,24 @@ targets:
         LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/../Frameworks"
         COMBINE_HIDPI_IMAGES: YES
         ENABLE_HARDENED_RUNTIME: YES
+    postBuildScripts:
+      # Same guard as the iOS target: FluidAudio's GPL-derived LuxTTS data must not ship.
+      - name: Strip GPL-derived LuxTTS data
+        basedOnDependencyAnalysis: false
+        inputFiles:
+          - $(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/FluidAudio_LuxTtsG2pResources.bundle
+        script: |
+          set -euo pipefail
+          APP="${TARGET_BUILD_DIR}/${WRAPPER_NAME}"
+          find "$APP" -name '*.xctest' -prune -o -name '*LuxTtsG2pResources*.bundle' -prune -print -exec rm -rf {} +
+          # Test bundles are embedded only in test builds and never ship.
+          if find "$APP" -name '*.xctest' -prune -o -iname '*luxtts*' -print | grep -q .; then
+            echo "error: GPL-derived LuxTTS data is still in $APP (see docs/design/kokoro-neural-voice.md)"
+            exit 1
+          fi
+    dependencies:
+      - package: FluidAudio
+        product: FluidAudio
 
   VoiceCodeTests:
     type: bundle.unit-test

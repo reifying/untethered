@@ -10,9 +10,55 @@ enum NeuralVoiceSettings {
     static let kokoro = "kokoro"
     static let apple = "apple"
 
-    /// Kokoro unless Apple was chosen. Kokoro is the default on iPhone.
+    /// Kokoro unless Apple was chosen. Kokoro is the default on the iPhone and the Mac.
     static func isKokoroSelected(_ defaults: UserDefaults = .standard) -> Bool {
         (defaults.string(forKey: engineKey) ?? kokoro) == kokoro
+    }
+}
+
+/// When the neural voice may read, given where the app is.
+///
+/// iOS 27 needs an entitlement for Neural Engine work from a background app, so a read that
+/// fails there makes the engine stand down until the app is active again. The Mac has no such
+/// limit, and it reads most replies with another app in front (driving mode, or simply working
+/// in another window), so there the app not being active never holds the neural voice back.
+enum NeuralVoiceAvailability {
+    static var backgroundSynthesisIsRestricted: Bool {
+        #if os(iOS)
+        return true
+        #else
+        return false
+        #endif
+    }
+
+    /// Whether the neural engine reads the next utterance.
+    static func isReadyToSpeak(modelLoaded: Bool, selected: Bool, failedInBackground: Bool, appIsActive: Bool,
+                               backgroundRestricted: Bool = backgroundSynthesisIsRestricted) -> Bool {
+        guard modelLoaded, selected else { return false }
+        if backgroundRestricted, failedInBackground, !appIsActive { return false }
+        return true
+    }
+
+    /// Whether a failed read means "stop trying until the app is active again".
+    static func shouldStandDownAfterFailure(appIsActive: Bool,
+                                            backgroundRestricted: Bool = backgroundSynthesisIsRestricted) -> Bool {
+        backgroundRestricted && !appIsActive
+    }
+}
+
+/// Wording of the Voice Engine section in Settings that differs between the iPhone and the Mac.
+enum NeuralVoiceSettingsText {
+    static var deviceName: String {
+        #if os(macOS)
+        return "Mac"
+        #else
+        return "iPhone"
+        #endif
+    }
+
+    static func kokoroFooter(device: String = deviceName) -> String {
+        "Kokoro is a neural voice that runs on this \(device). Its model downloads once, over Wi-Fi. "
+            + "Until it is ready, and whenever it can't speak, the Apple voice below reads instead."
     }
 }
 

@@ -95,7 +95,8 @@ Everything below is checked on entry and again every ten seconds, and put back i
 
 From iOS, the behaviours asked for were already in the Mac build and needed no porting: tool calls
 and thinking are filtered on the backend for every client, and replies are queued and read in turn
-by code the two apps share. The Kokoro voice is iPhone only and was left that way.
+by code the two apps share. The Kokoro voice was iPhone only then; the Mac has it now
+(`docs/design/kokoro-neural-voice.md`, "On the Mac").
 
 ## Why the microphone button went off-screen
 
@@ -264,7 +265,6 @@ Before step 1, three things only you can do:
   the reply is still read when it comes. With long agent turns this tone will sound often.
 - **Switching sessions from the headset.** The mode drives one session.
 - **Relaunching after a crash.** The mode resumes on relaunch, but the relaunch is manual.
-- **The Kokoro voice on the Mac.**
 
 ## Where the code is
 
