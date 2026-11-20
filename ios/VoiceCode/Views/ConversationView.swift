@@ -616,13 +616,7 @@ struct ConversationView: View {
                     .help("Toggle auto-scroll")
 
                     // Compact button
-                    Button(action: {
-                        if wasRecentlyCompacted {
-                            showingAlreadyCompactedAlert = true
-                        } else {
-                            showingCompactConfirmation = true
-                        }
-                    }) {
+                    Button(action: { askToCompact() }) {
                         if isCompacting {
                             ProgressView()
                         } else {
@@ -633,13 +627,7 @@ struct ConversationView: View {
                     .disabled(isCompacting)
                     .help("Compact session history")
 
-                    Button(action: {
-                        isRefreshingMessages = true
-                        Task {
-                            await client.requestSessionRefresh(sessionId: session.id.uuidString.lowercased())
-                            await MainActor.run { isRefreshingMessages = false }
-                        }
-                    }) {
+                    Button(action: { refreshMessages() }) {
                         if isRefreshingMessages {
                             ProgressView()
                         } else {
@@ -870,8 +858,42 @@ struct ConversationView: View {
         .swipeToBack()
         #if os(macOS)
         .pushToTalk(voiceInput: voiceInput)
+        // The Session menu and the command palette post these. Nothing received
+        // them, so Refresh Session, Compact Session and Session Info did nothing
+        // from the menu bar or the palette; only the toolbar buttons worked.
+        .onReceive(NotificationCenter.default.publisher(for: .refreshSession)) { _ in
+            refreshMessages()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .compactSession)) { _ in
+            askToCompact()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .showSessionInfo)) { _ in
+            showingSessionInfo = true
+        }
         #endif
     }
+
+    #if os(macOS)
+    /// Fetch this session's messages again. One refresh at a time.
+    private func refreshMessages() {
+        guard !isRefreshingMessages else { return }
+        isRefreshingMessages = true
+        Task {
+            await client.requestSessionRefresh(sessionId: session.id.uuidString.lowercased())
+            await MainActor.run { isRefreshingMessages = false }
+        }
+    }
+
+    /// Ask before compacting, or say that it was just done.
+    private func askToCompact() {
+        guard !isCompacting else { return }
+        if wasRecentlyCompacted {
+            showingAlreadyCompactedAlert = true
+        } else {
+            showingCompactConfirmation = true
+        }
+    }
+    #endif
     
     private func setupVoiceInput() {
         voiceInput.requestAuthorization { authorized in
