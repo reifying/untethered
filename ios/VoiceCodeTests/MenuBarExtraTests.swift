@@ -53,6 +53,14 @@ final class MenuBarExtraTests: XCTestCase {
         XCTAssertEqual(MenuBarHelpers.mainWindowAction(for: [(isVisible: false, isMiniaturized: false)]), .openNew)
     }
 
+    /// The app's own main window (the tests run inside the app) must be recognised
+    /// as one: "Open VoiceCode" picks among these.
+    func testTheAppsMainWindowIsRecognised() {
+        let described = NSApp.windows.map { "\($0.identifier?.rawValue ?? "nil") (\(type(of: $0)))" }
+        XCTAssertTrue(NSApp.windows.contains(where: MenuBarHelpers.isMainAppWindow),
+                      "no window of the main group found among: \(described)")
+    }
+
     // MARK: - AppSettings Directory Tracking Tests
 
     func testLastUsedDirectoryDefaultsToNil() {
