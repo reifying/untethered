@@ -66,6 +66,17 @@ struct SessionSidebarView: View {
             }
     }
 
+    /// The request that asks the backend to make a git worktree and a session in it.
+    /// Nil when the name or the parent folder is missing.
+    static func worktreeSessionMessage(name: String, parentDirectory: String) -> [String: Any]? {
+        guard !name.isEmpty, !parentDirectory.isEmpty else { return nil }
+        return [
+            "type": "create_worktree_session",
+            "session_name": name,
+            "parent_directory": parentDirectory
+        ]
+    }
+
     /// Sorted project commands (top 5 MRU)
     private var sortedProjectCommands: [Command] {
         guard let commands = client.availableCommands?.projectCommands else { return [] }
@@ -192,10 +203,23 @@ struct SessionSidebarView: View {
                 workingDirectory: $newWorkingDirectory,
                 createWorktree: $createWorktree,
                 onCreate: {
-                    createNewSession(
-                        name: newSessionName,
-                        workingDirectory: newWorkingDirectory.isEmpty ? nil : newWorkingDirectory
-                    )
+                    // "Create worktree" was offered here and then ignored: a plain
+                    // session was made in the parent folder. Ask the backend for the
+                    // worktree, as the iPhone app does; the session arrives from it.
+                    if createWorktree {
+                        if let message = Self.worktreeSessionMessage(name: newSessionName,
+                                                                     parentDirectory: newWorkingDirectory) {
+                            LogManager.shared.log("📝 Creating worktree session: \(newSessionName) in \(newWorkingDirectory)", category: "SessionSidebar")
+                            client.sendMessage(message)
+                        } else {
+                            LogManager.shared.log("❌ Worktree session not created: name '\(newSessionName)' or parent folder '\(newWorkingDirectory)' is empty", category: "SessionSidebar")
+                        }
+                    } else {
+                        createNewSession(
+                            name: newSessionName,
+                            workingDirectory: newWorkingDirectory.isEmpty ? nil : newWorkingDirectory
+                        )
+                    }
                     newSessionName = ""
                     newWorkingDirectory = ""
                     createWorktree = false
