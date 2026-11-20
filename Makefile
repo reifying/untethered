@@ -445,21 +445,25 @@ regenerate-key:
 MAC_SIGN_IDENTITY ?=
 MAC_SIGN_ARGS := $(if $(MAC_SIGN_IDENTITY),CODE_SIGN_STYLE=Manual ENABLE_HARDENED_RUNTIME=NO CODE_SIGN_IDENTITY='$(MAC_SIGN_IDENTITY)' $(if $(DEVELOPMENT_TEAM),DEVELOPMENT_TEAM=$(DEVELOPMENT_TEAM)))
 MAC_APP := $(IOS_DIR)/build/Build/Products/Debug/VoiceCodeMac.app
+# Extra xcodebuild arguments for the build-mac and test-mac* targets. Empty by default.
+# To keep build products inside this checkout (several worktrees building at once):
+#   make test-mac MAC_XCODE_ARGS="-derivedDataPath build"
+MAC_XCODE_ARGS ?=
 
 # Build the macOS project
 build-mac: generate-project
-	$(WRAP) bash -c "cd $(IOS_DIR) && xcodebuild build -scheme VoiceCodeMac -destination 'platform=macOS' $(MAC_SIGN_ARGS)"
+	$(WRAP) bash -c "cd $(IOS_DIR) && xcodebuild build -scheme VoiceCodeMac -destination 'platform=macOS' $(MAC_XCODE_ARGS) $(MAC_SIGN_ARGS)"
 
 # Run macOS unit tests
 test-mac: generate-project
-	$(WRAP) bash -c "cd $(IOS_DIR) && xcodebuild test -scheme VoiceCodeMac -destination 'platform=macOS'"
+	$(WRAP) bash -c "cd $(IOS_DIR) && xcodebuild test -scheme VoiceCodeMac -destination 'platform=macOS' $(MAC_XCODE_ARGS)"
 
 # Run specific macOS unit test class (usage: make test-mac-class CLASS=MacSettingsViewTests)
 test-mac-class: generate-project
 ifndef CLASS
 	$(error CLASS is required. Usage: make test-mac-class CLASS=MacSettingsViewTests)
 endif
-	$(WRAP) bash -c "cd $(IOS_DIR) && xcodebuild test -scheme VoiceCodeMac -destination 'platform=macOS' -only-testing:VoiceCodeMacTests/$(CLASS)"
+	$(WRAP) bash -c "cd $(IOS_DIR) && xcodebuild test -scheme VoiceCodeMac -destination 'platform=macOS' $(MAC_XCODE_ARGS) -only-testing:VoiceCodeMacTests/$(CLASS)"
 
 # Run a specific macOS unit test method (usage: make test-mac-method CLASS=Foo METHOD=testBar)
 test-mac-method: generate-project
@@ -469,15 +473,15 @@ endif
 ifndef METHOD
 	$(error METHOD is required. Usage: make test-mac-method CLASS=HeadsetRemoteCommandManagerMacTests METHOD=testX)
 endif
-	$(WRAP) bash -c "cd $(IOS_DIR) && xcodebuild test -scheme VoiceCodeMac -destination 'platform=macOS' -only-testing:VoiceCodeMacTests/$(CLASS)/$(METHOD)"
+	$(WRAP) bash -c "cd $(IOS_DIR) && xcodebuild test -scheme VoiceCodeMac -destination 'platform=macOS' $(MAC_XCODE_ARGS) -only-testing:VoiceCodeMacTests/$(CLASS)/$(METHOD)"
 
 # Run macOS UI tests
 test-mac-ui: generate-project
-	$(WRAP) bash -c "cd $(IOS_DIR) && xcodebuild test -scheme VoiceCodeMac -destination 'platform=macOS' -only-testing:VoiceCodeMacUITests"
+	$(WRAP) bash -c "cd $(IOS_DIR) && xcodebuild test -scheme VoiceCodeMac -destination 'platform=macOS' $(MAC_XCODE_ARGS) -only-testing:VoiceCodeMacUITests"
 
 # Run specific macOS UI test
 test-mac-ui-settings: generate-project
-	$(WRAP) bash -c "cd $(IOS_DIR) && xcodebuild test -scheme VoiceCodeMac -destination 'platform=macOS' -only-testing:VoiceCodeMacUITests/SettingsDialogUITests/testSettingsDialogLayout"
+	$(WRAP) bash -c "cd $(IOS_DIR) && xcodebuild test -scheme VoiceCodeMac -destination 'platform=macOS' $(MAC_XCODE_ARGS) -only-testing:VoiceCodeMacUITests/SettingsDialogUITests/testSettingsDialogLayout"
 
 # Run the macOS app
 run-mac: generate-project
