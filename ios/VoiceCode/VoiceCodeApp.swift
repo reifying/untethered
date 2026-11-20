@@ -44,7 +44,7 @@ struct VoiceCodeApp: App {
         // Create instances in correct dependency order
         let settings = AppSettings()
         let voiceManager = VoiceOutputManager(appSettings: settings)
-        #if os(iOS) && canImport(FluidAudio)
+        #if canImport(FluidAudio)
         // Load (or, on Wi-Fi, first download) the Kokoro voice. Apple's voice reads until it's ready.
         KokoroSpeechEngine.shared.start()
         #endif

@@ -274,6 +274,10 @@ struct VoiceSettingsTab: View {
 
     var body: some View {
         Form {
+            #if canImport(FluidAudio)
+            NeuralVoiceSettingsSection(voiceOutputManager: voiceOutput)
+            #endif
+
             Section("Voice Selection") {
                 Picker("Voice", selection: $settings.selectedVoiceIdentifier) {
                     Text("System Default").tag(nil as String?)
@@ -350,7 +354,8 @@ struct VoiceSettingsTab: View {
         previewingVoice = true
 
         let previewText = "Hello! This is a preview of the selected voice. Premium voices sound more natural and expressive."
-        voiceOutput.speakWithVoice(previewText, voiceIdentifier: settings.selectedVoiceIdentifier)
+        // Preview the selected Apple voice, even when Kokoro reads replies.
+        voiceOutput.speakWithAppleVoice(previewText, voiceIdentifier: settings.selectedVoiceIdentifier)
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 8.0) {
             previewingVoice = false

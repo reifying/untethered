@@ -50,7 +50,7 @@ class VoiceOutputManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegat
     }
     #endif
 
-    // Same surface as AVSpeechSynthesizer. On iOS it reads with Kokoro when that voice is
+    // Same surface as AVSpeechSynthesizer. It reads with Kokoro when that voice is
     // selected and loaded, otherwise with Apple's synthesizer, and reports the delegate
     // callbacks for the utterances handed to it either way. See SpeechSynthesizerRouter.
     private let synthesizer = SpeechSynthesizerRouter()

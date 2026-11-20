@@ -59,6 +59,15 @@ final class NeuralVoiceCrashGuard {
         }
     }
 
+    /// The app is quitting in an orderly way (Quit on the Mac). A synthesis call still running
+    /// is cut short by that, not by a crash, so the next launch must not count it as one.
+    func appWillTerminate() {
+        lock.lock()
+        running = 0
+        defaults.set(false, forKey: inFlightKey)
+        lock.unlock()
+    }
+
     var consecutiveCrashes: Int { defaults.integer(forKey: consecutiveKey) }
     var totalCrashes: Int { defaults.integer(forKey: totalKey) }
     var lastCrashDate: Date? { defaults.object(forKey: lastCrashKey) as? Date }

@@ -44,7 +44,7 @@ struct SettingsView: View {
                     .foregroundColor(.secondary)
             }
 
-            #if os(iOS) && canImport(FluidAudio)
+            #if canImport(FluidAudio)
             NeuralVoiceSettingsSection(voiceOutputManager: voiceOutputManager)
             #endif
 

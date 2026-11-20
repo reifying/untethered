@@ -2,7 +2,7 @@
 // Settings: choose Kokoro or Apple's voice, and see Kokoro's model status.
 // Design: docs/design/kokoro-neural-voice.md
 
-#if os(iOS) && canImport(FluidAudio)
+#if canImport(FluidAudio)
 import SwiftUI
 
 struct NeuralVoiceSettingsSection: View {
@@ -69,8 +69,7 @@ struct NeuralVoiceSettingsSection: View {
         if engineChoice == NeuralVoiceSettings.apple {
             return "Replies are read by the Apple voice below."
         }
-        return "Kokoro is a neural voice that runs on this iPhone. Its model downloads once, over Wi-Fi. "
-            + "Until it is ready, and whenever it can't speak, the Apple voice below reads instead."
+        return NeuralVoiceSettingsText.kokoroFooter()
     }
 }
 #endif

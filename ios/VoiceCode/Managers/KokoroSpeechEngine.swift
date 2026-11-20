@@ -1,16 +1,20 @@
 // KokoroSpeechEngine.swift
-// Kokoro-82M (voice af_heart) on the iPhone, through FluidAudio's Core ML pipeline.
+// Kokoro-82M (voice af_heart) on the iPhone and the Mac, through FluidAudio's Core ML pipeline.
 // Design: docs/design/kokoro-neural-voice.md
 
-#if os(iOS) && canImport(FluidAudio)
+#if canImport(FluidAudio)
 import Foundation
 import AVFoundation
 import Network
+#if os(iOS)
 import UIKit
+#elseif os(macOS)
+import AppKit
+#endif
 import FluidAudio
 
 /// Owns the Kokoro model: downloads it once (over Wi-Fi unless asked), loads and warms it,
-/// unloads it on a memory warning, and reads text for `SpeechSynthesizerRouter`.
+/// unloads it on a memory warning (iPhone only), and reads text for `SpeechSynthesizerRouter`.
 ///
 /// Main-queue class, like `VoiceOutputManager`; model calls run on FluidAudio's actor.
 final class KokoroSpeechEngine: ObservableObject, NeuralSpeechEngine {
@@ -48,8 +52,26 @@ final class KokoroSpeechEngine: ObservableObject, NeuralSpeechEngine {
 
     /// Set when a read failed or timed out while the app was in the background (the Neural
     /// Engine needs an entitlement there on iOS 27). Until the app is next active, Apple's voice
-    /// reads, rather than every reply waiting out a timeout first.
+    /// reads, rather than every reply waiting out a timeout first. Never set on the Mac, which
+    /// has no such limit and reads most replies with another app in front.
     private var unavailableInBackground = false
+
+    /// Whether this app is the one in front. Main queue only.
+    private static var appIsActive: Bool {
+        #if os(iOS)
+        return UIApplication.shared.applicationState == .active
+        #else
+        return NSApplication.shared.isActive
+        #endif
+    }
+
+    private static var didBecomeActiveNotification: Notification.Name {
+        #if os(iOS)
+        return UIApplication.didBecomeActiveNotification
+        #else
+        return NSApplication.didBecomeActiveNotification
+        #endif
+    }
 
     /// Seconds the last load and warm-up took, for logs and the self-test.
     private(set) var lastLoadSeconds: Double?
@@ -62,9 +84,11 @@ final class KokoroSpeechEngine: ObservableObject, NeuralSpeechEngine {
     }
 
     var isReadyToSpeak: Bool {
-        guard state == .ready, manager != nil, NeuralVoiceSettings.isKokoroSelected() else { return false }
-        if unavailableInBackground, UIApplication.shared.applicationState != .active { return false }
-        return true
+        NeuralVoiceAvailability.isReadyToSpeak(
+            modelLoaded: state == .ready && manager != nil,
+            selected: NeuralVoiceSettings.isKokoroSelected(),
+            failedInBackground: unavailableInBackground,
+            appIsActive: Self.appIsActive)
     }
 
     // MARK: - Lifecycle
@@ -78,13 +102,23 @@ final class KokoroSpeechEngine: ObservableObject, NeuralSpeechEngine {
             log("⚠️ The previous run quit during Kokoro synthesis (\(crashGuard.consecutiveCrashes) in a row, \(crashGuard.totalCrashes) in all)")
         }
         let center = NotificationCenter.default
-        observers.append(center.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+        observers.append(center.addObserver(forName: Self.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
             self?.unavailableInBackground = false
             self?.prepareIfNeeded()
         })
+        #if os(iOS)
         observers.append(center.addObserver(forName: UIApplication.didReceiveMemoryWarningNotification, object: nil, queue: .main) { [weak self] _ in
             self?.unloadIfIdle(reason: "memory warning")
         })
+        #else
+        // The Mac keeps the model loaded: nothing kills an app there for its memory, and an
+        // unloaded model would only come back when the app is next in front, which in driving
+        // mode may be never.
+        // Quitting while a reply is being synthesized is not a crash.
+        observers.append(center.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.crashGuard.appWillTerminate()
+        })
+        #endif
         startNetworkMonitor()
         prepareIfNeeded()
         KokoroSelfTest.runIfRequested(engine: self)
@@ -242,7 +276,8 @@ final class KokoroSpeechEngine: ObservableObject, NeuralSpeechEngine {
         ) { [weak self] outcome in
             guard let self = self else { return }
             self.activeReads -= 1
-            if case .failed = outcome, UIApplication.shared.applicationState != .active {
+            if case .failed = outcome,
+               NeuralVoiceAvailability.shouldStandDownAfterFailure(appIsActive: Self.appIsActive) {
                 self.unavailableInBackground = true
                 self.log("Kokoro unavailable in the background; Apple's voice reads until the app is active")
             }
@@ -330,6 +365,8 @@ final class KokoroPlayback: NSObject, NeuralSpeechPlayback, AVAudioPlayerDelegat
         armStallTimer(Self.firstAudioTimeout, reason: "first audio not ready in \(Int(Self.firstAudioTimeout))s")
         // A call or another app's audio pauses the player, and nothing would ever restart it,
         // leaving the read "speaking" forever. Carry on once the interruption ends.
+        // (The Mac has no audio session and no such interruptions.)
+        #if os(iOS)
         interruptionObserver = NotificationCenter.default.addObserver(
             forName: AVAudioSession.interruptionNotification, object: nil, queue: .main
         ) { [weak self] note in
@@ -337,6 +374,7 @@ final class KokoroPlayback: NSObject, NeuralSpeechPlayback, AVAudioPlayerDelegat
                   AVAudioSession.InterruptionType(rawValue: raw) == .ended else { return }
             self?.interruptionEnded()
         }
+        #endif
         let chunks = self.chunks, voice = self.voice, speed = self.speed, crashGuard = self.crashGuard
         synthesisTask = Task.detached(priority: .userInitiated) { [weak self] in
             for (index, chunk) in chunks.enumerated() {
@@ -538,7 +576,7 @@ final class KokoroPlayback: NSObject, NeuralSpeechPlayback, AVAudioPlayerDelegat
 
 // MARK: - Self-test
 
-/// Debug measurement on a real device. Launch with `-KokoroSelfTest`. It waits for the model,
+/// Debug measurement on a real device or Mac. Launch with `-KokoroSelfTest`. It waits for the model,
 /// synthesizes sample replies without playing them, reads one through the real playback path
 /// at volume 0, and writes `Documents/kokoro-selftest.json`: load and warm-up time, time to
 /// first audio, real-time factor, memory footprint and model size on disk. With
@@ -571,7 +609,7 @@ enum KokoroSelfTest {
 
     private static func run(engine: KokoroSpeechEngine, launchFootprint: Double, background: Bool) async {
         var report: [String: Any] = [
-            "os": UIDevice.current.systemVersion,
+            "os": ProcessInfo.processInfo.operatingSystemVersionString,
             "device": deviceModel(),
             "footprint_at_launch_mb": round1(launchFootprint),
         ]
@@ -627,14 +665,20 @@ enum KokoroSelfTest {
         report["playback"] = await playbackCheck(engine: engine, text: samples[2].1)
         report["footprint_peak_mb"] = round1(peak)
         report["footprint_after_mb"] = round1(KokoroSpeechEngine.memoryFootprintMB())
+        #if os(iOS)
         report["available_memory_mb"] = round1(Double(os_proc_available_memory()) / 1_048_576)
+        #endif
         write(report)
 
         guard background else { return }
         let bgWait = Date()
         var inBackground = false
         while Date().timeIntervalSince(bgWait) < 180 {
+            #if os(iOS)
             inBackground = await MainActor.run { UIApplication.shared.applicationState == .background }
+            #else
+            inBackground = await MainActor.run { !NSApplication.shared.isActive }
+            #endif
             if inBackground { break }
             try? await Task.sleep(nanoseconds: 500_000_000)
         }
@@ -662,7 +706,9 @@ enum KokoroSelfTest {
             DispatchQueue.main.async {
                 // .ambient mixes with other audio, so a silent check never interrupts what the
                 // phone is playing.
+                #if os(iOS)
                 try? AVAudioSession.sharedInstance().setCategory(.ambient, mode: .default)
+                #endif
                 KokoroPlayback.playerVolume = 0
                 let began = Date()
                 var events: [String] = []
@@ -725,6 +771,14 @@ enum KokoroSelfTest {
     private static func deviceModel() -> String {
         var info = utsname()
         uname(&info)
+        #if os(macOS)
+        var size = 0
+        sysctlbyname("hw.model", nil, &size, nil, 0)
+        if size > 0 {
+            var model = [CChar](repeating: 0, count: size)
+            if sysctlbyname("hw.model", &model, &size, nil, 0) == 0 { return String(cString: model) }
+        }
+        #endif
         return withUnsafeBytes(of: &info.machine) { String(decoding: $0.prefix { $0 != 0 }, as: UTF8.self) }
     }
 
