@@ -25,6 +25,34 @@ final class MenuBarExtraTests: XCTestCase {
         super.tearDown()
     }
 
+    // MARK: - Default directory and window choice
+
+    /// The app is sandboxed: `NSHomeDirectory()` is its container, which is no place
+    /// to start an agent. The quick prompt's default must be the user's real home.
+    func testDefaultDirectoryIsTheRealHomeNotTheSandboxContainer() {
+        let home = MenuBarHelpers.userHomeDirectory()
+        XCTAssertFalse(home.contains("/Library/Containers/"), "default directory is inside the sandbox container: \(home)")
+        XCTAssertEqual(home, "/Users/" + NSUserName())
+    }
+
+    func testOpenMainWindowBringsAVisibleWindowForward() {
+        XCTAssertEqual(MenuBarHelpers.mainWindowAction(for: [(isVisible: false, isMiniaturized: true),
+                                                             (isVisible: true, isMiniaturized: false)]),
+                       .bringForward(1))
+    }
+
+    func testOpenMainWindowRestoresAWindowFromTheDock() {
+        XCTAssertEqual(MenuBarHelpers.mainWindowAction(for: [(isVisible: false, isMiniaturized: true)]),
+                       .bringForward(0))
+    }
+
+    /// The main window was closed: activating the app shows nothing, so a new
+    /// window has to be opened.
+    func testOpenMainWindowOpensANewWindowWhenNoneIsLeft() {
+        XCTAssertEqual(MenuBarHelpers.mainWindowAction(for: []), .openNew)
+        XCTAssertEqual(MenuBarHelpers.mainWindowAction(for: [(isVisible: false, isMiniaturized: false)]), .openNew)
+    }
+
     // MARK: - AppSettings Directory Tracking Tests
 
     func testLastUsedDirectoryDefaultsToNil() {

@@ -32,13 +32,15 @@ struct MenuBarContentView: View {
     @State private var transcription: String = ""
     @State private var response: String?
     @State private var isProcessing = false
+    @Environment(\.openSettings) private var openSettingsAction
+    @Environment(\.openWindow) private var openWindow
 
     init(client: VoiceCodeClient, settings: AppSettings, voiceOutput: VoiceOutputManager, voiceInput: VoiceInputManager) {
         self.client = client
         self.settings = settings
         self.voiceOutput = voiceOutput
         self.voiceInput = voiceInput
-        self._selectedDirectory = State(initialValue: settings.lastUsedDirectory ?? NSHomeDirectory())
+        self._selectedDirectory = State(initialValue: settings.lastUsedDirectory ?? MenuBarHelpers.userHomeDirectory())
     }
 
     var body: some View {
@@ -259,10 +261,25 @@ struct MenuBarContentView: View {
 
     private func openMainWindow() {
         NSApp.activate(ignoringOtherApps: true)
+        // Activating shows nothing when the main window was closed or is in the
+        // Dock. Bring the existing one back, or open a new one.
+        switch MenuBarHelpers.mainWindowAction(for: NSApp.windows.filter(MenuBarHelpers.isMainAppWindow).map {
+            (isVisible: $0.isVisible, isMiniaturized: $0.isMiniaturized)
+        }) {
+        case .bringForward(let index):
+            let window = NSApp.windows.filter(MenuBarHelpers.isMainAppWindow)[index]
+            if window.isMiniaturized { window.deminiaturize(nil) }
+            window.makeKeyAndOrderFront(nil)
+        case .openNew:
+            openWindow(id: MenuBarHelpers.mainWindowID)
+        }
     }
 
     private func openSettings() {
-        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+        // `showSettingsWindow:` stopped working in macOS 14; the action below is the
+        // supported way to open the Settings scene.
+        NSApp.activate(ignoringOtherApps: true)
+        openSettingsAction()
     }
 
     // MARK: - Helpers
@@ -279,6 +296,38 @@ struct MenuBarContentView: View {
 // MARK: - Testable Helpers
 
 enum MenuBarHelpers {
+    /// The id of the app's main window group, so the menu bar can open one.
+    static let mainWindowID = "main"
+
+    /// The user's real home folder. The app is sandboxed, so `NSHomeDirectory()` is
+    /// its container (~/Library/Containers/<bundle id>/Data), which made the first
+    /// quick prompt start an agent inside the container.
+    static func userHomeDirectory() -> String {
+        if let entry = getpwuid(getuid()), let dir = entry.pointee.pw_dir {
+            return String(cString: dir)
+        }
+        return NSHomeDirectory()
+    }
+
+    enum MainWindowAction: Equatable {
+        case bringForward(Int)
+        case openNew
+    }
+
+    /// What "Open VoiceCode" should do given the app's main windows: bring a visible
+    /// one forward, else one sitting in the Dock, else open a new window.
+    static func mainWindowAction(for windows: [(isVisible: Bool, isMiniaturized: Bool)]) -> MainWindowAction {
+        if let index = windows.firstIndex(where: { $0.isVisible && !$0.isMiniaturized }) { return .bringForward(index) }
+        if let index = windows.firstIndex(where: { $0.isMiniaturized }) { return .bringForward(index) }
+        return .openNew
+    }
+
+    /// A window of the main window group: not the menu bar panel, the Settings
+    /// window or a status item.
+    static func isMainAppWindow(_ window: NSWindow) -> Bool {
+        window.identifier?.rawValue.hasPrefix(mainWindowID) == true
+    }
+
     /// Abbreviate path to last 2 components (e.g. /Users/test/projects/webapp → projects/webapp)
     static func abbreviatePath(_ path: String) -> String {
         let components = path.components(separatedBy: "/").filter { !$0.isEmpty }
