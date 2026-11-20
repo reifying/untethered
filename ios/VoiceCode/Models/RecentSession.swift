@@ -12,6 +12,18 @@ struct RecentSession: Identifiable, Equatable {
 
     var id: String { sessionId }
 
+    /// Parse the backend's ISO-8601 timestamp, with or without fractional seconds.
+    /// The backend formats with ISO_INSTANT, which leaves the fraction out when it is
+    /// zero ("2026-11-19T10:00:00Z"). Requiring the fraction dropped such a session
+    /// from the recent list.
+    static func parseTimestamp(_ string: String) -> Date? {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = formatter.date(from: string) { return date }
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.date(from: string)
+    }
+
     // Parse from WebSocket JSON (snake_case keys)
     // Backend sends 'name' field (Claude summary or dir-timestamp fallback)
     private init?(json: [String: Any]) {
@@ -27,10 +39,7 @@ struct RecentSession: Identifiable, Equatable {
             return nil
         }
 
-        // Parse ISO-8601 timestamp (with fractional seconds)
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        guard let lastModified = formatter.date(from: lastModifiedString) else {
+        guard let lastModified = Self.parseTimestamp(lastModifiedString) else {
             LogManager.shared.log("❌ RecentSession parse failed - invalid ISO-8601 date: '\(lastModifiedString)'", category: "RecentSession")
             return nil
         }

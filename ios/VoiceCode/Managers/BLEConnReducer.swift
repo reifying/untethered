@@ -171,6 +171,15 @@ enum ConnReducer {
             return (.reconnecting, [.reconnectHeld, .log("disconnected → pending reconnect to held peripheral")])
         case (.reconnecting, .connected):
             return (.discovering, [.discoverAndSubscribe, .armTimer(.discoveryWatchdog)])
+        // The pending reconnect was refused (didFailToConnect). CoreBluetooth has dropped
+        // the request, so nothing is pending any more: without this the machine sat in
+        // `.reconnecting` with no connect, no scan and no timer, and the button stayed
+        // dead until Bluetooth or the setting was cycled. Fall back to scanning, which
+        // finds the headset again when it advertises.
+        case (.reconnecting, .connectFailed):
+            return (.scanning(attempt: 1),
+                    [.cancelConnection, .startContinuousScan, .armTimer(.scanTick),
+                     .log("held reconnect failed → scanning")])
 
         default:
             return (s, [])   // ignore irrelevant events in the current state

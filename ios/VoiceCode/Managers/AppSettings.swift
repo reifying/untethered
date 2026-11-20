@@ -488,28 +488,42 @@ class AppSettings: ObservableObject {
 
         let task = URLSession.shared.webSocketTask(with: request)
 
+        // Report one result only. The timeout below used to fire five seconds after
+        // every test, so a "Connection successful!" (or the real error) was replaced
+        // by "Connection timeout". Read and written on the main queue.
+        var reported = false
+        let report: (Bool, String) -> Void = { success, message in
+            guard !reported else { return }
+            reported = true
+            completion(success, message)
+        }
+
         task.receive { result in
             switch result {
             case .success:
                 task.cancel(with: .goingAway, reason: nil)
                 DispatchQueue.main.async {
-                    completion(true, "Connection successful!")
+                    report(true, "Connection successful!")
                 }
             case .failure(let error):
                 DispatchQueue.main.async {
-                    completion(false, "Connection failed: \(error.localizedDescription)")
+                    report(false, "Connection failed: \(error.localizedDescription)")
                 }
             }
         }
 
         task.resume()
 
-        // Set a timeout
-        DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
+        // Give up after the timeout, unless a result has already been reported.
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.connectionTestTimeout) {
+            guard !reported else { return }
             task.cancel(with: .goingAway, reason: nil)
-            completion(false, "Connection timeout")
+            report(false, "Connection timeout")
         }
     }
+
+    /// How long `testConnection` waits for the server before reporting a timeout.
+    static let connectionTestTimeout: TimeInterval = 5
 }
 
 // MARK: - AVSpeechSynthesisVoiceQuality Extensions

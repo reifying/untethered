@@ -421,6 +421,29 @@ final class CommandExecutionStateTests: XCTestCase {
         XCTAssertNil(result, "executeCommand must return nil when disconnect drains the continuation")
     }
 
+    func testSocketFailureResumesWaitingContinuations() async throws {
+        // A socket that dies by itself (backend restart, network drop) must release
+        // the waiting caller just as disconnect() does. Without that this test hangs.
+        let executeTask = Task<String?, Never> {
+            await client.executeCommand(commandId: "slow.command", workingDirectory: "/tmp")
+        }
+
+        try await Task.sleep(nanoseconds: 50_000_000) // let the Task park
+
+        await MainActor.run {
+            client.handleSocketFailure(errorDescription: "simulated socket loss")
+        }
+
+        let finished = expectation(description: "executeCommand returned")
+        Task {
+            let result = await executeTask.value
+            XCTAssertNil(result, "executeCommand must return nil when the socket dies")
+            finished.fulfill()
+        }
+        await fulfillment(of: [finished], timeout: 3.0)
+        await MainActor.run { client.disconnect() }   // stop the reconnection timer the failure armed
+    }
+
     // MARK: - Helper Methods
 
     private func simulateMessage(_ json: [String: Any]) {

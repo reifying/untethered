@@ -571,4 +571,28 @@ final class VoiceInputManagerTests: XCTestCase {
         XCTAssertFalse(manager.prefersBluetoothHFPInput(), "must default to false (built-in mic / A2DP)")
     }
     #endif
+
+    // MARK: - A capture that cannot start must not hand back the last prompt
+
+    /// The input device is missing or switching profile, so the capture does not
+    /// start. The text of the previous recording must not be what the failed
+    /// attempt reports as its transcript: the headset path sends whatever it gets.
+    func testACaptureThatCannotStartDoesNotReportThePreviousTranscript() {
+        manager.authorizationStatus = .authorized
+        manager.transcribedText = "the previous prompt"
+        manager.startCaptureEngineOverride = { false }
+
+        manager.startRecording()
+
+        let delivered = expectation(description: "transcript delivered")
+        var transcript: String?
+        manager.awaitFinalTranscription(timeout: 0.5) { text in
+            transcript = text
+            delivered.fulfill()
+        }
+        wait(for: [delivered], timeout: 3.0)
+
+        XCTAssertEqual(transcript, "", "a failed capture must report no text, not the previous recording's")
+        XCTAssertFalse(manager.isRecording)
+    }
 }

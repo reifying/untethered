@@ -543,6 +543,19 @@ class VoiceCodeClient: ObservableObject {
         }
     }
 
+    /// Resume every `executeCommand` caller still waiting for `command_started` with
+    /// nil, the same result as `command_error`. Called whenever the socket goes away,
+    /// deliberately or not, so a caller's Task (and the spinner it drives) cannot
+    /// wait for ever. Main queue only.
+    private func failPendingCommandLaunches() {
+        let pending = commandExecutionContinuations
+        commandExecutionContinuations.removeAll()
+        for (commandId, continuation) in pending {
+            LogManager.shared.log("Command launch abandoned, the socket closed before command_started: \(commandId)", category: "VoiceCodeClient")
+            continuation.resume(returning: nil)
+        }
+    }
+
     func disconnect() {
         // Stop keepalive ping timer
         stopPingTimer()
@@ -552,13 +565,7 @@ class VoiceCodeClient: ObservableObject {
         webSocket?.cancel(with: .goingAway, reason: nil)
         webSocket = nil
 
-        // Drain any in-flight executeCommand callers so their Tasks don't hang
-        // after the socket closes. They receive nil, same as command_error.
-        let pendingCommandContinuations = commandExecutionContinuations
-        commandExecutionContinuations.removeAll()
-        for continuation in pendingCommandContinuations.values {
-            continuation.resume(returning: nil)
-        }
+        failPendingCommandLaunches()
 
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
@@ -588,6 +595,10 @@ class VoiceCodeClient: ObservableObject {
         disconnect()
         connect(sessionId: sessionId)
     }
+
+    /// The server address this client connects to. Settings compares it with what
+    /// is typed to know whether there is a change left to apply.
+    var currentServerURL: String { serverURL }
 
     func updateServerURL(_ url: String) {
         LogManager.shared.log("🔄 [VoiceCodeClient] Updating server URL from \(serverURL) to \(url)", category: "VoiceCodeClient")
@@ -772,7 +783,12 @@ class VoiceCodeClient: ObservableObject {
     // MARK: - Message Handling
 
     private func receiveMessage() {
-        webSocket?.receive { [weak self] result in
+        // The socket this receive belongs to. A deliberate reconnect (disconnect()
+        // then connect(), as after a new server address or API key) cancels the old
+        // socket and creates the new one in the same turn; the old socket's pending
+        // receive then fails. That failure is about the old socket only.
+        guard let socket = webSocket else { return }
+        socket.receive { [weak self] result in
             guard let self = self else { return }
 
             switch result {
@@ -793,8 +809,12 @@ class VoiceCodeClient: ObservableObject {
                 @unknown default:
                     break
                 }
-                // Continue receiving
-                self.receiveMessage()
+                // Continue receiving, on the main queue where `webSocket` is owned,
+                // and only while this is still the client's socket.
+                DispatchQueue.main.async { [weak self] in
+                    guard let self = self, self.webSocket === socket else { return }
+                    self.receiveMessage()
+                }
 
             case .failure(let error):
                 // Log the error details for debugging
@@ -803,7 +823,7 @@ class VoiceCodeClient: ObservableObject {
                 // Clear WebSocket reference inside main queue to ensure thread safety
                 // Both connect() and this failure handler must access webSocket on main thread
                 DispatchQueue.main.async { [weak self] in
-                    self?.handleSocketFailure(errorDescription: error.localizedDescription)
+                    self?.handleSocketFailure(errorDescription: error.localizedDescription, failedSocket: socket)
                 }
             }
         }
@@ -815,13 +835,26 @@ class VoiceCodeClient: ObservableObject {
     ///
     /// Must run on the main queue. Internal so tests can drive a socket loss
     /// without standing up a real server to kill.
-    internal func handleSocketFailure(errorDescription: String) {
+    ///
+    /// `failedSocket` is the socket the failure came from. When it is no longer the
+    /// client's socket the failure is stale and is ignored: acting on it cancelled
+    /// the socket that had just replaced it, so every deliberate reconnect killed
+    /// its own new connection once and showed "cancelled" as the error.
+    internal func handleSocketFailure(errorDescription: String, failedSocket: URLSessionWebSocketTask? = nil) {
+        if let failedSocket = failedSocket, failedSocket !== webSocket {
+            LogManager.shared.log("Ignoring failure of a socket that was already replaced: \(errorDescription)", category: "VoiceCodeClient")
+            return
+        }
+
         // Stop keepalive ping timer
         stopPingTimer()
 
         // Clear WebSocket reference to enable reconnection
         webSocket?.cancel(with: .goingAway, reason: nil)
         webSocket = nil
+
+        // The answer to a command sent on this socket will never come.
+        failPendingCommandLaunches()
 
         LogManager.shared.log("🔄 VoiceCodeClient updating: isConnected=false (failure)", category: "VoiceCodeClient")
         isConnected = false

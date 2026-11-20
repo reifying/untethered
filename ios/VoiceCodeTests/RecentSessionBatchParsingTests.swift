@@ -204,4 +204,24 @@ final class RecentSessionBatchParsingTests: XCTestCase {
         XCTAssertEqual(result.count, 100)
         XCTAssertLessThan(duration, 0.1, "Batch parsing should be fast without CoreData queries")
     }
+
+    // MARK: - Timestamps without fractional seconds
+
+    /// The backend leaves the fraction out when it is zero. Such a session must
+    /// still appear in the list.
+    func testParsesTimestampWithoutFractionalSeconds() {
+        let jsonArray: [[String: Any]] = [
+            ["session_id": UUID().uuidString.lowercased(), "name": "Whole second",
+             "working_directory": "/tmp/a", "last_modified": "2026-11-19T10:00:00Z"],
+            ["session_id": UUID().uuidString.lowercased(), "name": "With fraction",
+             "working_directory": "/tmp/b", "last_modified": "2026-11-19T10:00:01.250Z"]
+        ]
+
+        let result = RecentSession.parseRecentSessions(jsonArray)
+
+        XCTAssertEqual(result.map(\.name).sorted(), ["Whole second", "With fraction"],
+                       "a timestamp with no fractional seconds must not drop the session")
+        let whole = result.first { $0.name == "Whole second" }
+        XCTAssertEqual(whole?.lastModified.timeIntervalSince1970, 1_795_082_400)
+    }
 }

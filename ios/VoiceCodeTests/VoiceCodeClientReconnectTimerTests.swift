@@ -233,4 +233,31 @@ final class VoiceCodeClientReconnectTimerTests: XCTestCase {
         XCTAssertNotNil(client.currentError,
                         "Giving up must surface an error the UI can show")
     }
+
+    // MARK: - A failure of a replaced socket is not a failure of the connection
+
+    /// disconnect() then connect() cancels the old socket and creates the new one in
+    /// the same turn. The old socket's receive then fails. That late failure must
+    /// not tear down the connection that replaced it.
+    func testFailureOfAReplacedSocketLeavesTheConnectionAlone() {
+        let replaced = URLSession.shared.webSocketTask(with: URL(string: "ws://127.0.0.1:1")!)
+        defer { replaced.cancel() }
+        client.isConnected = true
+        client.currentError = nil
+
+        client.handleSocketFailure(errorDescription: "cancelled", failedSocket: replaced)
+        drainMainQueue()
+
+        XCTAssertTrue(client.isConnected, "a stale failure must not mark the live connection as down")
+        XCTAssertNil(client.currentError, "a stale failure must not be shown as the connection's error")
+    }
+
+    /// The failure of the client's own socket (or one with no socket named, as the
+    /// tests above drive it) still takes the connection down.
+    func testFailureWithNoSocketNamedStillTakesTheConnectionDown() {
+        client.isConnected = true
+        client.handleSocketFailure(errorDescription: "simulated socket loss")
+        drainMainQueue()
+        XCTAssertFalse(client.isConnected)
+    }
 }

@@ -82,7 +82,7 @@ struct VoiceCodeApp: App {
     }
 
     var body: some Scene {
-        WindowGroup {
+        WindowGroup(id: Self.mainWindowID) {
             rootView
             .environment(\.managedObjectContext, persistenceController.container.viewContext)
             .environmentObject(draftManager)
@@ -215,6 +215,15 @@ struct VoiceCodeApp: App {
             voiceOutput: voiceOutput,
             voiceInput: voiceInput
         )
+        #endif
+    }
+
+    /// Named so the menu bar's "Open VoiceCode" can open a window when none is left.
+    static var mainWindowID: String {
+        #if os(macOS)
+        MenuBarHelpers.mainWindowID
+        #else
+        "main"
         #endif
     }
 
